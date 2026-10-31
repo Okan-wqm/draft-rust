@@ -1,0 +1,40 @@
+# Licence policy for the development-only fuzz harness: the workspace policy
+# (../deny.toml) plus NCSA for libfuzzer-sys only.
+[graph]
+all-features = true
+
+[advisories]
+ignore = [
+    { id = "RUSTSEC-2023-0071", reason = "see ../deny.toml" },
+    { id = "RUSTSEC-2026-0387", reason = "see ../deny.toml" },
+]
+
+[licenses]
+confidence-threshold = 0.93
+allow = [
+    "MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-2-Clause",
+    "BSD-3-Clause", "ISC", "Zlib", "Unicode-3.0", "Unicode-DFS-2016", "CC0-1.0",
+    "CDLA-Permissive-2.0", "0BSD",
+]
+exceptions = [
+    { crate = "libfuzzer-sys", allow = ["NCSA"] },
+    { crate = "webauthn-rs", allow = ["MPL-2.0"] },
+    { crate = "webauthn-rs-core", allow = ["MPL-2.0"] },
+    { crate = "webauthn-rs-proto", allow = ["MPL-2.0"] },
+    { crate = "webauthn-attestation-ca", allow = ["MPL-2.0"] },
+    { crate = "base64urlsafedata", allow = ["MPL-2.0"] },
+    { crate = "crypto-glue", allow = ["MPL-2.0"] },
+    { crate = "compact_jwt", allow = ["MPL-2.0"] },
+]
+
+[licenses.private]
+ignore = true
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
