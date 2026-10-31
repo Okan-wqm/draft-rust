@@ -1,0 +1,269 @@
+# rust-authentication — example configuration (development).
+#
+# Every key can be overridden with an environment variable:
+#   AUTHN__<SECTION>__<KEY>=value      e.g. AUTHN__SESSION__ACCESS_TOKEN_TTL=5m
+# Durations: "500ms", "30s", "15m", "2h", "7d" (or plain seconds).
+# Values shown commented out are the built-in defaults.
+#
+# !!! The keys in [crypto] below are PUBLIC example values. They are refused
+# !!! when server.environment is "production" or "staging". Generate your own:
+# !!!   openssl rand -base64 32
+
+[server]
+environment = "development"            # production | staging | development | test (default: production)
+public_base_url = "http://localhost:8080"  # REQUIRED; https in production; only source of e-mailed links
+# bind_addr = "0.0.0.0:8080"
+# metrics_bind_addr = "127.0.0.1:9090" # Prometheus (OPS-04)
+# trusted_proxies = []                 # CIDRs allowed to set X-Forwarded-For (PRT-06)
+# client_ip_header = "x-forwarded-for" # or "forwarded"
+# default_locale = "en"                # en | tr
+# openapi_enabled = true
+# shutdown_grace_period = "30s"
+log_format = "pretty"                  # json (default) | pretty
+# log_filter = "info"
+
+[server.limits]                        # PRT-11
+# body_limit_bytes = 65536
+# request_timeout = "30s"
+# max_concurrent_requests = 1024
+
+[database]
+url = "postgres://postgres:postgres@localhost:5432/authn"   # REQUIRED
+# max_connections = 20
+# min_connections = 1
+# acquire_timeout = "5s"
+# idle_timeout = "10m"
+# max_lifetime = "30m"
+# statement_timeout = "30s"
+migrate_on_start = true                # default false
+
+[crypto]
+current_pepper_version = 1             # REQUIRED
+current_kek_id = "example-kek-1"       # REQUIRED
+hmac_root_key = "JE2nrKQpPUu9s2UxCzfpV0U6/ovFYb3UL1T692VsZpo="   # REQUIRED, >= 32 bytes
+# jwt_leeway = "30s"
+# max_concurrent_hashes = 4
+
+[[crypto.peppers]]                     # REQUIRED (CRY-02), keep old versions while users migrate
+version = 1
+key = "frPESZ3qTpEEALVDfUItL7NHnr7OR1e8HrBSx+cu6Ag="
+
+[[crypto.keks]]                        # REQUIRED (CRY-08), exactly 32 bytes each
+id = "example-kek-1"
+key = "EmFt2e6K4mRNa00b7YSb9pmCX5Ak+/U7pL0JNQfO7wk="
+
+[crypto.argon2]                        # CRY-01 (OWASP)
+# memory_kib = 19456
+# iterations = 2
+# parallelism = 1
+
+[crypto.signing_keys]                  # CRY-10
+# jwks_cache_ttl = "1h"
+# pending_period = "2h"
+# rotation_interval = "30d"
+# retired_retention = "1d"
+
+[password]                             # PWD-*
+# min_length = 12                      # 15 recommended for password-only accounts
+# max_length = 128
+# min_strength_score = 3
+# service_name = "rust-authentication"
+# check_endpoint_per_ip = { limit = 30, period = "1m" }
+
+[password.breach_check]                # PWD-03
+# enabled = true
+# hibp_range_url = "https://api.pwnedpasswords.com/range/"
+# timeout = "3s"
+# fail_open = true
+# offline_list_file = "/etc/authn/breached-sha1.txt"
+
+[password.reset]                       # PWD-07, PWD-08
+# token_ttl = "30m"
+# code_enabled = true
+# code_ttl = "15m"
+# code_max_attempts = 5
+# per_email = { limit = 3, period = "1h" }
+# per_ip = { limit = 20, period = "1h" }
+
+[account]                              # ACC-*
+# unverified_login = "block"           # block | limited
+# unverified_purge_after = "7d"
+# email_change_revert_ttl = "7d"
+# deletion_grace_period = "30d"
+# disposable_domains_file = "/etc/authn/disposable-domains.txt"
+# registration_captcha = "risk_based"  # always | risk_based | never
+# registration_per_ip = { limit = 10, period = "1h" }
+# require_terms_acceptance = false
+# reaccept_terms_on_new_version = true
+# export_per_user = { limit = 2, period = "1d" }
+
+[account.verification]                 # ACC-04
+# link_ttl = "24h"
+# code_ttl = "15m"
+# code_max_attempts = 5
+# resend_cooldown = "60s"
+# max_sends_per_hour = 5
+
+[session]                              # SES-*
+# access_token_ttl = "10m"
+# refresh_reuse_grace = "0s"           # max 10s
+# issuer = "https://auth.example.com"  # default: server.public_base_url
+# audiences = ["rust-authentication"]
+# mfa_challenge_ttl = "5m"
+# challenge_max_attempts = 5
+# step_up_max_age = "10m"
+# max_concurrent_sessions = 10         # default: unlimited
+# csrf_allowed_origins = []            # default: origin of public_base_url
+# magic_link_ttl = "15m"
+# email_code_ttl = "10m"
+# email_code_max_attempts = 5
+# introspection_per_client = { limit = 600, period = "1m" }
+# web = { idle_timeout = "2h", absolute_timeout = "12h" }
+# remember_me = { idle_timeout = "14d", absolute_timeout = "30d" }
+# shared_device = { idle_timeout = "30m", absolute_timeout = "4h" }
+# refresh_token = { idle_timeout = "30d", absolute_timeout = "90d" }
+
+[mfa]                                  # MFA-*
+# max_failed_attempts = 5
+# per_user_failures = { limit = 10, period = "15m" }
+# lockout_duration = "15m"
+# totp = { issuer = "rust-authentication", digits = 6, period = "30s", skew_steps = 1 }
+# recovery_codes = { count = 10 }
+# email_otp = { enabled = true, ttl = "10m", max_attempts = 5, resend_cooldown = "60s" }
+# trusted_device = { enabled = true, ttl = "30d" }
+
+[mfa.sms]                              # MFA-06 (needs [notify.sms])
+# allowed_country_codes = ["90"]
+# ttl = "10m"
+# max_attempts = 5
+# per_number = { limit = 5, period = "1h" }
+# per_ip = { limit = 10, period = "1h" }
+# global_daily_budget = { limit = 1000, period = "1d" }
+
+[webauthn]                             # PKY-*
+rp_id = "localhost"
+# rp_name = "rust-authentication"
+allowed_origins = ["http://localhost:8080"]
+# ceremony_ttl = "5m"
+# apple_app_ids = ["TEAMID.com.example.app"]
+# related_origins = []
+# [[webauthn.android_apps]]
+# package_name = "com.example.app"
+# sha256_cert_fingerprints = ["AA:BB:..."]
+
+[oidc_client]                          # SOC-*
+# state_ttl = "10m"
+# native_nonce_ttl = "10m"
+# allowed_return_to = ["https://app.example.com/after-login"]
+# auto_link_verified_email = false
+# auto_link_trusted_providers = []
+# trust_provider_mfa = false
+# store_provider_tokens = false
+# jwks_cache_ttl = "1h"
+# [oidc_client.google]
+# client_id = "..."
+# client_secret = "..."
+# native_client_ids = []
+# [oidc_client.microsoft]
+# client_id = "..."
+# client_secret = "..."
+# tenant = "common"
+# [oidc_client.apple]
+# client_id = "com.example.web"
+# team_id = "TEAMID"
+# key_id = "KEYID"
+# private_key_pem = "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"
+# [oidc_client.github]
+# client_id = "..."
+# client_secret = "..."
+# [[oidc_client.generic]]
+# slug = "acme"
+# display_name = "Acme SSO"
+# issuer_url = "https://login.acme.example"
+# client_id = "..."
+# client_secret = "..."
+
+[org]                                  # ORG-*
+# invitation_ttl = "7d"
+# invitation_sends_per_org = { limit = 50, period = "1h" }
+# domain_verification_label = "_authn-verification"
+# ownership_transfer_ttl = "7d"
+# deletion_grace_period = "30d"
+# api_keys = { environment = "live", max_lifetime = "365d", default_lifetime = "90d", rotation_grace = "24h" }
+
+[protect]                              # PRT-*, RSK-*
+# allowed_hosts = []                   # default: host of public_base_url (PRT-09)
+# redirect_allow_list = []             # PRT-10
+
+[protect.rate_limit]
+backend = "memory"                     # postgres (default) | redis | memory (single instance / dev)
+# redis_url = "redis://127.0.0.1:6379"
+# login_per_account_captcha = { limit = 10, period = "15m" }
+# login_per_account_soft_lock = { limit = 50, period = "1h" }
+# login_per_ip = { limit = 100, period = "15m" }
+# soft_lock_duration = "1h"
+
+[protect.captcha]
+# provider = "disabled"                # disabled | turnstile | hcaptcha | proof_of_work
+# login_policy = "risk_based"
+# site_key = "..."
+# secret_key = "..."
+# pow_difficulty = 18
+# pow_ttl = "5m"
+# fail_open = false
+
+[protect.security_headers]             # PRT-07
+# hsts_max_age = "730d"
+# hsts_include_subdomains = true
+# hsts_preload = false
+
+[protect.cors]                         # PRT-08
+# allowed_origins = ["https://app.example.com"]
+# max_age = "10m"
+
+[protect.risk]
+# enabled = true
+# anonymizing_networks_file = "/etc/authn/tor-exits.txt"
+# failure_window = "1h"
+# failure_threshold = 5
+# medium_action = "step_up"            # step_up | allow
+# high_action = "block"                # block | step_up
+
+[protect.outbound]                     # PRT-12
+# timeout = "10s"
+# max_response_bytes = 1048576
+# allow_private_networks = false       # tests only
+
+[audit]                                # AUD-*
+# retention = "400d"
+# user_visible_window = "90d"
+# outbox = { poll_interval = "1s", batch_size = 100, max_attempts = 10, backoff_base = "2s", backoff_max = "1h", lease = "60s" }
+# webhooks = { timeout = "10s", max_attempts = 8, secret_rotation_overlap = "24h", max_endpoints_per_org = 10 }
+
+[notify]                               # NTF-*
+# template_dir = "/etc/authn/templates"
+
+[notify.email]
+transport = "smtp"                     # smtp | log (development only) | disabled
+from_address = "no-reply@localhost.localdomain"
+# from_name = "rust-authentication"
+
+[notify.email.smtp]                    # docker compose: Mailpit (STARTTLS-capable dev server)
+host = "localhost"
+port = 1025
+tls = "starttls"                       # starttls | tls (plain text is not supported)
+# username = "..."
+# password = "..."
+# timeout = "10s"
+
+[notify.sms]
+# provider = "none"                    # none | http | log
+# http_url = "https://sms.example.com/send"
+# http_api_key = "..."
+# sender_id = "AUTHN"
+
+[admin]                                # ADM-*
+# ip_allow_list = ["10.0.0.0/8"]
+# step_up_max_age = "10m"
+# impersonation_default_ttl = "15m"
+# impersonation_max_ttl = "60m"
