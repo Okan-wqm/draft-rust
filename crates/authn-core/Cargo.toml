@@ -1,0 +1,44 @@
+[package]
+name = "authn-core"
+description = "Shared contracts: typed ids, error model, configuration, ports and request primitives."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+authors.workspace = true
+readme = "README.md"
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait.workspace = true
+axum.workspace = true
+http.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+time.workspace = true
+tracing.workspace = true
+sqlx.workspace = true
+secrecy.workspace = true
+zeroize.workspace = true
+subtle.workspace = true
+figment.workspace = true
+ipnet.workspace = true
+url.workspace = true
+idna.workspace = true
+unicode-normalization.workspace = true
+unicode-security.workspace = true
+utoipa.workspace = true
+base64.workspace = true
+rustls.workspace = true
+
+[dev-dependencies]
+figment = { workspace = true, features = ["test"] }
+tokio.workspace = true
+tower.workspace = true
+http-body-util.workspace = true
+proptest.workspace = true
+tempfile.workspace = true
