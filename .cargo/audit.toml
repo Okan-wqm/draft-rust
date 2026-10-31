@@ -1,0 +1,8 @@
+# cargo-audit configuration (CI job `audit`). Keep in sync with the
+# [advisories] ignore list of deny.toml, which carries the justifications.
+[advisories]
+ignore = [
+    "RUSTSEC-2023-0071", # rsa 0.9: only public-key signature verification is performed
+    "RUSTSEC-2026-0387", # crypto-bigint 0.5: only via openidconnect public-key verification
+]
+informational_warnings = ["unmaintained", "unsound", "notice"]

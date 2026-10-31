@@ -13,11 +13,21 @@ Tam gereksinimler: `docs/spec/requirements.md`. Modül sahipliği ve arayüz sö
 
 ## Kalite kapıları (her değişiklikten sonra)
 
+Tek başına çalışırken (tüm workspace):
+
 ```bash
 cargo fmt --all
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-features
 cargo deny check
+```
+
+Başka agent'larla paralel çalışırken yalnızca kendi crate'in üzerinde (`--all`/`--workspace` biçimlendirmesi başkalarının yarım dosyalarını bozar):
+
+```bash
+cargo fmt -p <crate>
+cargo clippy -p <crate> --all-targets --all-features -- -D warnings
+cargo test -p <crate> --all-features
 ```
 
 Testler gerçek PostgreSQL kullanır (`DATABASE_URL`, varsayılanı `.cargo/config.toml` içinde). Her `#[sqlx::test]` kendi geçici veritabanını oluşturur.

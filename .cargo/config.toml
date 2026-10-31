@@ -1,0 +1,4 @@
+[env]
+# Default database for `cargo test` (#[sqlx::test] creates throwaway databases
+# on this server). Override by exporting DATABASE_URL.
+DATABASE_URL = { value = "postgres://postgres:postgres@localhost:5432/authn", force = false }

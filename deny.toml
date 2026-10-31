@@ -1,0 +1,100 @@
+# cargo-deny configuration — enforces LIC-01 (licence policy), RustSec
+# advisories, banned patterns and allowed sources. `cargo deny check` must pass
+# before merge (TST-07).
+
+[graph]
+# Check every optional feature (passkey, redis, sms) and dev-dependencies.
+all-features = true
+no-default-features = false
+
+[output]
+feature-depth = 1
+
+# ---------------------------------------------------------------------------
+# Security advisories (RustSec)
+# ---------------------------------------------------------------------------
+[advisories]
+db-path = "~/.cargo/advisory-db"
+db-urls = ["https://github.com/rustsec/advisory-db"]
+yanked = "deny"
+# Unmaintained crates are reported for direct workspace dependencies only;
+# transitive ones are tracked by `cargo audit` in CI.
+unmaintained = "workspace"
+ignore = [
+    # RUSTSEC-2023-0071 (rsa 0.9, "Marvin attack"): a timing side channel in
+    # RSA *private-key* operations (decryption / signing). This workspace only
+    # ever performs RSA *public-key signature verification* (provider ID tokens
+    # via jsonwebtoken / openidconnect); no RSA private key is ever loaded.
+    # No fixed stable release exists. Revisit when rsa 0.10 is stable.
+    { id = "RUSTSEC-2023-0071", reason = "RSA used only for public-key signature verification; no private-key operations" },
+    # RUSTSEC-2026-0387 (crypto-bigint 0.5, non-constant-time arithmetic): only
+    # reachable through p256/p384 0.13 inside `openidconnect`, which uses them
+    # exclusively to verify provider ID-token signatures (public inputs only).
+    # Every secret-key EC operation in this workspace (e.g. the Apple ES256
+    # client secret, SOC-07) must use p256 0.14 whose crypto-bigint 0.7 line is
+    # patched. Revisit when openidconnect moves to elliptic-curve 0.14.
+    { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5 only used by openidconnect for public-key ID token verification" },
+]
+
+# ---------------------------------------------------------------------------
+# Licences (LIC-01): only licences that do not restrict commercial use.
+# ---------------------------------------------------------------------------
+[licenses]
+confidence-threshold = 0.93
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "0BSD",
+]
+# MPL-2.0 is NOT globally allowed. It is accepted only for the webauthn-rs
+# family (passkeys, PKY-*) and the MPL crates that family requires. Adding a
+# crate here requires an architecture review (docs/architecture/contracts.md).
+exceptions = [
+    { crate = "webauthn-rs", allow = ["MPL-2.0"] },
+    { crate = "webauthn-rs-core", allow = ["MPL-2.0"] },
+    { crate = "webauthn-rs-proto", allow = ["MPL-2.0"] },
+    { crate = "webauthn-attestation-ca", allow = ["MPL-2.0"] },
+    { crate = "webauthn-authenticator-rs", allow = ["MPL-2.0"] },
+    { crate = "base64urlsafedata", allow = ["MPL-2.0"] },
+    { crate = "crypto-glue", allow = ["MPL-2.0"] },
+    { crate = "compact_jwt", allow = ["MPL-2.0"] },
+]
+
+[licenses.private]
+# Workspace crates are `publish = false` and are not licence-checked.
+ignore = true
+
+# ---------------------------------------------------------------------------
+# Bans
+# ---------------------------------------------------------------------------
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Workspace-internal path dependencies carry no version; allow them.
+allow-wildcard-paths = true
+highlight = "all"
+deny = [
+    # Native TLS / OpenSSL stacks are not used: rustls + ring only.
+    { crate = "openssl", reason = "rustls + ring is the only TLS/crypto provider" },
+    { crate = "openssl-sys", reason = "rustls + ring is the only TLS/crypto provider" },
+    { crate = "native-tls", reason = "rustls + ring is the only TLS/crypto provider" },
+    { crate = "aws-lc-sys", reason = "ring is the selected rustls provider (avoids the OpenSSL licence surface)" },
+]
+
+# ---------------------------------------------------------------------------
+# Sources: crates.io only.
+# ---------------------------------------------------------------------------
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

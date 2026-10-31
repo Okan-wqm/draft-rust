@@ -1,0 +1,225 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/authn-core",
+    "crates/authn-crypto",
+    "crates/authn-store",
+    "crates/authn-testkit",
+    "crates/authn-password",
+    "crates/authn-account",
+    "crates/authn-mfa",
+    "crates/authn-webauthn",
+    "crates/authn-org",
+    "crates/authn-protect",
+    "crates/authn-audit",
+    "crates/authn-notify",
+    "crates/authn-session",
+    "crates/authn-oidc-client",
+    "crates/authn-admin",
+    "crates/authn-server",
+]
+# The fuzz package is a separate cargo-fuzz workspace (nightly only).
+exclude = ["fuzz"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+authors = ["rust-authentication contributors"]
+
+# Every external dependency of the workspace is pinned here. Member crates only
+# reference these entries (`foo.workspace = true`) and may add features locally.
+# Licenses are enforced by `deny.toml` (LIC-01).
+[workspace.dependencies]
+# --- internal crates -------------------------------------------------------
+authn-core = { path = "crates/authn-core" }
+authn-crypto = { path = "crates/authn-crypto" }
+authn-store = { path = "crates/authn-store" }
+authn-testkit = { path = "crates/authn-testkit" }
+authn-password = { path = "crates/authn-password" }
+authn-account = { path = "crates/authn-account" }
+authn-mfa = { path = "crates/authn-mfa", default-features = false }
+authn-webauthn = { path = "crates/authn-webauthn", default-features = false }
+authn-org = { path = "crates/authn-org" }
+authn-protect = { path = "crates/authn-protect", default-features = false }
+authn-audit = { path = "crates/authn-audit" }
+authn-notify = { path = "crates/authn-notify", default-features = false }
+authn-session = { path = "crates/authn-session", default-features = false }
+authn-oidc-client = { path = "crates/authn-oidc-client" }
+authn-admin = { path = "crates/authn-admin" }
+
+# --- runtime, HTTP ---------------------------------------------------------
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "signal", "time", "sync", "net"] }
+tokio-util = { version = "0.7.20", features = ["rt"] }
+axum = { version = "0.8.9", default-features = false, features = ["http1", "http2", "json", "query", "form", "matched-path", "original-uri", "tokio", "tower-log", "tracing", "macros"] }
+axum-extra = { version = "0.12.6", default-features = false, features = ["tracing", "cookie", "typed-header"] }
+tower = { version = "0.5.3", features = ["util", "limit", "timeout", "load-shed"] }
+tower-http = { version = "0.7.1", features = ["trace", "timeout", "limit", "cors", "set-header", "sensitive-headers", "catch-panic", "request-id", "util"] }
+http = "1.5.0"
+http-body-util = "0.1.5"
+hyper = { version = "1.12.0", features = ["http1", "http2"] }
+bytes = "1.12.1"
+futures = { version = "0.3.34", default-features = false, features = ["std", "async-await"] }
+async-trait = "0.1.92"
+url = { version = "2.5.8", features = ["serde"] }
+mime = "0.3.17"
+cookie = { version = "0.18.2", features = ["percent-encode"] }
+
+# --- database / cache ------------------------------------------------------
+sqlx = { version = "0.9.0", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "uuid", "time", "json", "ipnet", "migrate", "macros", "derive"] }
+# Redis client for the optional rate-limit backend (PRT-01). `redis-rs` was rejected:
+# its async stack pulls `xxhash-rust` (BSL-1.0, not on the LIC-01 allow list).
+fred = { version = "10.1.0", default-features = false, features = ["i-keys", "i-scripts", "enable-rustls-ring"] }
+# TLS provider shared by sqlx/reqwest/lettre: ring only (no aws-lc / OpenSSL licence surface).
+rustls = { version = "0.23.46", default-features = false, features = ["std", "ring", "logging", "tls12"] }
+
+# --- serialization, errors, ids, time --------------------------------------
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+serde_urlencoded = "0.7.1"
+thiserror = "2.0.21"
+anyhow = "1.0.104"
+uuid = { version = "1.29.0", features = ["v7", "serde"] }
+time = { version = "0.3.55", features = ["serde", "serde-well-known", "formatting", "parsing", "macros"] }
+
+# --- observability ---------------------------------------------------------
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json", "fmt", "registry", "ansi", "std"] }
+metrics = "0.24.6"
+metrics-exporter-prometheus = { version = "0.18.3", default-features = false, features = ["http-listener"] }
+
+# --- API docs, config, CLI -------------------------------------------------
+utoipa = { version = "6.0.0", features = ["macros", "uuid", "time", "url"] }
+utoipa-axum = "0.3.0"
+figment = { version = "0.10.19", features = ["toml", "env"] }
+toml = "1.1.8"
+clap = { version = "4.6.7", features = ["derive", "env"] }
+
+# --- secrets & crypto (RustCrypto + dalek) ---------------------------------
+secrecy = { version = "0.10.3", features = ["serde"] }
+zeroize = { version = "1.9.1", features = ["derive", "std"] }
+subtle = "2.6.1"
+rand = "0.10.3"
+rand_core = "0.10.1"
+getrandom = { version = "0.4.3", features = ["std"] }
+argon2 = { version = "0.6.0", features = ["zeroize"] }
+password-hash = { version = "0.6.1", features = ["alloc", "getrandom", "phc"] }
+bcrypt = "0.19.3"
+pbkdf2 = { version = "0.13.0", features = ["sha2", "phc"] }
+hmac = { version = "0.13.0", features = ["zeroize"] }
+sha1 = "0.11.0"
+sha2 = { version = "0.11.1", features = ["zeroize"] }
+md-5 = "0.11.0"
+hkdf = "0.13.0"
+chacha20poly1305 = { version = "0.11.0", features = ["zeroize"] }
+ed25519-dalek = { version = "3.0.0", features = ["rand_core", "zeroize", "pkcs8", "pem"] }
+p256 = { version = "0.14.0", features = ["ecdsa", "pem", "pkcs8"] }
+base64 = "0.23.1"
+data-encoding = "2.11.1"
+crc32fast = "1.5.3"
+
+# --- passkeys (MPL-2.0: the single approved licence exception, see deny.toml) -
+webauthn-rs = { version = "0.6.2", features = ["conditional-ui", "danger-allow-state-serialisation", "danger-credential-internals", "resident-key-support"] }
+webauthn-rs-proto = "0.6.2"
+webauthn-authenticator-rs = { version = "0.6.2", default-features = false, features = ["softpasskey"] }
+
+# --- outbound integrations -------------------------------------------------
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider", "http2", "json", "form", "query", "charset"] }
+openidconnect = { version = "4.0.1", default-features = false, features = ["timing-resistant-secret-traits"] }
+oauth2 = { version = "5.0.0", default-features = false, features = ["timing-resistant-secret-traits"] }
+lettre = { version = "0.11.23", default-features = false, features = ["builder", "smtp-transport", "pool", "hostname", "tokio1", "tokio1-rustls", "ring", "rustls-platform-verifier"] }
+minijinja = { version = "3.0.5", features = ["serde", "json"] }
+hickory-resolver = { version = "0.26.3", default-features = false, features = ["system-config", "tokio"] }
+
+# --- text, identity, misc --------------------------------------------------
+zxcvbn = "3.1.1"
+unicode-normalization = "0.1.26"
+unicode-security = "0.1.2"
+idna = "1.1.0"
+qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
+governor = "0.10.4"
+ipnet = { version = "2.12.2", features = ["serde"] }
+woothee = "0.13.0"
+
+# --- testing ---------------------------------------------------------------
+proptest = "1.12.0"
+wiremock = "0.6.5"
+tokio-test = "0.4.6"
+tempfile = "3.27.0"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+unused_must_use = "deny"
+rust_2018_idioms = { level = "warn", priority = -1 }
+unreachable_pub = "allow"
+
+[workspace.lints.clippy]
+# Hard bans (production code); clippy.toml relaxes them inside tests.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+exit = "deny"
+mem_forget = "deny"
+# Security-relevant restriction lints.
+string_slice = "warn"
+print_stdout = "warn"
+print_stderr = "warn"
+# Pragmatic pedantic subset.
+cast_possible_truncation = "warn"
+cast_possible_wrap = "warn"
+cast_sign_loss = "warn"
+cast_lossless = "warn"
+checked_conversions = "warn"
+implicit_clone = "warn"
+inefficient_to_string = "warn"
+manual_let_else = "warn"
+redundant_closure_for_method_calls = "warn"
+semicolon_if_nothing_returned = "warn"
+uninlined_format_args = "warn"
+unnested_or_patterns = "warn"
+wildcard_imports = "warn"
+explicit_iter_loop = "warn"
+map_unwrap_or = "warn"
+needless_continue = "warn"
+match_wildcard_for_single_variants = "warn"
+trivially_copy_pass_by_ref = "warn"
+large_types_passed_by_value = "warn"
+ref_option = "warn"
+from_iter_instead_of_collect = "warn"
+
+[profile.dev]
+debug = "line-tables-only"
+
+# Password hashing and signature primitives are painfully slow without
+# optimisation; tests hash real passwords with production parameters.
+[profile.dev.package.argon2]
+opt-level = 3
+[profile.dev.package.blake2]
+opt-level = 3
+[profile.dev.package.bcrypt]
+opt-level = 3
+[profile.dev.package.blowfish]
+opt-level = 3
+[profile.dev.package.pbkdf2]
+opt-level = 3
+[profile.dev.package.sha1]
+opt-level = 3
+[profile.dev.package.sha2]
+opt-level = 3
+[profile.dev.package.curve25519-dalek]
+opt-level = 3
+[profile.dev.package.chacha20]
+opt-level = 3
+[profile.dev.package.p256]
+opt-level = 3
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "unwind"
+strip = "debuginfo"
