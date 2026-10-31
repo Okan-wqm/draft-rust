@@ -1,0 +1,58 @@
+[package]
+name = "authn-session"
+description = "Login pipeline, web sessions, CSRF, native tokens with refresh rotation, JWKS, introspection, step-up and passwordless login."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+authors.workspace = true
+readme = "README.md"
+
+[lints]
+workspace = true
+
+[features]
+default = ["passkey"]
+passkey = ["authn-webauthn/passkey"]
+
+[dependencies]
+authn-core.workspace = true
+authn-crypto.workspace = true
+authn-store.workspace = true
+authn-password.workspace = true
+authn-account.workspace = true
+authn-mfa.workspace = true
+authn-webauthn.workspace = true
+authn-org.workspace = true
+authn-protect.workspace = true
+authn-audit.workspace = true
+authn-notify.workspace = true
+async-trait.workspace = true
+axum.workspace = true
+axum-extra.workspace = true
+cookie.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+time.workspace = true
+uuid.workspace = true
+sqlx.workspace = true
+tokio.workspace = true
+secrecy.workspace = true
+zeroize.workspace = true
+subtle.workspace = true
+ipnet.workspace = true
+url.workspace = true
+woothee.workspace = true
+utoipa.workspace = true
+metrics.workspace = true
+
+[dev-dependencies]
+authn-testkit.workspace = true
+tokio.workspace = true
+tower.workspace = true
+http.workspace = true
+http-body-util.workspace = true
+serde_json.workspace = true
+proptest.workspace = true

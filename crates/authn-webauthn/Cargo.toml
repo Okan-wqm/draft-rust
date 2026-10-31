@@ -1,0 +1,48 @@
+[package]
+name = "authn-webauthn"
+description = "Passkey / WebAuthn registration and authentication ceremonies and credential management."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+authors.workspace = true
+readme = "README.md"
+
+[lints]
+workspace = true
+
+[features]
+default = ["passkey"]
+# Passkey support through webauthn-rs (MPL-2.0, the approved licence exception).
+passkey = ["dep:webauthn-rs", "dep:webauthn-rs-proto"]
+
+[dependencies]
+authn-core.workspace = true
+authn-crypto.workspace = true
+authn-store.workspace = true
+async-trait.workspace = true
+axum.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+time.workspace = true
+uuid.workspace = true
+sqlx.workspace = true
+tokio.workspace = true
+base64.workspace = true
+url.workspace = true
+utoipa.workspace = true
+metrics.workspace = true
+webauthn-rs = { workspace = true, optional = true }
+webauthn-rs-proto = { workspace = true, optional = true }
+
+[dev-dependencies]
+authn-testkit.workspace = true
+tokio.workspace = true
+tower.workspace = true
+http.workspace = true
+http-body-util.workspace = true
+serde_json.workspace = true
+proptest.workspace = true
+webauthn-authenticator-rs.workspace = true

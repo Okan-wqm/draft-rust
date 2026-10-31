@@ -1,0 +1,44 @@
+[package]
+name = "authn-org"
+description = "Organizations, memberships, RBAC, invitations, domain verification, policies, API keys and service accounts."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+authors.workspace = true
+readme = "README.md"
+
+[lints]
+workspace = true
+
+[dependencies]
+authn-core.workspace = true
+authn-crypto.workspace = true
+authn-store.workspace = true
+async-trait.workspace = true
+axum.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+time.workspace = true
+uuid.workspace = true
+sqlx.workspace = true
+tokio.workspace = true
+secrecy.workspace = true
+subtle.workspace = true
+crc32fast.workspace = true
+ipnet.workspace = true
+hickory-resolver.workspace = true
+utoipa.workspace = true
+metrics.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+authn-testkit.workspace = true
+tokio.workspace = true
+tower.workspace = true
+http.workspace = true
+http-body-util.workspace = true
+serde_json.workspace = true
+proptest.workspace = true
