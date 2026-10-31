@@ -1,0 +1,29 @@
+[package]
+name = "authn-store"
+description = "PostgreSQL pool, embedded migrations, transaction helpers and the shared user repository."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+authors.workspace = true
+readme = "README.md"
+
+[lints]
+workspace = true
+
+[dependencies]
+authn-core.workspace = true
+# One-time-token hashing and the signing-key lifecycle (CRY-06/07/10).
+authn-crypto.workspace = true
+sqlx.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+time.workspace = true
+uuid.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+futures.workspace = true
+
+[dev-dependencies]
+authn-testkit.workspace = true
+tokio.workspace = true
