@@ -176,6 +176,15 @@ Kayıt şablonu:
 - **Geriye uyumluluk:** Ekleme.
 - **Durum:** Açık (sahiplerin uygulaması bekleniyor)
 
+### 2026-11-01 — Güvenlik incelemesi: `email_change_revert` satırlarında hedefli iptal ve okuma
+- **Talep eden:** authn-account
+- **Etkilenen dosya / sahip:** `one_time_tokens` (yalnızca account'a ait `email_change_revert` purpose'u) / paylaşımlı tablo, authn-store repository'si
+- **Gereksinim:** ACC-07
+- **Gerekçe:** Geri alma, kendisinden **sonra** verilmiş geri alma linklerini iptal etmeli, öncekileri korumalı (aksi hâlde ara adresi kontrol eden saldırgan, sahibin geri alma linkini iptal edebiliyordu). `OneTimeTokenRepository::revoke_for_user` purpose'un tüm satırlarını iptal eder; zamana göre süzme yok.
+- **Önerilen değişiklik:** (uygulandı, `crates/authn-account/src/repo.rs` `RevertLinkRepository`) `UPDATE one_time_tokens SET revoked_at = $5 WHERE user_id = $1 AND purpose = 'email_change_revert' AND consumed_at IS NULL AND revoked_at IS NULL AND (created_at, id) >= ($3, $4)` ve aynı purpose'un aktif satırlarının `target`/`expires_at` okuması. authn-store'a `revoke_for_user_since(conn, user, purposes, since: (OffsetDateTime, OneTimeTokenId), now)` eklenirse account ona geçer. Ayrıca `change_status` / `change_status_in_tx` artık `pending_deletion` ve `deleted` hedeflerini reddeder (authn-admin bilgi notu: silme yalnızca silme akışıyla).
+- **Geriye uyumluluk:** Yalnızca account'un kendi purpose'u; şema değişikliği yok.
+- **Durum:** Açık (kod bu sorgularla çalışıyor)
+
 ## authn-mfa
 
 ### 2026-11-01 — Migration 1300: kullanıcı başına MFA kilidi ve indeksler

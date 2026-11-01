@@ -19,6 +19,22 @@
 //!    also rejects IPv4 literals); address literals (`[…]`) are rejected.
 //! 6. Whole address ≤ 254 bytes.
 //!
+//! Hardening owned by `authn-account` (ACC-03, homograph / spoofing
+//! defences):
+//!
+//! * **Mixed scripts:** a non-ASCII local part, and every label of an
+//!   internationalized domain (checked on its Unicode form), must satisfy
+//!   the UTS #39 *moderately restrictive* profile: one script, or Latin plus
+//!   one other recommended script that is not Cyrillic or Greek (Han +
+//!   Hiragana/Katakana, Han + Hangul are fine). `pаypal@example.com` with a
+//!   Cyrillic `а`, or `alice@exаmple.com`, are rejected.
+//! * **Combining-mark runs:** more than two consecutive combining marks
+//!   (after NFKC) are rejected ("Zalgo" text hides the base letter).
+//! * **Special-use names:** the never-deliverable RFC 6761 TLDs
+//!   `localhost` and `invalid` are rejected.
+//! * The lowercased form is NFKC-normalized again, so
+//!   [`EmailAddress::normalized`] is a fixed point of the pipeline.
+//!
 //! [`EmailAddress::as_str`] is the canonical form (`local@ascii-domain`, local
 //! case preserved); [`EmailAddress::normalized`] lowercases the local part
 //! too and is the value of the unique `users.email_normalized` column.
@@ -36,7 +52,8 @@ use std::fmt;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use unicode_normalization::UnicodeNormalization;
-use unicode_security::GeneralSecurityProfile;
+use unicode_normalization::char::is_combining_mark;
+use unicode_security::{GeneralSecurityProfile, RestrictionLevel, RestrictionLevelDetection};
 
 use crate::redact::mask_email;
 
@@ -46,6 +63,10 @@ const MAX_LOCAL_BYTES: usize = 64;
 const MAX_DOMAIN_BYTES: usize = 253;
 const MAX_LABEL_BYTES: usize = 63;
 const MAX_ADDRESS_BYTES: usize = 254;
+/// Longest accepted run of consecutive combining marks (after NFKC).
+const MAX_COMBINING_RUN: usize = 2;
+/// RFC 6761 top-level domains that can never receive mail.
+const NON_DELIVERABLE_TLDS: &[&str] = &["localhost", "invalid"];
 
 /// Why an e-mail address was rejected. Variants never echo the input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -97,7 +118,12 @@ impl EmailAddress {
         if address.len() > MAX_ADDRESS_BYTES {
             return Err(EmailError::TooLong);
         }
-        let normalized = format!("{}@{ascii_domain}", local.to_lowercase());
+        let lowered: String = local.to_lowercase().nfkc().collect();
+        // Lowercasing can lengthen the local part (`İ` → `i̇`): the
+        // uniqueness form must itself be a valid address, or it would not be
+        // a fixed point of the pipeline.
+        validate_local_part(&lowered)?;
+        let normalized = format!("{lowered}@{ascii_domain}");
         if normalized.len() > MAX_ADDRESS_BYTES {
             return Err(EmailError::TooLong);
         }
@@ -170,11 +196,39 @@ fn validate_local_part(local: &str) -> Result<(), EmailError> {
             c.identifier_allowed()
         }
     });
-    if valid {
-        Ok(())
-    } else {
-        Err(EmailError::InvalidLocalPart)
+    if !valid || has_long_combining_run(local) || !is_script_safe(local) {
+        return Err(EmailError::InvalidLocalPart);
     }
+    Ok(())
+}
+
+/// Whether more than [`MAX_COMBINING_RUN`] combining marks follow each other.
+fn has_long_combining_run(s: &str) -> bool {
+    let mut run = 0_usize;
+    for c in s.chars() {
+        if is_combining_mark(c) {
+            run += 1;
+            if run > MAX_COMBINING_RUN {
+                return true;
+            }
+        } else {
+            run = 0;
+        }
+    }
+    false
+}
+
+/// UTS #39 restriction-level check of the letters and digits of `s` (ASCII
+/// punctuation such as `.`, `+`, `-` is script-neutral and skipped). Pure
+/// ASCII is always accepted.
+fn is_script_safe(s: &str) -> bool {
+    if s.is_ascii() {
+        return true;
+    }
+    let letters: String = s.chars().filter(|c| !c.is_ascii_punctuation()).collect();
+    letters
+        .as_str()
+        .check_restriction_level(RestrictionLevel::ModeratelyRestrictive)
 }
 
 fn normalize_domain(domain: &str) -> Result<String, EmailError> {
@@ -207,6 +261,23 @@ fn normalize_domain(domain: &str) -> Result<String, EmailError> {
         .is_some_and(|tld| tld.bytes().any(|b| b.is_ascii_lowercase()));
     if !tld_has_letter {
         return Err(EmailError::InvalidDomain);
+    }
+    if labels
+        .last()
+        .is_some_and(|tld| NON_DELIVERABLE_TLDS.contains(tld))
+    {
+        return Err(EmailError::InvalidDomain);
+    }
+    // Homograph defence on the Unicode form of internationalized labels.
+    if labels.iter().any(|l| l.starts_with("xn--")) {
+        let (unicode, result) = idna::domain_to_unicode(&ascii);
+        if result.is_err()
+            || unicode
+                .split('.')
+                .any(|label| has_long_combining_run(label) || !is_script_safe(label))
+        {
+            return Err(EmailError::InvalidDomain);
+        }
     }
     Ok(ascii)
 }
@@ -340,6 +411,89 @@ mod tests {
                 "{input:?}"
             );
         }
+    }
+
+    #[test]
+    fn acc_03_rejects_mixed_script_local_parts() {
+        // Latin "p" + Cyrillic "а" (U+0430) + Latin "ypal".
+        assert_eq!(
+            EmailAddress::parse("p\u{0430}ypal@example.com"),
+            Err(EmailError::InvalidLocalPart)
+        );
+        // Latin + Greek omicron.
+        assert_eq!(
+            EmailAddress::parse("g\u{03BF}\u{03BF}gle@example.com"),
+            Err(EmailError::InvalidLocalPart)
+        );
+        // Single non-Latin scripts and Latin + Han/Kana mixes are fine.
+        ok("иван@example.com");
+        ok("用户@example.com");
+        ok("tanaka.たなか@example.jp");
+        ok("ali.veli+tag@example.com");
+    }
+
+    #[test]
+    fn acc_03_rejects_mixed_script_domains() {
+        // Cyrillic "а" inside a Latin label.
+        assert_eq!(
+            EmailAddress::parse("alice@ex\u{0430}mple.com"),
+            Err(EmailError::InvalidDomain)
+        );
+        // The same attack spelled in punycode.
+        let spoof = idna::domain_to_ascii_strict("ex\u{0430}mple.com").unwrap();
+        assert_eq!(
+            EmailAddress::parse(&format!("alice@{spoof}")),
+            Err(EmailError::InvalidDomain)
+        );
+        let e = ok("info@пример.рф");
+        assert!(e.domain().starts_with("xn--"));
+        ok("info@例え.jp");
+    }
+
+    #[test]
+    fn acc_03_rejects_combining_mark_runs() {
+        assert_eq!(
+            EmailAddress::parse("ab\u{0300}\u{0301}\u{0302}\u{0303}c@example.com"),
+            Err(EmailError::InvalidLocalPart)
+        );
+        // Two marks that NFKC cannot compose stay accepted.
+        ok("x\u{0302}\u{0303}y@example.com");
+        ok("nguy\u{0065}\u{0302}\u{0303}n@example.vn");
+    }
+
+    #[test]
+    fn acc_03_rejects_non_deliverable_special_use_tlds() {
+        for input in ["a@host.localhost", "a@example.invalid", "a@x.INVALID"] {
+            assert_eq!(
+                EmailAddress::parse(input),
+                Err(EmailError::InvalidDomain),
+                "{input}"
+            );
+        }
+    }
+
+    #[test]
+    fn acc_03_normalized_form_is_a_fixed_point() {
+        for input in ["İLKAY@example.com", "Straße@example.de", "ΣΟΦΙΑ@example.gr"] {
+            let first = ok(input);
+            let again = ok(first.normalized());
+            assert_eq!(again.normalized(), first.normalized(), "{input}");
+            assert_eq!(again.as_str(), first.normalized(), "{input}");
+        }
+    }
+
+    #[test]
+    fn acc_03_local_part_that_grows_when_lowercased_is_rejected() {
+        // 32 × `İ` = 64 bytes; lowercased (`i` + U+0307) = 96 bytes, which
+        // is not a valid local part: the normalized form would not re-parse.
+        let input = format!("{}@example.com", "\u{130}".repeat(32));
+        assert_eq!(
+            EmailAddress::parse(&input),
+            Err(EmailError::InvalidLocalPart)
+        );
+        // Short enough after lowercasing: accepted and a fixed point.
+        let e = ok(&format!("{}@example.com", "\u{130}".repeat(21)));
+        assert_eq!(ok(e.normalized()).normalized(), e.normalized());
     }
 
     #[test]
