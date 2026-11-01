@@ -1,0 +1,10 @@
+{% extends "tr/email/layout.html" %}
+{% block content %}
+<p style="margin:0 0 16px;">Bu e-posta adresini {{ app_name }} hesabınız için kullanmak istediniz. Lütfen değişikliği onaylayın.</p>
+{% endblock %}
+{% block action_label %}Yeni e-posta adresimi onayla{% endblock %}
+{% block code_label %}Ya da bu kodu girin{% endblock %}
+{% block closing %}
+<p style="margin:0 0 16px;">Bağlantı ve kod {{ expires_in }} boyunca geçerlidir.</p>
+<p style="margin:0 0 16px;">Bu değişikliği siz istemediyseniz bu e-postayı yok sayın; hiçbir şey değişmeyecektir.</p>
+{% endblock %}

@@ -1,0 +1,3 @@
+{{ code }} is your {{ app_name }} sign-in code. It expires in {{ expires_in }}. Never share it with anyone.
+
+@{{ domain }} #{{ code }}

@@ -1,0 +1,10 @@
+{% extends "tr/email/layout.txt" %}
+{% block content %}
+{{ app_name }} hesabınızın silinmesi iptal edildi. Hesabınız etkin kalmaya devam ediyor.
+{% endblock %}
+{% block details %}
+Zaman: {{ at }}
+{% endblock %}
+{% block closing %}
+İptal işlemini siz yapmadıysanız destek ekibiyle iletişime geçin.
+{% endblock %}

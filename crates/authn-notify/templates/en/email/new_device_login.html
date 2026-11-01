@@ -1,0 +1,18 @@
+{% extends "en/email/layout.html" %}
+{% block content %}
+<p style="margin:0 0 16px;">Your {{ app_name }} account was just signed in to from a device we have not seen before.</p>
+{% endblock %}
+{% block action_label %}It was not me, secure my account{% endblock %}
+{% block details %}
+<table role="presentation" cellspacing="0" cellpadding="0" style="margin:0 0 16px;font-size:14px;">
+<tr><td style="padding:2px 12px 2px 0;color:#52606d;vertical-align:top;">Device</td><td style="padding:2px 0;">{{ device }}</td></tr>
+{% if approximate_location %}
+<tr><td style="padding:2px 12px 2px 0;color:#52606d;vertical-align:top;">Location</td><td style="padding:2px 0;">{{ approximate_location }}</td></tr>
+{% endif %}
+<tr><td style="padding:2px 12px 2px 0;color:#52606d;vertical-align:top;">IP address</td><td style="padding:2px 0;">{{ ip_masked }}</td></tr>
+<tr><td style="padding:2px 12px 2px 0;color:#52606d;vertical-align:top;">Time</td><td style="padding:2px 0;">{{ at }}</td></tr>
+</table>
+{% endblock %}
+{% block closing %}
+<p style="margin:0 0 16px;">If this was you, you can ignore this e-mail. If it was not, use the link above: it signs out every session and asks you to choose a new password.</p>
+{% endblock %}

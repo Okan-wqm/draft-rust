@@ -1,0 +1,9 @@
+{% extends "en/email/layout.html" %}
+{% block content %}
+<p style="margin:0 0 16px;">Use the link below to sign in to {{ app_name }}.</p>
+{% endblock %}
+{% block action_label %}Sign in{% endblock %}
+{% block closing %}
+<p style="margin:0 0 16px;">The link expires in {{ expires_in }} and works only once. Do not forward this e-mail: anyone with the link can sign in as you.</p>
+<p style="margin:0 0 16px;">If you did not try to sign in, you can ignore this e-mail.</p>
+{% endblock %}

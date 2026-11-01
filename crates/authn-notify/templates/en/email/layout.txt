@@ -1,0 +1,33 @@
+{# Plain-text layout. Kind templates fill the blocks; values are NOT escaped
+   here (plain text), they are sanitized before rendering instead. Runs of
+   blank lines are collapsed after rendering. #}
+{% if recipient_name %}
+Hello {{ recipient_name }},
+{% else %}
+Hello,
+{% endif %}
+
+{% block content %}{% endblock %}
+
+
+{% if link %}
+{% block action_label %}Open this link{% endblock %}:
+{{ link }}
+{% endif %}
+
+
+{% if code %}
+{% block code_label %}Your code{% endblock %}: {{ code }}
+{% endif %}
+
+
+{% block details %}{% endblock %}
+
+
+{% block closing %}{% endblock %}
+
+
+This is an automated message from {{ app_name }}; please do not reply.
+{% if link or code %}
+We will never ask you for your password or for this {% if code %}code{% else %}link{% endif %}.
+{% endif %}

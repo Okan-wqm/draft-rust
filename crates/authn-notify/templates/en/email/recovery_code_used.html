@@ -1,0 +1,12 @@
+{% extends "en/email/layout.html" %}
+{% block content %}
+<p style="margin:0 0 16px;">A recovery code was used to sign in to your {{ app_name }} account. You have {{ remaining }} unused recovery code{% if remaining != 1 %}s{% endif %} left.</p>
+{% endblock %}
+{% block details %}
+<table role="presentation" cellspacing="0" cellpadding="0" style="margin:0 0 16px;font-size:14px;">
+<tr><td style="padding:2px 12px 2px 0;color:#52606d;vertical-align:top;">Time</td><td style="padding:2px 0;">{{ at }}</td></tr>
+</table>
+{% endblock %}
+{% block closing %}
+<p style="margin:0 0 16px;">{% if low_on_codes %}You are running out of recovery codes; generate a new set in your security settings. {% endif %}If this was not you, <a href="{{ reset_request_link }}">reset your password</a> immediately.</p>
+{% endblock %}

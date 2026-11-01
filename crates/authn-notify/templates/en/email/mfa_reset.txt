@@ -1,0 +1,10 @@
+{% extends "en/email/layout.txt" %}
+{% block content %}
+An administrator reset two-step verification for your {{ app_name }} account. You will be asked to set it up again the next time you sign in.
+{% endblock %}
+{% block details %}
+Time: {{ at }}
+{% endblock %}
+{% block closing %}
+If you did not ask for this, contact support immediately.
+{% endblock %}

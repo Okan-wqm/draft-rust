@@ -1,0 +1,3 @@
+{{ app_name }} giriş kodunuz: {{ code }}. Kod {{ expires_in }} boyunca geçerlidir. Bu kodu kimseyle paylaşmayın.
+
+@{{ domain }} #{{ code }}

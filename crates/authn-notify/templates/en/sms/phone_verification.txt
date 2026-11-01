@@ -1,0 +1,3 @@
+{{ code }} is your code to verify this phone number for {{ app_name }}. It expires in {{ expires_in }}. Never share it with anyone.
+
+@{{ domain }} #{{ code }}

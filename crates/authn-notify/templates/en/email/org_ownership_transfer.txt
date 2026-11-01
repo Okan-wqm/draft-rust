@@ -1,0 +1,8 @@
+{% extends "en/email/layout.txt" %}
+{% block content %}
+You have been asked to become the owner of the organization “{{ org_name }}” on {{ app_name }}.
+{% endblock %}
+{% block action_label %}Review the transfer{% endblock %}
+{% block closing %}
+The request expires in {{ expires_in }}. If you do not want to become the owner, ignore this e-mail.
+{% endblock %}

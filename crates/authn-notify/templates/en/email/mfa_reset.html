@@ -1,0 +1,12 @@
+{% extends "en/email/layout.html" %}
+{% block content %}
+<p style="margin:0 0 16px;">An administrator reset two-step verification for your {{ app_name }} account. You will be asked to set it up again the next time you sign in.</p>
+{% endblock %}
+{% block details %}
+<table role="presentation" cellspacing="0" cellpadding="0" style="margin:0 0 16px;font-size:14px;">
+<tr><td style="padding:2px 12px 2px 0;color:#52606d;vertical-align:top;">Time</td><td style="padding:2px 0;">{{ at }}</td></tr>
+</table>
+{% endblock %}
+{% block closing %}
+<p style="margin:0 0 16px;">If you did not ask for this, contact support immediately.</p>
+{% endblock %}

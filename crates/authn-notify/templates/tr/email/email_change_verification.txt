@@ -1,0 +1,11 @@
+{% extends "tr/email/layout.txt" %}
+{% block content %}
+Bu e-posta adresini {{ app_name }} hesabınız için kullanmak istediniz. Lütfen değişikliği onaylayın.
+{% endblock %}
+{% block action_label %}Yeni e-posta adresimi onayla{% endblock %}
+{% block code_label %}Ya da bu kodu girin{% endblock %}
+{% block closing %}
+Bağlantı ve kod {{ expires_in }} boyunca geçerlidir.
+
+Bu değişikliği siz istemediyseniz bu e-postayı yok sayın; hiçbir şey değişmeyecektir.
+{% endblock %}

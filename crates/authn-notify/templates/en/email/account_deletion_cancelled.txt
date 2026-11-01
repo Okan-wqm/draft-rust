@@ -1,0 +1,10 @@
+{% extends "en/email/layout.txt" %}
+{% block content %}
+The deletion of your {{ app_name }} account was cancelled. Your account stays active.
+{% endblock %}
+{% block details %}
+Time: {{ at }}
+{% endblock %}
+{% block closing %}
+If you did not cancel it yourself, contact support.
+{% endblock %}

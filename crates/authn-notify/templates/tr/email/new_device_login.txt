@@ -1,0 +1,16 @@
+{% extends "tr/email/layout.txt" %}
+{% block content %}
+{{ app_name }} hesabınıza daha önce görmediğimiz bir cihazdan giriş yapıldı.
+{% endblock %}
+{% block action_label %}Bu ben değilim, hesabımı koru{% endblock %}
+{% block details %}
+Cihaz: {{ device }}
+{% if approximate_location %}
+Konum: {{ approximate_location }}
+{% endif %}
+IP adresi: {{ ip_masked }}
+Zaman: {{ at }}
+{% endblock %}
+{% block closing %}
+Bu sizseniz bu e-postayı yok sayabilirsiniz. Siz değilseniz yukarıdaki bağlantıyı kullanın: tüm oturumları kapatır ve yeni bir şifre belirlemenizi ister.
+{% endblock %}

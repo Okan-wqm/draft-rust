@@ -1,0 +1,8 @@
+{% extends "tr/email/layout.html" %}
+{% block content %}
+<p style="margin:0 0 16px;">{{ app_name }} girişinizi tamamlamak için bu kodu kullanın.</p>
+{% endblock %}
+{% block code_label %}Doğrulama kodu{% endblock %}
+{% block closing %}
+<p style="margin:0 0 16px;">Kod {{ expires_in }} boyunca geçerlidir. Giriş yapmaya çalışmıyorsanız şifreniz başkası tarafından biliniyor olabilir: en kısa sürede değiştirin.</p>
+{% endblock %}

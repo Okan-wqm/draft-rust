@@ -1,0 +1,11 @@
+{% extends "en/email/layout.txt" %}
+{% block content %}
+You asked to use this e-mail address for your {{ app_name }} account. Please confirm the change.
+{% endblock %}
+{% block action_label %}Confirm new e-mail address{% endblock %}
+{% block code_label %}Or enter this code{% endblock %}
+{% block closing %}
+The link and the code expire in {{ expires_in }}.
+
+If you did not request this change, ignore this e-mail; nothing will change.
+{% endblock %}

@@ -1,0 +1,8 @@
+{% extends "tr/email/layout.html" %}
+{% block content %}
+<p style="margin:0 0 16px;">{{ app_name }} hesabınızın e-posta adresi {{ new_email_masked }} olarak değiştirildi. Bundan sonra iletileri yeni adrese göndereceğiz.</p>
+{% endblock %}
+{% block action_label %}Bu değişikliği geri al{% endblock %}
+{% block closing %}
+<p style="margin:0 0 16px;">Bu değişikliği siz yapmadıysanız yukarıdaki bağlantıyla geri alın. Bu işlem önceki adresinizi geri yükler, tüm oturumları kapatır ve yeni bir şifre belirlemenizi ister. Bağlantı {{ revert_expires_at }} tarihine kadar geçerlidir.</p>
+{% endblock %}

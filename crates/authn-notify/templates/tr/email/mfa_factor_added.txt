@@ -1,0 +1,10 @@
+{% extends "tr/email/layout.txt" %}
+{% block content %}
+{{ app_name }} hesabınıza iki adımlı doğrulama yöntemi olarak {{ factor }} eklendi.
+{% endblock %}
+{% block details %}
+Zaman: {{ at }}
+{% endblock %}
+{% block closing %}
+Bunu siz yapmadıysanız hesabınıza başka biri erişiyor olabilir: şifrenizi hemen sıfırlayın ve güvenlik ayarlarınızı gözden geçirin: {{ reset_request_link }}
+{% endblock %}

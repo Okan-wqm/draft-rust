@@ -1,0 +1,11 @@
+{% extends "tr/email/layout.txt" %}
+{% block content %}
+{{ app_name }} hesabınızın kurulumunu tamamlamak için bu e-posta adresinin size ait olduğunu doğrulayın.
+{% endblock %}
+{% block action_label %}E-posta adresimi doğrula{% endblock %}
+{% block code_label %}Ya da bu doğrulama kodunu girin{% endblock %}
+{% block closing %}
+Bağlantı ve kod {{ expires_in }} boyunca geçerlidir ve yalnızca bir kez kullanılabilir.
+
+Hesap oluşturmadıysanız bu e-postayı güvenle yok sayabilirsiniz.
+{% endblock %}

@@ -1,0 +1,8 @@
+{% extends "tr/email/layout.txt" %}
+{% block content %}
+{{ app_name }} hesabınıza giriş yapmak için bu kodu girin.
+{% endblock %}
+{% block code_label %}Giriş kodu{% endblock %}
+{% block closing %}
+Kod {{ expires_in }} boyunca geçerlidir. Giriş yapmaya çalışmadıysanız bu e-postayı yok sayabilirsiniz.
+{% endblock %}

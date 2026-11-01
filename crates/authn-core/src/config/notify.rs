@@ -1,13 +1,19 @@
 //! `[notify]` — e-mail and SMS delivery, templates, link paths (owner:
 //! authn-notify). NTF-01 … NTF-04.
+//!
+//! Environment-dependent rules that need `server.environment` (the log
+//! transports, `disabled` e-mail transport and the extra CA certificate are
+//! development-only) are enforced fail-fast by the `authn-notify` builders
+//! at startup; see `crates/authn-notify/README.md`.
 
 use std::path::PathBuf;
 use std::time::Duration;
 
 use serde::Deserialize;
 
-use super::common::{ConfigProblems, mins, secs};
+use super::common::{ConfigProblems, days, hours, mins, secs};
 use crate::domain::EmailAddress;
+use crate::ports::RateLimitPolicy;
 use crate::secret::SecretString;
 
 text_enum! {
@@ -55,6 +61,15 @@ pub struct SmtpConfig {
     /// Connection / command timeout. Default `10s`.
     #[serde(default = "default_smtp_timeout", with = "super::duration")]
     pub timeout: Duration,
+    /// Additional trusted root certificate (PEM file), e.g. the self-signed
+    /// certificate of the docker-compose Mailpit. **Development and test
+    /// environments only**: refused at startup otherwise. Default: none
+    /// (only the platform trust store).
+    pub extra_ca_file: Option<PathBuf>,
+    /// Name sent in `EHLO`. Default: the domain of
+    /// `notify.email.from_address` (the machine host name is never sent: it
+    /// would leak into `Received:` headers).
+    pub hello_name: Option<String>,
 }
 
 const fn default_smtp_port() -> u16 {
@@ -171,6 +186,14 @@ text_enum! {
     }
 }
 
+/// Placeholder for the destination number in
+/// [`SmsConfig::http_body_template`].
+pub const SMS_PLACEHOLDER_TO: &str = "{{to}}";
+/// Placeholder for the message text in [`SmsConfig::http_body_template`].
+pub const SMS_PLACEHOLDER_TEXT: &str = "{{text}}";
+/// Placeholder for the sender id in [`SmsConfig::http_body_template`].
+pub const SMS_PLACEHOLDER_SENDER_ID: &str = "{{sender_id}}";
+
 /// SMS settings.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -181,6 +204,20 @@ pub struct SmsConfig {
     pub http_url: Option<String>,
     /// API key / bearer token (for `http`).
     pub http_api_key: Option<SecretString>,
+    /// Request header carrying the API key. Default `authorization`.
+    pub http_auth_header: String,
+    /// Scheme written before the API key in that header (`Bearer`, `Basic`,
+    /// `Token`…); empty = the raw key. Default `Bearer`.
+    pub http_auth_scheme: String,
+    /// JSON request body. String values may contain the placeholders
+    /// `{{to}}` (E.164 number), `{{text}}` (message) and `{{sender_id}}`;
+    /// they are substituted in the *parsed* JSON tree, so values are always
+    /// correctly escaped (no JSON injection). Default
+    /// `{"to":"{{to}}","text":"{{text}}","from":"{{sender_id}}"}`.
+    pub http_body_template: String,
+    /// JSON pointer (RFC 6901) of the provider message id in the response
+    /// body, e.g. `/message_id`. Default: none.
+    pub http_message_id_pointer: Option<String>,
     /// Sender id / originator.
     pub sender_id: Option<String>,
     /// Request timeout. Default `10s`.
@@ -194,6 +231,11 @@ impl Default for SmsConfig {
             provider: SmsProviderKind::None,
             http_url: None,
             http_api_key: None,
+            http_auth_header: "authorization".to_owned(),
+            http_auth_scheme: "Bearer".to_owned(),
+            http_body_template: r#"{"to":"{{to}}","text":"{{text}}","from":"{{sender_id}}"}"#
+                .to_owned(),
+            http_message_id_pointer: None,
             sender_id: None,
             timeout: secs(10),
         }
@@ -201,22 +243,127 @@ impl Default for SmsConfig {
 }
 
 /// `[notify]` section.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct NotifyConfig {
+    /// Product name shown in messages. Default `rust-authentication`.
+    pub app_name: String,
     /// E-mail.
     pub email: EmailConfig,
     /// Template override directory (NTF-02). Default: built-in templates.
+    /// Layout: `<dir>/<locale>/email/<name>.{subject.txt,txt,html}` and
+    /// `<dir>/<locale>/sms/<name>.txt`; every file is validated at startup.
     pub template_dir: Option<PathBuf>,
     /// Link paths.
     pub links: LinkPaths,
     /// SMS.
     pub sms: SmsConfig,
+    /// Delivery attempts per message before the dead-letter state (outbox).
+    /// Default 10.
+    pub max_attempts: u32,
+    /// Defence in depth against mail/SMS bombing: at most this many
+    /// *user-triggerable* messages (codes, links, invitations, registration
+    /// notices) per recipient mailbox (sub-address `+tag` folded) or number
+    /// and per budget: password reset, magic link, login code and the MFA
+    /// codes each have their own budget, the other kinds share one (so
+    /// cheap kinds cannot starve sign-in codes). Excess messages are
+    /// dropped silently (never an error: that would reveal account
+    /// existence). Security alerts are never throttled. Default 30 per `1h`.
+    pub recipient_limit: RateLimitPolicy,
+}
+
+impl Default for NotifyConfig {
+    fn default() -> Self {
+        Self {
+            app_name: "rust-authentication".to_owned(),
+            email: EmailConfig::default(),
+            template_dir: None,
+            links: LinkPaths::default(),
+            sms: SmsConfig::default(),
+            max_attempts: 10,
+            recipient_limit: RateLimitPolicy::new(30, hours(1)),
+        }
+    }
+}
+
+/// Whether `value` is safe to place into a mail header / message line:
+/// no control characters (CR, LF, NUL…), no Unicode line separators and no
+/// bidirectional overrides.
+fn is_header_safe(value: &str) -> bool {
+    !value.chars().any(|c| {
+        c.is_control()
+            || matches!(
+                c,
+                '\u{2028}' | '\u{2029}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
+            )
+    })
+}
+
+/// Whether `name` is a plausible host name for `EHLO` (LDH labels).
+fn is_hostname(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 253
+        && name.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        })
+}
+
+/// Whether the SMS body template is a JSON object using `{{to}}` and
+/// `{{text}}` in string values.
+fn is_valid_sms_body_template(template: &str) -> bool {
+    fn strings(value: &serde_json::Value, out: &mut String) {
+        match value {
+            serde_json::Value::String(s) => out.push_str(s),
+            serde_json::Value::Array(items) => items.iter().for_each(|v| strings(v, out)),
+            serde_json::Value::Object(map) => map.values().for_each(|v| strings(v, out)),
+            _ => {}
+        }
+    }
+    if template.len() > 8 * 1024 {
+        return false;
+    }
+    match serde_json::from_str::<serde_json::Value>(template) {
+        Ok(value @ serde_json::Value::Object(_)) => {
+            let mut all = String::new();
+            strings(&value, &mut all);
+            all.contains(SMS_PLACEHOLDER_TO) && all.contains(SMS_PLACEHOLDER_TEXT)
+        }
+        _ => false,
+    }
 }
 
 impl NotifyConfig {
     /// Validates the section.
     pub fn validate(&self, p: &mut ConfigProblems) {
+        p.require(
+            !self.app_name.trim().is_empty()
+                && self.app_name.chars().count() <= 64
+                && is_header_safe(&self.app_name),
+            "notify.app_name",
+            "must be 1-64 characters without control characters",
+        );
+        p.require(
+            (1..=100).contains(&self.max_attempts),
+            "notify.max_attempts",
+            "must be between 1 and 100",
+        );
+        p.require(
+            (1..=1_000_000).contains(&self.recipient_limit.limit),
+            "notify.recipient_limit",
+            "limit must be between 1 and 1000000",
+        );
+        p.require_range(
+            self.recipient_limit.period,
+            secs(1),
+            days(7),
+            "notify.recipient_limit",
+        );
         let e = &self.email;
         p.require(
             EmailAddress::parse(&e.from_address).is_ok(),
@@ -224,9 +371,11 @@ impl NotifyConfig {
             "must be a valid e-mail address",
         );
         p.require(
-            !e.from_name.contains(['\r', '\n', '<', '>', '"']),
+            !e.from_name.contains(['\r', '\n', '<', '>', '"'])
+                && is_header_safe(&e.from_name)
+                && e.from_name.chars().count() <= 64,
             "notify.email.from_name",
-            "must not contain line breaks, angle brackets or quotes",
+            "must be at most 64 characters without line breaks, angle brackets or quotes",
         );
         if e.transport == EmailTransportKind::Smtp {
             match &e.smtp {
@@ -237,10 +386,21 @@ impl NotifyConfig {
                         "notify.email.smtp.host",
                         "must not be empty",
                     );
+                    p.require(smtp.port != 0, "notify.email.smtp.port", "must not be 0");
                     p.require(
                         smtp.username.is_some() == smtp.password.is_some(),
                         "notify.email.smtp",
                         "username and password must be set together",
+                    );
+                    p.require(
+                        smtp.username.as_deref().is_none_or(is_header_safe),
+                        "notify.email.smtp.username",
+                        "must not contain control characters",
+                    );
+                    p.require(
+                        smtp.hello_name.as_deref().is_none_or(is_hostname),
+                        "notify.email.smtp.hello_name",
+                        "must be a host name (letters, digits, '-' and '.')",
                     );
                     p.require_range(smtp.timeout, secs(1), mins(2), "notify.email.smtp.timeout");
                 }
@@ -250,26 +410,161 @@ impl NotifyConfig {
             p.require(
                 path.starts_with('/')
                     && !path.starts_with("//")
-                    && !path.contains(['?', '#', '\\']),
+                    && !path.contains(['?', '#', '\\'])
+                    && !path.chars().any(|c| c.is_whitespace() || c.is_control()),
                 &format!("notify.links.{name}"),
-                "must be an absolute path without query or fragment",
+                "must be an absolute path without query, fragment or whitespace",
             );
         }
-        if self.sms.provider == SmsProviderKind::Http {
+        let sms = &self.sms;
+        if sms.provider == SmsProviderKind::Http {
             p.require(
-                self.sms
-                    .http_url
+                sms.http_url
                     .as_deref()
-                    .is_some_and(|u| u.starts_with("https://")),
+                    .is_some_and(|u| u.starts_with("https://") && url::Url::parse(u).is_ok()),
                 "notify.sms.http_url",
                 "an https URL is required for the http provider",
             );
             p.require(
-                self.sms.http_api_key.is_some(),
+                sms.http_api_key.is_some(),
                 "notify.sms.http_api_key",
                 "required for the http provider",
             );
+            p.require(
+                http::HeaderName::from_bytes(sms.http_auth_header.as_bytes()).is_ok(),
+                "notify.sms.http_auth_header",
+                "must be a valid HTTP header name",
+            );
+            p.require(
+                sms.http_auth_scheme.len() <= 32
+                    && sms
+                        .http_auth_scheme
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'-'),
+                "notify.sms.http_auth_scheme",
+                "must be empty or an ASCII token of at most 32 characters",
+            );
+            p.require(
+                is_valid_sms_body_template(&sms.http_body_template),
+                "notify.sms.http_body_template",
+                "must be a JSON object (at most 8 KiB) using {{to}} and {{text}} in string values",
+            );
+            p.require(
+                sms.http_message_id_pointer
+                    .as_deref()
+                    .is_none_or(|ptr| ptr.starts_with('/') && ptr.len() <= 256),
+                "notify.sms.http_message_id_pointer",
+                "must be a JSON pointer starting with '/'",
+            );
         }
-        p.require_range(self.sms.timeout, secs(1), mins(1), "notify.sms.timeout");
+        p.require(
+            sms.sender_id
+                .as_deref()
+                .is_none_or(|s| !s.is_empty() && s.chars().count() <= 16 && is_header_safe(s)),
+            "notify.sms.sender_id",
+            "must be 1-16 characters without control characters",
+        );
+        p.require_range(sms.timeout, secs(1), mins(1), "notify.sms.timeout");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn problems(config: &NotifyConfig) -> Vec<String> {
+        let mut p = ConfigProblems::default();
+        config.validate(&mut p);
+        p.problems().to_vec()
+    }
+
+    fn smtp() -> SmtpConfig {
+        SmtpConfig {
+            host: "smtp.example.com".to_owned(),
+            port: 587,
+            tls: SmtpTls::Starttls,
+            username: None,
+            password: None,
+            timeout: secs(10),
+            extra_ca_file: None,
+            hello_name: None,
+        }
+    }
+
+    #[test]
+    fn ntf_03_defaults_require_smtp_server() {
+        let config = NotifyConfig::default();
+        assert_eq!(
+            problems(&config),
+            vec!["notify.email.smtp: required when transport = \"smtp\""]
+        );
+        let mut config = NotifyConfig::default();
+        config.email.smtp = Some(smtp());
+        assert!(problems(&config).is_empty(), "{:?}", problems(&config));
+    }
+
+    #[test]
+    fn ntf_03_header_injection_in_names_is_refused() {
+        let mut config = NotifyConfig::default();
+        config.email.smtp = Some(smtp());
+        config.email.from_name = "Evil\r\nBcc: victim@example.com".to_owned();
+        config.app_name = "App\u{202E}gnp.exe".to_owned();
+        let found = problems(&config);
+        assert!(
+            found
+                .iter()
+                .any(|p| p.starts_with("notify.email.from_name"))
+        );
+        assert!(found.iter().any(|p| p.starts_with("notify.app_name")));
+        let mut config = NotifyConfig::default();
+        config.email.smtp = Some(SmtpConfig {
+            hello_name: Some("bad host\r\n".to_owned()),
+            ..smtp()
+        });
+        assert!(
+            problems(&config)
+                .iter()
+                .any(|p| p.starts_with("notify.email.smtp.hello_name"))
+        );
+    }
+
+    #[test]
+    fn ntf_04_http_sms_provider_rules() {
+        let mut config = NotifyConfig::default();
+        config.email.smtp = Some(smtp());
+        config.sms.provider = SmsProviderKind::Http;
+        config.sms.http_url = Some("http://sms.example.com".to_owned());
+        config.sms.http_body_template = r#"{"to":"{{to}}"}"#.to_owned();
+        config.sms.http_auth_header = "bad header".to_owned();
+        let found = problems(&config);
+        for key in [
+            "notify.sms.http_url",
+            "notify.sms.http_api_key",
+            "notify.sms.http_auth_header",
+            "notify.sms.http_body_template",
+        ] {
+            assert!(found.iter().any(|p| p.starts_with(key)), "{key}: {found:?}");
+        }
+        config.sms.http_url = Some("https://sms.example.com/send".to_owned());
+        config.sms.http_api_key = Some(SecretString::from("k".to_owned()));
+        config.sms.http_auth_header = "x-api-key".to_owned();
+        config.sms.http_auth_scheme = String::new();
+        config.sms.http_body_template = SmsConfig::default().http_body_template;
+        assert!(problems(&config).is_empty(), "{:?}", problems(&config));
+    }
+
+    #[test]
+    fn ntf_02_link_paths_must_be_plain_absolute_paths() {
+        let mut config = NotifyConfig::default();
+        config.email.smtp = Some(smtp());
+        config.links.magic_link = "//evil.example/x".to_owned();
+        config.links.not_me = "/a b".to_owned();
+        let found = problems(&config);
+        assert!(
+            found
+                .iter()
+                .any(|p| p.starts_with("notify.links.magic_link"))
+        );
+        assert!(found.iter().any(|p| p.starts_with("notify.links.not_me")));
     }
 }

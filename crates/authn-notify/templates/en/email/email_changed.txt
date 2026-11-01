@@ -1,0 +1,8 @@
+{% extends "en/email/layout.txt" %}
+{% block content %}
+The e-mail address of your {{ app_name }} account was changed to {{ new_email_masked }}. From now on we will send messages to the new address.
+{% endblock %}
+{% block action_label %}Undo this change{% endblock %}
+{% block closing %}
+If you did not make this change, undo it with the link above. This restores your previous address, signs out every session and asks you to choose a new password. The link is valid until {{ revert_expires_at }}.
+{% endblock %}

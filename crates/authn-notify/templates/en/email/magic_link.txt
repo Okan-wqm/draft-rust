@@ -1,0 +1,10 @@
+{% extends "en/email/layout.txt" %}
+{% block content %}
+Use the link below to sign in to {{ app_name }}.
+{% endblock %}
+{% block action_label %}Sign in{% endblock %}
+{% block closing %}
+The link expires in {{ expires_in }} and works only once. Do not forward this e-mail: anyone with the link can sign in as you.
+
+If you did not try to sign in, you can ignore this e-mail.
+{% endblock %}

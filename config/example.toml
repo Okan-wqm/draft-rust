@@ -293,7 +293,7 @@ backend = "memory"                     # postgres (default) | redis | memory (si
 # app_name = "rust-authentication"     # product name shown in e-mails and SMS
 # template_dir = "/etc/authn/templates" # overrides <locale>/email/<kind>.{subject.txt,txt,html} and <locale>/sms/<kind>.txt; every file validated at startup
 # max_attempts = 10                    # outbox delivery attempts before the dead-letter state
-# recipient_limit = { limit = 30, period = "1h" } # user-triggerable messages per recipient (anti mail/SMS bombing); excess dropped silently, security alerts never
+# recipient_limit = { limit = 30, period = "1h" } # user-triggerable messages per recipient mailbox (+tag folded) or number and budget (sign-in/MFA codes, reset, magic link each separate); excess dropped silently, security alerts never
 
 [notify.email]
 transport = "smtp"                     # smtp | log (development/test only) | disabled (not in production)

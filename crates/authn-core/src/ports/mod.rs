@@ -61,7 +61,9 @@ pub use email_transport::{EmailMessage, EmailTransport};
 pub use event_publisher::{DomainEvent, DomainEventKind, EventPublisher};
 pub use geoip::{GeoIpLookup, GeoLocation};
 pub use http_client::{HttpClient, OutboundRequest, OutboundResponse, OutboundTarget};
-pub use notifier::{Notification, NotificationKind, Notifier, Recipient};
+pub use notifier::{
+    Notification, NotificationKind, Notifier, Recipient, SmsNotification, SmsNotificationKind,
+};
 pub use password_validator::{
     PasswordCheck, PasswordContext, PasswordValidator, PasswordViolation,
 };

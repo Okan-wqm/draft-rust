@@ -1,0 +1,8 @@
+{% extends "en/email/layout.html" %}
+{% block content %}
+<p style="margin:0 0 16px;">You have been asked to become the owner of the organization “{{ org_name }}” on {{ app_name }}.</p>
+{% endblock %}
+{% block action_label %}Review the transfer{% endblock %}
+{% block closing %}
+<p style="margin:0 0 16px;">The request expires in {{ expires_in }}. If you do not want to become the owner, ignore this e-mail.</p>
+{% endblock %}

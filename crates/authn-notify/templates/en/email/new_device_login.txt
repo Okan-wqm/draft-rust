@@ -1,0 +1,16 @@
+{% extends "en/email/layout.txt" %}
+{% block content %}
+Your {{ app_name }} account was just signed in to from a device we have not seen before.
+{% endblock %}
+{% block action_label %}It was not me, secure my account{% endblock %}
+{% block details %}
+Device: {{ device }}
+{% if approximate_location %}
+Location: {{ approximate_location }}
+{% endif %}
+IP address: {{ ip_masked }}
+Time: {{ at }}
+{% endblock %}
+{% block closing %}
+If this was you, you can ignore this e-mail. If it was not, use the link above: it signs out every session and asks you to choose a new password.
+{% endblock %}

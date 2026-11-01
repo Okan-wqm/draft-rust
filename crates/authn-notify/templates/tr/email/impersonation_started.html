@@ -1,0 +1,13 @@
+{% extends "tr/email/layout.html" %}
+{% block content %}
+<p style="margin:0 0 16px;">Bir yönetici {{ app_name }} hesabınızda bir destek oturumu başlattı. Oturum sırasında yapılan her işlem güvenlik olaylarınıza kaydedilir.</p>
+{% endblock %}
+{% block details %}
+<table role="presentation" cellspacing="0" cellpadding="0" style="margin:0 0 16px;font-size:14px;">
+<tr><td style="padding:2px 12px 2px 0;color:#52606d;vertical-align:top;">Başlangıç</td><td style="padding:2px 0;">{{ at }}</td></tr>
+<tr><td style="padding:2px 12px 2px 0;color:#52606d;vertical-align:top;">En geç bitiş</td><td style="padding:2px 0;">{{ ends_at }}</td></tr>
+</table>
+{% endblock %}
+{% block closing %}
+<p style="margin:0 0 16px;">Destek talep etmediyseniz hemen bizimle iletişime geçin.</p>
+{% endblock %}

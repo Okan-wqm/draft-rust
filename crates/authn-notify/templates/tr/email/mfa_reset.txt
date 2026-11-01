@@ -1,0 +1,10 @@
+{% extends "tr/email/layout.txt" %}
+{% block content %}
+Bir yönetici {{ app_name }} hesabınızın iki adımlı doğrulamasını sıfırladı. Bir sonraki girişinizde yeniden kurmanız istenecek.
+{% endblock %}
+{% block details %}
+Zaman: {{ at }}
+{% endblock %}
+{% block closing %}
+Bunu siz talep etmediyseniz hemen destek ekibiyle iletişime geçin.
+{% endblock %}

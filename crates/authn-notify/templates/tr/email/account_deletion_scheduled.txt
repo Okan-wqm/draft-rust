@@ -1,0 +1,8 @@
+{% extends "tr/email/layout.txt" %}
+{% block content %}
+{{ app_name }} hesabınız {{ scheduled_for }} tarihinde kalıcı olarak silinecek. O zamana kadar silme işlemini iptal edebilirsiniz.
+{% endblock %}
+{% block action_label %}Silme işlemini iptal et{% endblock %}
+{% block closing %}
+Bu talebi siz yapmadıysanız silme işlemini iptal edin ve şifrenizi değiştirin.
+{% endblock %}

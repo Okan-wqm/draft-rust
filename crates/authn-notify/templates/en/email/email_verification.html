@@ -1,0 +1,10 @@
+{% extends "en/email/layout.html" %}
+{% block content %}
+<p style="margin:0 0 16px;">Please confirm that this e-mail address belongs to you to finish setting up your {{ app_name }} account.</p>
+{% endblock %}
+{% block action_label %}Verify e-mail address{% endblock %}
+{% block code_label %}Or enter this verification code{% endblock %}
+{% block closing %}
+<p style="margin:0 0 16px;">The link and the code expire in {{ expires_in }} and can be used only once.</p>
+<p style="margin:0 0 16px;">If you did not create an account, you can safely ignore this e-mail.</p>
+{% endblock %}

@@ -1,0 +1,14 @@
+{% extends "en/email/layout.txt" %}
+{% block content %}
+We blocked a sign-in to your {{ app_name }} account because it looked suspicious. The attempt used your correct password.
+{% endblock %}
+{% block details %}
+Device: {{ device }}
+IP address: {{ ip_masked }}
+Time: {{ at }}
+{% endblock %}
+{% block closing %}
+If this was not you, change your password now: {{ reset_request_link }}
+
+If it was you, try again from a device or network you usually use.
+{% endblock %}

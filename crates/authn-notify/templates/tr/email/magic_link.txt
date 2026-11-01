@@ -1,0 +1,10 @@
+{% extends "tr/email/layout.txt" %}
+{% block content %}
+{{ app_name }} hesabınıza giriş yapmak için aşağıdaki bağlantıyı kullanın.
+{% endblock %}
+{% block action_label %}Giriş yap{% endblock %}
+{% block closing %}
+Bağlantı {{ expires_in }} boyunca geçerlidir ve yalnızca bir kez çalışır. Bu e-postayı kimseye iletmeyin: bağlantıya sahip olan herkes sizin adınıza giriş yapabilir.
+
+Giriş yapmaya çalışmadıysanız bu e-postayı yok sayabilirsiniz.
+{% endblock %}

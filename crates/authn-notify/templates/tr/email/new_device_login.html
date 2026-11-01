@@ -1,0 +1,18 @@
+{% extends "tr/email/layout.html" %}
+{% block content %}
+<p style="margin:0 0 16px;">{{ app_name }} hesabınıza daha önce görmediğimiz bir cihazdan giriş yapıldı.</p>
+{% endblock %}
+{% block action_label %}Bu ben değilim, hesabımı koru{% endblock %}
+{% block details %}
+<table role="presentation" cellspacing="0" cellpadding="0" style="margin:0 0 16px;font-size:14px;">
+<tr><td style="padding:2px 12px 2px 0;color:#52606d;vertical-align:top;">Cihaz</td><td style="padding:2px 0;">{{ device }}</td></tr>
+{% if approximate_location %}
+<tr><td style="padding:2px 12px 2px 0;color:#52606d;vertical-align:top;">Konum</td><td style="padding:2px 0;">{{ approximate_location }}</td></tr>
+{% endif %}
+<tr><td style="padding:2px 12px 2px 0;color:#52606d;vertical-align:top;">IP adresi</td><td style="padding:2px 0;">{{ ip_masked }}</td></tr>
+<tr><td style="padding:2px 12px 2px 0;color:#52606d;vertical-align:top;">Zaman</td><td style="padding:2px 0;">{{ at }}</td></tr>
+</table>
+{% endblock %}
+{% block closing %}
+<p style="margin:0 0 16px;">Bu sizseniz bu e-postayı yok sayabilirsiniz. Siz değilseniz yukarıdaki bağlantıyı kullanın: tüm oturumları kapatır ve yeni bir şifre belirlemenizi ister.</p>
+{% endblock %}

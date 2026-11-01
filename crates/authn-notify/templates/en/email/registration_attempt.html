@@ -1,0 +1,9 @@
+{% extends "en/email/layout.html" %}
+{% block content %}
+<p style="margin:0 0 16px;">Someone just tried to create a new {{ app_name }} account with this e-mail address. You already have an account, so nothing was changed and no new account was created.</p>
+{% endblock %}
+{% block closing %}
+<p style="margin:0 0 16px;">If this was you, <a href="{{ sign_in_link }}">sign in</a> instead.</p>
+<p style="margin:0 0 16px;">Forgot your password? You can <a href="{{ reset_request_link }}">reset it here</a>.</p>
+<p style="margin:0 0 16px;">If it was not you, no action is needed.</p>
+{% endblock %}

@@ -1,0 +1,8 @@
+{% extends "en/email/layout.html" %}
+{% block content %}
+<p style="margin:0 0 16px;">{% if inviter_name %}{{ inviter_name }} has invited you{% else %}You have been invited{% endif %} to join the organization “{{ org_name }}” on {{ app_name }}.</p>
+{% endblock %}
+{% block action_label %}Accept the invitation{% endblock %}
+{% block closing %}
+<p style="margin:0 0 16px;">The invitation expires in {{ expires_in }}. If you do not know this organization or did not expect an invitation, ignore this e-mail.</p>
+{% endblock %}

@@ -1,0 +1,33 @@
+{# Plain-text layout. Kind templates fill the blocks; values are NOT escaped
+   here (plain text), they are sanitized before rendering instead. Runs of
+   blank lines are collapsed after rendering. #}
+{% if recipient_name %}
+Merhaba {{ recipient_name }},
+{% else %}
+Merhaba,
+{% endif %}
+
+{% block content %}{% endblock %}
+
+
+{% if link %}
+{% block action_label %}Bağlantıyı açın{% endblock %}:
+{{ link }}
+{% endif %}
+
+
+{% if code %}
+{% block code_label %}Kodunuz{% endblock %}: {{ code }}
+{% endif %}
+
+
+{% block details %}{% endblock %}
+
+
+{% block closing %}{% endblock %}
+
+
+Bu ileti {{ app_name }} tarafından otomatik olarak gönderildi; lütfen yanıtlamayın.
+{% if link or code %}
+Şifrenizi veya bu {% if code %}kodu{% else %}bağlantıyı{% endif %} sizden asla istemeyiz.
+{% endif %}

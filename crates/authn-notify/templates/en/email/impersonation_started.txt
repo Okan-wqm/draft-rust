@@ -1,0 +1,11 @@
+{% extends "en/email/layout.txt" %}
+{% block content %}
+An administrator started a support session on your {{ app_name }} account. Everything done during the session is recorded in your security events.
+{% endblock %}
+{% block details %}
+Started: {{ at }}
+Ends at the latest: {{ ends_at }}
+{% endblock %}
+{% block closing %}
+If you did not ask for support, contact us immediately.
+{% endblock %}

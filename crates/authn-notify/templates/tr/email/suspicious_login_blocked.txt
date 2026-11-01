@@ -1,0 +1,14 @@
+{% extends "tr/email/layout.txt" %}
+{% block content %}
+{{ app_name }} hesabınıza yapılan bir giriş denemesini şüpheli göründüğü için engelledik. Denemede doğru şifreniz kullanıldı.
+{% endblock %}
+{% block details %}
+Cihaz: {{ device }}
+IP adresi: {{ ip_masked }}
+Zaman: {{ at }}
+{% endblock %}
+{% block closing %}
+Bu siz değilseniz şifrenizi şimdi değiştirin: {{ reset_request_link }}
+
+Bu sizseniz genellikle kullandığınız bir cihaz veya ağdan tekrar deneyin.
+{% endblock %}

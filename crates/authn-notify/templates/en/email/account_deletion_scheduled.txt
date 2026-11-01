@@ -1,0 +1,8 @@
+{% extends "en/email/layout.txt" %}
+{% block content %}
+Your {{ app_name }} account will be permanently deleted on {{ scheduled_for }}. Until then you can still cancel the deletion.
+{% endblock %}
+{% block action_label %}Cancel the deletion{% endblock %}
+{% block closing %}
+If you did not request this, cancel the deletion and change your password.
+{% endblock %}

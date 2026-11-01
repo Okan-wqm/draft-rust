@@ -1,0 +1,9 @@
+{% extends "tr/email/layout.html" %}
+{% block content %}
+<p style="margin:0 0 16px;">Az önce bu e-posta adresiyle yeni bir {{ app_name }} hesabı oluşturulmaya çalışıldı. Zaten bir hesabınız olduğu için hiçbir şey değiştirilmedi ve yeni hesap açılmadı.</p>
+{% endblock %}
+{% block closing %}
+<p style="margin:0 0 16px;">Bu siz idiyseniz bunun yerine <a href="{{ sign_in_link }}">giriş yapın</a>.</p>
+<p style="margin:0 0 16px;">Şifrenizi mi unuttunuz? <a href="{{ reset_request_link }}">Buradan sıfırlayabilirsiniz</a>.</p>
+<p style="margin:0 0 16px;">Bu siz değilseniz herhangi bir işlem yapmanız gerekmez.</p>
+{% endblock %}

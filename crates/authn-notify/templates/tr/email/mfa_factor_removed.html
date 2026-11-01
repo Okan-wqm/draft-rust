@@ -1,0 +1,12 @@
+{% extends "tr/email/layout.html" %}
+{% block content %}
+<p style="margin:0 0 16px;">{{ app_name }} hesabınızın iki adımlı doğrulama yöntemlerinden {{ factor }} kaldırıldı.</p>
+{% endblock %}
+{% block details %}
+<table role="presentation" cellspacing="0" cellpadding="0" style="margin:0 0 16px;font-size:14px;">
+<tr><td style="padding:2px 12px 2px 0;color:#52606d;vertical-align:top;">Zaman</td><td style="padding:2px 0;">{{ at }}</td></tr>
+</table>
+{% endblock %}
+{% block closing %}
+<p style="margin:0 0 16px;">Bunu siz yapmadıysanız hesabınıza başka biri erişiyor olabilir: <a href="{{ reset_request_link }}">şifrenizi hemen sıfırlayın</a> ve güvenlik ayarlarınızı gözden geçirin.</p>
+{% endblock %}

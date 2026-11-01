@@ -13,7 +13,8 @@ workspace = true
 
 [features]
 default = ["sms"]
-# HTTP SMS provider (NTF-04).
+# HTTP SMS provider (NTF-04). Without it `provider = "http"` is refused at
+# startup and SMS behaves as unavailable (ARC-11).
 sms = []
 
 [dependencies]
@@ -29,21 +30,19 @@ time.workspace = true
 uuid.workspace = true
 sqlx.workspace = true
 tokio.workspace = true
-secrecy.workspace = true
+zeroize.workspace = true
 lettre.workspace = true
-minijinja.workspace = true
+# `fuel` bounds the work an (operator-supplied) template may do per render.
+minijinja = { workspace = true, features = ["fuel"] }
 url.workspace = true
-reqwest.workspace = true
-rustls.workspace = true
+http.workspace = true
 metrics.workspace = true
 
 [dev-dependencies]
 authn-testkit.workspace = true
 tokio.workspace = true
-tower.workspace = true
-http.workspace = true
-http-body-util.workspace = true
 serde_json.workspace = true
 proptest.workspace = true
-wiremock.workspace = true
 tempfile.workspace = true
+# Local TLS SMTP test server (ring provider only, as everywhere else).
+rustls.workspace = true

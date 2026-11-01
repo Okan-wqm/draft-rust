@@ -1,0 +1,8 @@
+{% extends "tr/email/layout.txt" %}
+{% block content %}
+{% if inviter_name %}{{ inviter_name }} sizi {{ app_name }} üzerindeki “{{ org_name }}” organizasyonuna katılmaya davet etti.{% else %}{{ app_name }} üzerindeki “{{ org_name }}” organizasyonuna katılmaya davet edildiniz.{% endif %}
+{% endblock %}
+{% block action_label %}Daveti kabul et{% endblock %}
+{% block closing %}
+Davet {{ expires_in }} boyunca geçerlidir. Bu organizasyonu tanımıyorsanız veya bir davet beklemiyorsanız bu e-postayı yok sayın.
+{% endblock %}

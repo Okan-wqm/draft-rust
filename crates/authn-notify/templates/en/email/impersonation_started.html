@@ -1,0 +1,13 @@
+{% extends "en/email/layout.html" %}
+{% block content %}
+<p style="margin:0 0 16px;">An administrator started a support session on your {{ app_name }} account. Everything done during the session is recorded in your security events.</p>
+{% endblock %}
+{% block details %}
+<table role="presentation" cellspacing="0" cellpadding="0" style="margin:0 0 16px;font-size:14px;">
+<tr><td style="padding:2px 12px 2px 0;color:#52606d;vertical-align:top;">Started</td><td style="padding:2px 0;">{{ at }}</td></tr>
+<tr><td style="padding:2px 12px 2px 0;color:#52606d;vertical-align:top;">Ends at the latest</td><td style="padding:2px 0;">{{ ends_at }}</td></tr>
+</table>
+{% endblock %}
+{% block closing %}
+<p style="margin:0 0 16px;">If you did not ask for support, contact us immediately.</p>
+{% endblock %}

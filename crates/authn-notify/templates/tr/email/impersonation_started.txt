@@ -1,0 +1,11 @@
+{% extends "tr/email/layout.txt" %}
+{% block content %}
+Bir yönetici {{ app_name }} hesabınızda bir destek oturumu başlattı. Oturum sırasında yapılan her işlem güvenlik olaylarınıza kaydedilir.
+{% endblock %}
+{% block details %}
+Başlangıç: {{ at }}
+En geç bitiş: {{ ends_at }}
+{% endblock %}
+{% block closing %}
+Destek talep etmediyseniz hemen bizimle iletişime geçin.
+{% endblock %}

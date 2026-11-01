@@ -17,12 +17,12 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgConnection;
 use time::OffsetDateTime;
 
-use crate::domain::{EmailAddress, FactorKind, Locale};
-use crate::error::AuthError;
+use crate::domain::{EmailAddress, FactorKind, Locale, PhoneNumber};
+use crate::error::{AuthError, codes};
 use crate::id::UserId;
 use crate::secret::SensitiveString;
 
-/// Sends user notifications (e-mail).
+/// Sends user notifications (e-mail; SMS through the same outbox).
 #[async_trait]
 pub trait Notifier: Send + Sync {
     /// Enqueues a notification in its own transaction.
@@ -35,6 +35,73 @@ pub trait Notifier: Send + Sync {
         conn: &mut PgConnection,
         notification: Notification,
     ) -> Result<(), AuthError>;
+
+    /// Enqueues an SMS (MFA-06, NTF-04) inside the caller's transaction;
+    /// it is delivered asynchronously (retried) only if that transaction
+    /// commits. The code is sealed at rest like e-mail secrets.
+    ///
+    /// SMS pumping protection (country allow-list, per-number / per-IP
+    /// limits, global budget) stays the caller's job and must run *before*
+    /// this call. Alternative: call an `SmsSender` directly for synchronous
+    /// delivery.
+    ///
+    /// The default implementation (fakes, notifiers without SMS support)
+    /// fails with `sms_unavailable`.
+    async fn notify_sms_in_tx(
+        &self,
+        conn: &mut PgConnection,
+        sms: SmsNotification,
+    ) -> Result<(), AuthError> {
+        let _ = (conn, sms);
+        Err(AuthError::new(codes::notify::SMS_UNAVAILABLE)
+            .with_context("this Notifier does not support SMS notifications"))
+    }
+}
+
+/// An SMS notification (NTF-04).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SmsNotification {
+    /// Destination (E.164).
+    pub to: PhoneNumber,
+    /// The user, when the number belongs to an account.
+    pub user_id: Option<UserId>,
+    /// Template language.
+    pub locale: Locale,
+    /// What to send.
+    pub kind: SmsNotificationKind,
+}
+
+/// Every SMS type with its template parameters.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SmsNotificationKind {
+    /// SMS one-time code used as a second factor (MFA-06).
+    MfaSmsCode {
+        /// Six-digit code.
+        code: SensitiveString,
+        /// Expiry.
+        #[serde(with = "time::serde::rfc3339")]
+        expires_at: OffsetDateTime,
+    },
+    /// Verification of a phone number before it becomes a factor (MFA-06).
+    PhoneVerification {
+        /// Six-digit code.
+        code: SensitiveString,
+        /// Expiry.
+        #[serde(with = "time::serde::rfc3339")]
+        expires_at: OffsetDateTime,
+    },
+}
+
+impl SmsNotificationKind {
+    /// Stable template name (`mfa_sms_code`, `phone_verification`).
+    #[must_use]
+    pub const fn template_name(&self) -> &'static str {
+        match self {
+            Self::MfaSmsCode { .. } => "mfa_sms_code",
+            Self::PhoneVerification { .. } => "phone_verification",
+        }
+    }
 }
 
 /// Addressee of a notification.
@@ -299,5 +366,26 @@ mod tests {
         let back: Notification = serde_json::from_value(json).unwrap();
         assert_eq!(back, n);
         assert_eq!(n.kind.template_name(), "login_code");
+    }
+
+    #[test]
+    fn ntf_04_sms_notification_is_redacted_and_round_trips() {
+        let sms = SmsNotification {
+            to: PhoneNumber::parse("+905551112233").unwrap(),
+            user_id: None,
+            locale: Locale::En,
+            kind: SmsNotificationKind::MfaSmsCode {
+                code: SensitiveString::new("654321"),
+                expires_at: OffsetDateTime::UNIX_EPOCH,
+            },
+        };
+        let debug = format!("{sms:?}");
+        assert!(!debug.contains("654321"));
+        assert!(!debug.contains("5551112233"));
+        let json = serde_json::to_value(&sms).unwrap();
+        assert_eq!(json["kind"]["type"], "mfa_sms_code");
+        let back: SmsNotification = serde_json::from_value(json).unwrap();
+        assert_eq!(back, sms);
+        assert_eq!(sms.kind.template_name(), "mfa_sms_code");
     }
 }

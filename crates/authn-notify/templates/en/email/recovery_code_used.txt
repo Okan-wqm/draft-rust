@@ -1,0 +1,10 @@
+{% extends "en/email/layout.txt" %}
+{% block content %}
+A recovery code was used to sign in to your {{ app_name }} account. You have {{ remaining }} unused recovery code{% if remaining != 1 %}s{% endif %} left.
+{% endblock %}
+{% block details %}
+Time: {{ at }}
+{% endblock %}
+{% block closing %}
+{% if low_on_codes %}You are running out of recovery codes; generate a new set in your security settings. {% endif %}If this was not you, reset your password immediately: {{ reset_request_link }}
+{% endblock %}

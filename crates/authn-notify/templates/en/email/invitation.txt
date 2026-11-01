@@ -1,0 +1,8 @@
+{% extends "en/email/layout.txt" %}
+{% block content %}
+{% if inviter_name %}{{ inviter_name }} has invited you{% else %}You have been invited{% endif %} to join the organization “{{ org_name }}” on {{ app_name }}.
+{% endblock %}
+{% block action_label %}Accept the invitation{% endblock %}
+{% block closing %}
+The invitation expires in {{ expires_in }}. If you do not know this organization or did not expect an invitation, ignore this e-mail.
+{% endblock %}

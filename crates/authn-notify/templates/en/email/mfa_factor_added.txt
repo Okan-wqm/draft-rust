@@ -1,0 +1,10 @@
+{% extends "en/email/layout.txt" %}
+{% block content %}
+{{ factor }} was added as a two-step verification method to your {{ app_name }} account.
+{% endblock %}
+{% block details %}
+Time: {{ at }}
+{% endblock %}
+{% block closing %}
+If you did not do this, someone may have access to your account: reset your password immediately and review your security settings: {{ reset_request_link }}
+{% endblock %}

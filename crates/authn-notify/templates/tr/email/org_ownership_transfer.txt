@@ -1,0 +1,8 @@
+{% extends "tr/email/layout.txt" %}
+{% block content %}
+{{ app_name }} üzerindeki “{{ org_name }}” organizasyonunun sahibi olmanız istendi.
+{% endblock %}
+{% block action_label %}Devri incele{% endblock %}
+{% block closing %}
+Talep {{ expires_in }} boyunca geçerlidir. Sahip olmak istemiyorsanız bu e-postayı yok sayın.
+{% endblock %}

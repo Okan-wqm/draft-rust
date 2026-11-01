@@ -1,0 +1,8 @@
+{% extends "tr/email/layout.html" %}
+{% block content %}
+<p style="margin:0 0 16px;">{{ app_name }} üzerindeki “{{ org_name }}” organizasyonunun sahibi olmanız istendi.</p>
+{% endblock %}
+{% block action_label %}Devri incele{% endblock %}
+{% block closing %}
+<p style="margin:0 0 16px;">Talep {{ expires_in }} boyunca geçerlidir. Sahip olmak istemiyorsanız bu e-postayı yok sayın.</p>
+{% endblock %}

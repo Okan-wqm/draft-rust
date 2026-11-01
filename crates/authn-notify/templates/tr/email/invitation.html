@@ -1,0 +1,8 @@
+{% extends "tr/email/layout.html" %}
+{% block content %}
+<p style="margin:0 0 16px;">{% if inviter_name %}{{ inviter_name }} sizi {{ app_name }} üzerindeki “{{ org_name }}” organizasyonuna katılmaya davet etti.{% else %}{{ app_name }} üzerindeki “{{ org_name }}” organizasyonuna katılmaya davet edildiniz.{% endif %}</p>
+{% endblock %}
+{% block action_label %}Daveti kabul et{% endblock %}
+{% block closing %}
+<p style="margin:0 0 16px;">Davet {{ expires_in }} boyunca geçerlidir. Bu organizasyonu tanımıyorsanız veya bir davet beklemiyorsanız bu e-postayı yok sayın.</p>
+{% endblock %}

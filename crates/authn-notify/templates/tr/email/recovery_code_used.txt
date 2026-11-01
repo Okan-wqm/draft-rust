@@ -1,0 +1,10 @@
+{% extends "tr/email/layout.txt" %}
+{% block content %}
+{{ app_name }} hesabınıza giriş yapmak için bir kurtarma kodu kullanıldı. Kullanılmamış {{ remaining }} kurtarma kodunuz kaldı.
+{% endblock %}
+{% block details %}
+Zaman: {{ at }}
+{% endblock %}
+{% block closing %}
+{% if low_on_codes %}Kurtarma kodlarınız azalıyor; güvenlik ayarlarınızdan yeni bir set oluşturun. {% endif %}Bu siz değilseniz şifrenizi hemen sıfırlayın: {{ reset_request_link }}
+{% endblock %}

@@ -1,0 +1,8 @@
+{% extends "en/email/layout.html" %}
+{% block content %}
+<p style="margin:0 0 16px;">Use this code to finish signing in to {{ app_name }}.</p>
+{% endblock %}
+{% block code_label %}Verification code{% endblock %}
+{% block closing %}
+<p style="margin:0 0 16px;">The code expires in {{ expires_in }}. If you are not trying to sign in, someone may know your password: change it as soon as possible.</p>
+{% endblock %}
