@@ -76,6 +76,60 @@ Kayıt şablonu:
 
 ## authn-protect
 
+### 2026-11-01 — Cihaz kimliği hash'i için `KeyPurpose::RateLimitKey` paylaşımı
+- **Talep eden:** authn-protect
+- **Etkilenen dosya / sahip:** `crates/authn-crypto/src/kdf.rs` (`KeyPurpose`) / authn-crypto
+- **Gereksinim:** RSK-02, CRY-11
+- **Gerekçe:** `known_devices.device_hash` için anahtarlı hash gerekiyor; `KeyPurpose` içinde uygun bir amaç yok. Şimdilik `RateLimitKey` amaç anahtarı, alanları uzunluk önekli ve **ayrı etiketli** (`authn/protect/known-device/v1` ↔ `authn/protect/rate-limit-key/v1`, `HmacKey::sign_fields`) olarak kullanılıyor; iki kullanım birbirine çakışamaz.
+- **Önerilen değişiklik:** `KeyPurpose::KnownDevice` (`info = "authn/v1/known-device"`) eklenmesi. Eklenirse authn-protect `KeyHasher::device`'ı yeni anahtara taşır (mevcut satırlar bir sonraki girişte yeniden öğrenilir; tek etkisi bir kerelik "yeni cihaz" sinyalidir).
+- **Geriye uyumluluk:** Ekleme; acil değil.
+- **Durum:** Açık
+
+### 2026-11-01 — Migration 1600: `rate_limit_buckets.allowed` ve risk indeksleri
+- **Talep eden:** authn-protect
+- **Etkilenen dosya / sahip:** `migrations/1600_protect_rate_limit_decision.sql` / authn-protect (kendi tabloları, kendi aralığı)
+- **Gereksinim:** PRT-01, RSK-02, OPS-06
+- **Gerekçe:** PostgreSQL 16 upsert'ten eski satırı döndüremez; GCRA kararı tek `INSERT … ON CONFLICT DO UPDATE … RETURNING` ile verilirken sonucun (kabul/ret) aynı satırda dönmesi için `allowed boolean NOT NULL DEFAULT true` kolonu eklendi. Ayrıca `known_devices (user_id, last_seen_at DESC)` (imkânsız seyahat) ve `login_soft_locks (locked_until)` (temizlik) indeksleri.
+- **Önerilen değişiklik:** Uygulandı; bilgi amaçlı (onay gerektirmez, contracts §6).
+- **Geriye uyumluluk:** Ekleme.
+- **Durum:** Uygulandı (2026-11-01)
+
+### 2026-11-01 — `protect.outbound.allow_private_networks` düz `http`'ye de izin verir
+- **Talep eden:** authn-protect
+- **Etkilenen dosya / sahip:** `crates/authn-core/src/config/protect.rs` (authn-protect) — `config/mod.rs`'teki üretim kuralı (mimar) değişmeden geçerli
+- **Gereksinim:** PRT-12, TST-08
+- **Gerekçe:** Kullanıcı tarafından verilen URL'ler yalnızca `https` ile çağrılır. Testlerde/yerelde `wiremock` (`http://127.0.0.1:…`) kullanılabilsin diye tek geliştirme anahtarı hem özel ağlara hem düz `http`'ye izin verir. Üretimde bu anahtar `config/mod.rs` tarafından zaten reddedildiği için ek bir üretim kuralı gerekmez. Yeni alanlar (kendi dosyamda): `rate_limit.requests_per_ip`, `captcha.challenge_per_ip`, `risk.impossible_travel_speed_kmh`, `outbound.connect_timeout`; `allowed_hosts`, `redirect_allow_list`, `redis_url`, `verify_url`, `site_key` için daha sıkı doğrulama. `config/example.toml`'daki `[protect]` yorumları güncellendi.
+- **Önerilen değişiklik:** Uygulandı; bilgi amaçlı.
+- **Geriye uyumluluk:** Yeni alanlar varsayılanlı; mevcut konfigürasyonlar geçerli kalır (`authn-server/tests/example_config.rs` geçiyor).
+- **Durum:** Uygulandı (2026-11-01)
+
+### 2026-11-01 — authn-server ve authn-session için bağlama notları
+- **Talep eden:** authn-protect
+- **Etkilenen dosya / sahip:** `crates/authn-server/src/{app.rs,state.rs,openapi.rs}` / authn-server; `crates/authn-session` / authn-session
+- **Gereksinim:** OPS-02, OPS-06, ARC-03, PRT-03, RSK-04
+- **Gerekçe:** Katmanlar ve servisler hazır; yerleştirme sahiplerin işidir.
+- **Önerilen değişiklik:** (1) `app.rs` (7) yuvasına, dıştan içe: `validate_host` → `security_headers` → `cors` → `http_rate_limit` (`from_fn_with_state`, ayrıntı: `crates/authn-protect/README.md`, örnek: `crates/authn-protect/tests/web_stack.rs`). (2) `AppState`: `CaptchaService: FromRef`, `.merge(authn_protect::router::<AppState>())`, `openapi.rs`'e `authn_protect::ProtectApi` nest. (3) Arka plan işleri: `PostgresRateLimiter::purge_expired`, `ProofOfWorkCaptcha::purge_expired`, `LoginProtection::purge_expired`. (4) authn-session: `NotMeTokenIssuer`'ı (`one_time_tokens` amaç `not_me`) uygular, giriş akışında `LoginProtection::{check_attempt, record_failure, record_success}`, `RiskEvaluator::evaluate` + `authn_protect::risk::decide` + `RiskAlerts::{on_successful_login, on_blocked_login}` çağırır; `return_to` için `RedirectValidator`. (5) authn-admin: kilit açma için `LoginProtection::unlock`.
+- **Geriye uyumluluk:** Ekleme.
+- **Durum:** Açık (sahiplerin uygulaması bekleniyor)
+
+### 2026-11-01 — `fuzz/Cargo.lock` yeniden üretildi
+- **Talep eden:** authn-protect
+- **Etkilenen dosya / sahip:** `fuzz/Cargo.lock` (cargo üretir) / mimar
+- **Gereksinim:** TST-04
+- **Gerekçe:** `return_to` hedefinin gövdesi yazıldı; `cargo +nightly fuzz build return_to` authn-protect'in güncel bağımlılık listesiyle kilit dosyasını yeniden üretti (`governor`, `tower-http`, `rustls`, `secrecy`, `subtle` authn-protect'ten çıktı; `base64`, `unicode-normalization`, `utoipa` workspace sürümleriyle eklendi). `fuzz/Cargo.toml` değişmedi.
+- **Önerilen değişiklik:** Bilgi amaçlı.
+- **Geriye uyumluluk:** Etkisi yok.
+- **Durum:** Uygulandı (2026-11-01)
+
+### 2026-11-01 — `LoginProtection`: tanımlayıcı bütçeleri `check_attempt`'ta tüketilir (güvenlik incelemesi)
+- **Talep eden:** authn-protect
+- **Etkilenen dosya / sahip:** `crates/authn-protect/src/login.rs` / authn-protect; tüketici authn-session (SES-01)
+- **Gereksinim:** PRT-02, PRT-03, PRT-05, SES-01
+- **Gerekçe:** Güvenlik incelemesi bir kontrol-sonra-eylem açığı buldu: CAPTCHA/yumuşak kilit sayaçları doğrulamadan önce yalnızca okunuyor, başarısızlık doğrulamadan sonra sayılıyordu; eşzamanlı denemeler eşikleri aşabiliyordu.
+- **Önerilen değişiklik:** (uygulandı) İmzalar değişmedi. `check_attempt` her şifre denemesinde tanımlayıcının CAPTCHA bütçesinden ve (CAPTCHA kapısından sonra) yumuşak kilit bütçesinden birer birimi atomik olarak tüketir; `record_success` bunları geri verir; `record_failure` yalnızca risk hız sayaçlarını artırır. authn-session: her şifre denemesi için `check_attempt`'ı **tam bir kez** çağırın, başarıda `record_success`'i mutlaka çağırın (çağrılmazsa deneme başarısız sayılır), başarısızlıkta `record_failure`'ı çağırmaya devam edin (RSK-02 hız sinyali).
+- **Geriye uyumluluk:** API aynı; henüz tüketici yok (Dalga B).
+- **Durum:** Uygulandı (2026-11-01)
+
 ## authn-audit
 
 ## authn-notify

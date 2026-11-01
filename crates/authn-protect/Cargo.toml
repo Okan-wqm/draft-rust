@@ -23,8 +23,6 @@ authn-store.workspace = true
 async-trait.workspace = true
 axum.workspace = true
 http.workspace = true
-tower.workspace = true
-tower-http.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -33,12 +31,8 @@ time.workspace = true
 uuid.workspace = true
 sqlx.workspace = true
 tokio.workspace = true
-secrecy.workspace = true
-subtle.workspace = true
-governor.workspace = true
 fred = { workspace = true, optional = true }
 reqwest.workspace = true
-rustls.workspace = true
 hickory-resolver.workspace = true
 ipnet.workspace = true
 url.workspace = true
@@ -46,6 +40,9 @@ bytes.workspace = true
 futures.workspace = true
 woothee.workspace = true
 metrics.workspace = true
+utoipa.workspace = true
+base64.workspace = true
+unicode-normalization.workspace = true
 
 [dev-dependencies]
 authn-testkit.workspace = true

@@ -44,6 +44,10 @@ pub struct RateLimitConfig {
     /// Soft lock duration. Default `1h`.
     #[serde(with = "super::duration")]
     pub soft_lock_duration: Duration,
+    /// Coarse per-IP budget of the generic HTTP rate-limit middleware
+    /// (OPS-02 "rate limit" slot), on top of the per-action limits.
+    /// Default 600 per 1m.
+    pub requests_per_ip: RateLimitPolicy,
 }
 
 impl Default for RateLimitConfig {
@@ -55,6 +59,7 @@ impl Default for RateLimitConfig {
             login_per_account_soft_lock: RateLimitPolicy::new(50, hours(1)),
             login_per_ip: RateLimitPolicy::new(100, mins(15)),
             soft_lock_duration: hours(1),
+            requests_per_ip: RateLimitPolicy::new(600, mins(1)),
         }
     }
 }
@@ -80,6 +85,8 @@ pub struct CaptchaConfig {
     pub pow_ttl: Duration,
     /// Treat an unreachable provider as passed. Default `false`.
     pub fail_open: bool,
+    /// Rate limit of `GET /v1/captcha/challenge` per IP. Default 30 per 1m.
+    pub challenge_per_ip: RateLimitPolicy,
 }
 
 impl Default for CaptchaConfig {
@@ -93,6 +100,7 @@ impl Default for CaptchaConfig {
             pow_difficulty: 18,
             pow_ttl: mins(5),
             fail_open: false,
+            challenge_per_ip: RateLimitPolicy::new(30, mins(1)),
         }
     }
 }
@@ -184,6 +192,10 @@ pub struct RiskConfig {
     pub medium_action: MediumRiskAction,
     /// High-risk reaction. Default `block`.
     pub high_action: HighRiskAction,
+    /// Travel speed (km/h) above which two consecutive logins count as
+    /// impossible travel. Only used when a `GeoIpLookup` is plugged in.
+    /// Default 1000.
+    pub impossible_travel_speed_kmh: u32,
 }
 
 impl Default for RiskConfig {
@@ -195,6 +207,7 @@ impl Default for RiskConfig {
             failure_threshold: 5,
             medium_action: MediumRiskAction::StepUp,
             high_action: HighRiskAction::Block,
+            impossible_travel_speed_kmh: 1000,
         }
     }
 }
@@ -203,13 +216,17 @@ impl Default for RiskConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct OutboundHttpConfig {
-    /// Default timeout. Default `10s`.
+    /// Default total timeout (connect + request + body). Default `10s`.
     #[serde(with = "super::duration")]
     pub timeout: Duration,
+    /// TCP / TLS connect timeout. Default `5s`; at most `timeout`.
+    #[serde(with = "super::duration")]
+    pub connect_timeout: Duration,
     /// Response size limit. Default 1 MiB.
     pub max_response_bytes: usize,
-    /// Allow private / loopback destinations for user-supplied URLs.
-    /// **Tests only**; rejected in production. Default `false`.
+    /// Allow private / loopback destinations **and plain `http`** for
+    /// user-supplied URLs (local mock servers). **Tests / development
+    /// only**; rejected in production. Default `false`.
     pub allow_private_networks: bool,
 }
 
@@ -217,6 +234,7 @@ impl Default for OutboundHttpConfig {
     fn default() -> Self {
         Self {
             timeout: secs(10),
+            connect_timeout: secs(5),
             max_response_bytes: 1024 * 1024,
             allow_private_networks: false,
         }
@@ -235,10 +253,11 @@ pub struct ProtectConfig {
     pub security_headers: SecurityHeadersConfig,
     /// CORS.
     pub cors: CorsConfig,
-    /// Accepted `Host` values (PRT-09). Default empty = host of
-    /// `server.public_base_url` only.
+    /// Accepted `Host` values (PRT-09), `host` or `host:port`. Default
+    /// empty = host of `server.public_base_url` only.
     pub allowed_hosts: Vec<String>,
-    /// Absolute redirect targets allowed by exact match (PRT-10).
+    /// Absolute redirect targets allowed by exact (byte-for-byte) match
+    /// (PRT-10). Relative paths on this server are always allowed when safe.
     pub redirect_allow_list: Vec<String>,
     /// Risk evaluation.
     pub risk: RiskConfig,
@@ -272,6 +291,16 @@ impl ProtectConfig {
             days(1),
             "protect.rate_limit.soft_lock_duration",
         );
+        validate_policy(p, &r.requests_per_ip, "protect.rate_limit.requests_per_ip");
+        p.require(
+            r.redis_url.as_ref().is_none_or(|u| {
+                use crate::secret::ExposeSecret;
+                let u = u.expose_secret();
+                u.starts_with("redis://") || u.starts_with("rediss://")
+            }),
+            "protect.rate_limit.redis_url",
+            "must be a redis:// or rediss:// URL",
+        );
 
         let c = &self.captcha;
         if matches!(
@@ -295,6 +324,31 @@ impl ProtectConfig {
             "must be 8-32",
         );
         p.require_range(c.pow_ttl, secs(30), mins(30), "protect.captcha.pow_ttl");
+        p.require(
+            !(c.provider == CaptchaProvider::Disabled && c.login_policy == CaptchaPolicy::Always),
+            "protect.captcha.login_policy",
+            "\"always\" needs a provider (provider = \"disabled\")",
+        );
+        p.require(
+            c.verify_url.as_deref().is_none_or(|u| {
+                url::Url::parse(u).is_ok_and(|u| {
+                    matches!(u.scheme(), "http" | "https")
+                        && u.host_str().is_some()
+                        && u.username().is_empty()
+                        && u.password().is_none()
+                })
+            }),
+            "protect.captcha.verify_url",
+            "must be an absolute http(s) URL without credentials",
+        );
+        p.require(
+            c.site_key.as_deref().is_none_or(|k| {
+                !k.is_empty() && k.len() <= 256 && k.bytes().all(|b| b.is_ascii_graphic())
+            }),
+            "protect.captcha.site_key",
+            "must be 1-256 visible ASCII characters",
+        );
+        validate_policy(p, &c.challenge_per_ip, "protect.captcha.challenge_per_ip");
 
         p.require(
             self.security_headers.hsts_max_age >= days(365),
@@ -316,10 +370,17 @@ impl ProtectConfig {
         );
         for (i, target) in self.redirect_allow_list.iter().enumerate() {
             p.require(
-                url::Url::parse(target)
-                    .is_ok_and(|u| u.fragment().is_none() && !target.contains('*')),
+                is_safe_redirect_entry(target),
                 &format!("protect.redirect_allow_list[{i}]"),
-                "must be an absolute URL without fragment or wildcard",
+                "must be an absolute ASCII URL without fragment, credentials, wildcard, \
+                 whitespace or backslash",
+            );
+        }
+        for (i, host) in self.allowed_hosts.iter().enumerate() {
+            p.require(
+                is_host_entry(host),
+                &format!("protect.allowed_hosts[{i}]"),
+                "must be a host name or IP literal with optional :port (no scheme, path or wildcard)",
             );
         }
         p.require_range(
@@ -333,16 +394,153 @@ impl ProtectConfig {
             "protect.risk.failure_threshold",
             "must be >= 1",
         );
+        p.require(
+            (100..=20_000).contains(&self.risk.impossible_travel_speed_kmh),
+            "protect.risk.impossible_travel_speed_kmh",
+            "must be between 100 and 20000",
+        );
         p.require_range(
             self.outbound.timeout,
             secs(1),
             mins(2),
             "protect.outbound.timeout",
         );
+        p.require_range(
+            self.outbound.connect_timeout,
+            Duration::from_millis(100),
+            self.outbound.timeout.max(Duration::from_millis(100)),
+            "protect.outbound.connect_timeout",
+        );
         p.require(
             (1024..=50 * 1024 * 1024).contains(&self.outbound.max_response_bytes),
             "protect.outbound.max_response_bytes",
             "must be between 1 KiB and 50 MiB",
+        );
+    }
+}
+
+/// Syntactic rules for `redirect_allow_list` entries (PRT-10): absolute,
+/// ASCII, no fragment / credentials / wildcard / whitespace / backslash.
+fn is_safe_redirect_entry(target: &str) -> bool {
+    let raw_ok = !target.is_empty()
+        && target.len() <= 2048
+        && target
+            .bytes()
+            .all(|b| b.is_ascii_graphic() && b != b'\\' && b != b'*');
+    raw_ok
+        && url::Url::parse(target).is_ok_and(|u| {
+            u.fragment().is_none() && u.username().is_empty() && u.password().is_none()
+        })
+}
+
+/// `host` or `host:port` (PRT-09): DNS name or IP literal, no scheme, path,
+/// userinfo or wildcard.
+fn is_host_entry(entry: &str) -> bool {
+    if entry.is_empty()
+        || entry.len() > 260
+        || !entry
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b':' | b'[' | b']'))
+    {
+        return false;
+    }
+    url::Url::parse(&format!("https://{entry}/"))
+        .is_ok_and(|u| u.host_str().is_some() && u.path() == "/" && u.username().is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn problems(config: &ProtectConfig) -> Vec<String> {
+        let mut p = ConfigProblems::default();
+        config.validate(&mut p);
+        p.problems().to_vec()
+    }
+
+    #[test]
+    fn prt_01_defaults_are_valid_and_match_spec() {
+        let config = ProtectConfig::default();
+        assert!(problems(&config).is_empty(), "{:?}", problems(&config));
+        assert_eq!(
+            config.rate_limit.login_per_account_captcha,
+            RateLimitPolicy::new(10, mins(15))
+        );
+        assert_eq!(
+            config.rate_limit.login_per_account_soft_lock,
+            RateLimitPolicy::new(50, hours(1))
+        );
+        assert_eq!(
+            config.rate_limit.login_per_ip,
+            RateLimitPolicy::new(100, mins(15))
+        );
+        assert_eq!(config.outbound.connect_timeout, secs(5));
+    }
+
+    #[test]
+    fn prt_05_always_without_provider_is_rejected() {
+        let mut config = ProtectConfig::default();
+        config.captcha.login_policy = CaptchaPolicy::Always;
+        assert!(
+            problems(&config)
+                .iter()
+                .any(|p| p.starts_with("protect.captcha.login_policy"))
+        );
+        config.captcha.provider = CaptchaProvider::ProofOfWork;
+        assert!(problems(&config).is_empty());
+    }
+
+    #[test]
+    fn prt_09_allowed_hosts_must_be_plain_hosts() {
+        let mut config = ProtectConfig::default();
+        config.allowed_hosts = vec![
+            "auth.example.com".to_owned(),
+            "auth.example.com:8443".to_owned(),
+            "[2001:db8::1]:443".to_owned(),
+        ];
+        assert!(problems(&config).is_empty(), "{:?}", problems(&config));
+        for bad in [
+            "https://auth.example.com",
+            "*.example.com",
+            "a.example.com/x",
+            "u@h",
+            "",
+        ] {
+            config.allowed_hosts = vec![bad.to_owned()];
+            assert_eq!(problems(&config).len(), 1, "{bad}");
+        }
+    }
+
+    #[test]
+    fn prt_10_redirect_allow_list_entries_are_strict() {
+        let mut config = ProtectConfig::default();
+        config.redirect_allow_list = vec![
+            "https://app.example.com/callback".to_owned(),
+            "com.example.app:/oauth".to_owned(),
+        ];
+        assert!(problems(&config).is_empty(), "{:?}", problems(&config));
+        for bad in [
+            "https://app.example.com/cb#x",
+            "https://user:pw@app.example.com/cb",
+            "https://*.example.com/cb",
+            "https://app.example.com/a b",
+            "https://app.example.com\\@evil.com",
+            "/relative",
+            "https://ápp.example.com/cb",
+        ] {
+            config.redirect_allow_list = vec![bad.to_owned()];
+            assert_eq!(problems(&config).len(), 1, "{bad}");
+        }
+    }
+
+    #[test]
+    fn prt_12_connect_timeout_is_bounded_by_total_timeout() {
+        let mut config = ProtectConfig::default();
+        config.outbound.connect_timeout = secs(30);
+        assert!(
+            problems(&config)
+                .iter()
+                .any(|p| p.starts_with("protect.outbound.connect_timeout"))
         );
     }
 }

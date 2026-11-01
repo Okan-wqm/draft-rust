@@ -192,47 +192,53 @@ allowed_origins = ["http://localhost:8080"]
 # api_keys = { environment = "live", max_lifetime = "365d", default_lifetime = "90d", rotation_grace = "24h" }
 
 [protect]                              # PRT-*, RSK-*
-# allowed_hosts = []                   # default: host of public_base_url (PRT-09)
-# redirect_allow_list = []             # PRT-10
+# allowed_hosts = []                   # "host" or "host:port"; default: host of public_base_url (PRT-09, 421 otherwise)
+# redirect_allow_list = []             # exact (byte-for-byte) absolute return_to / redirect_uri targets (PRT-10)
 
-[protect.rate_limit]
-backend = "memory"                     # postgres (default) | redis | memory (single instance / dev)
-# redis_url = "redis://127.0.0.1:6379"
-# login_per_account_captcha = { limit = 10, period = "15m" }
-# login_per_account_soft_lock = { limit = 50, period = "1h" }
-# login_per_ip = { limit = 100, period = "15m" }
-# soft_lock_duration = "1h"
+[protect.rate_limit]                   # PRT-01 … PRT-04 (GCRA; 429 + Retry-After)
+backend = "memory"                     # postgres (default) | redis | memory (single instance / dev; refused in production)
+# redis_url = "redis://127.0.0.1:6379" # required for backend = "redis" (cargo feature `redis`); rediss:// for TLS
+# login_per_account_captcha = { limit = 10, period = "15m" }    # password attempts per identifier (refunded on success) before CAPTCHA
+# login_per_account_soft_lock = { limit = 50, period = "1h" }   # password attempts per identifier (refunded on success) before the soft lock
+# login_per_ip = { limit = 100, period = "15m" }                # login attempts per IP (IPv6 per /64)
+# soft_lock_duration = "1h"            # unknown-device password attempts refused for this long (PRT-03)
+# requests_per_ip = { limit = 600, period = "1m" }              # coarse HTTP limit per IP (middleware)
 
-[protect.captcha]
+[protect.captcha]                      # PRT-05
 # provider = "disabled"                # disabled | turnstile | hcaptcha | proof_of_work
-# login_policy = "risk_based"
-# site_key = "..."
-# secret_key = "..."
-# pow_difficulty = 18
+# login_policy = "risk_based"          # always | risk_based | never ("always" needs a provider)
+# site_key = "..."                     # turnstile / hcaptcha
+# secret_key = "..."                   # turnstile / hcaptcha (secret)
+# verify_url = "..."                   # tests only: override of the provider siteverify URL
+# pow_difficulty = 18                  # leading zero bits, 8-32
 # pow_ttl = "5m"
-# fail_open = false
+# fail_open = false                    # provider outage: true = let requests through
+# challenge_per_ip = { limit = 30, period = "1m" }              # GET /v1/captcha/challenge
 
 [protect.security_headers]             # PRT-07
 # hsts_max_age = "730d"
 # hsts_include_subdomains = true
 # hsts_preload = false
+# permissions_policy = "accelerometer=(), camera=(), geolocation=(), gyroscope=(), microphone=(), payment=(), usb=()"
 
-[protect.cors]                         # PRT-08
+[protect.cors]                         # PRT-08: exact origins only, never "*"
 # allowed_origins = ["https://app.example.com"]
-# max_age = "10m"
+# max_age = "10m"                      # preflight cache, at most 2h
 
-[protect.risk]
+[protect.risk]                         # RSK-01 … RSK-03
 # enabled = true
-# anonymizing_networks_file = "/etc/authn/tor-exits.txt"
+# anonymizing_networks_file = "/etc/authn/tor-exits.txt"   # one CIDR / IP per line, '#' comments
 # failure_window = "1h"
 # failure_threshold = 5
 # medium_action = "step_up"            # step_up | allow
 # high_action = "block"                # block | step_up
+# impossible_travel_speed_kmh = 1000   # only with a GeoIP provider (none is bundled)
 
-[protect.outbound]                     # PRT-12
-# timeout = "10s"
+[protect.outbound]                     # PRT-12 (SSRF-safe HTTP client)
+# timeout = "10s"                      # total
+# connect_timeout = "5s"
 # max_response_bytes = 1048576
-# allow_private_networks = false       # tests only
+# allow_private_networks = false       # tests / dev only: private ranges AND plain http for user-supplied URLs
 
 [audit]                                # AUD-*
 # retention = "400d"
