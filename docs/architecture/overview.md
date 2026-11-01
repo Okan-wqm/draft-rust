@@ -43,6 +43,42 @@ flowchart BT
 - **Hexagonal yapı (ARC-02):** e-posta, SMS, CAPTCHA, saat, risk, DNS, HTTP, oturum kapatma/açma gibi tüm yan etkiler `authn-core::ports` içindeki trait'ler arkasındadır. Uygulamalar sahip modüllerdedir; testlerde `authn-testkit` sahteleri kullanılır.
 - **Paralel geliştirme:** Aynı dalgadaki modüller birbirini derleme zamanında görmez; ortak sözleşme yalnızca `authn-core`'dur. Bu sayede her modül diğerleri bitmeden derlenir ve test edilir.
 - **Uygulama durumu (ARC-03):** `AppState` yalnızca `authn-server`'dadır. Modüller `router<S>()` + `FromRef<S>` ile servislerini ister.
+- **Modül kancaları:** Bir Dalga A modülü başka bir Dalga A modülünün verisine ihtiyaç duyduğunda kendi crate'inde küçük bir trait tanımlar; uygulamasını diğer modüllerin API'leriyle authn-server yazar (aşağıdaki şema, ayrıntı: [`contracts.md` §4 ve §15](contracts.md#15-sunucu-bağlama-tablosu)).
+
+## Dalga A sonrası bağlama (server adaptörleri)
+
+```mermaid
+flowchart LR
+    subgraph server[authn-server adaptörleri]
+        lmi[LoginMethodInventory]
+        prof[ProfileLookup]
+        own[OrganizationOwnership]
+        mps[MfaPolicySource]
+        ams[AccountMethodsSource]
+        pps[PasskeyPolicySource]
+        aap[AuditAccessPolicy]
+        bridge[OutboxHandler 'notification']
+    end
+    password[authn-password] -- kullanır --> lmi
+    password -- kullanır --> prof
+    account[authn-account] -- kullanır --> own
+    mfa[authn-mfa] -- kullanır --> mps
+    webauthn[authn-webauthn] -- kullanır --> ams
+    webauthn -- kullanır --> pps
+    audit[authn-audit] -- kullanır --> aap
+    audit -- outbox işçisi --> bridge
+    lmi -. passkey_count_in .-> webauthn
+    prof -. profile_of .-> account
+    own -. sole_owner_organizations .-> org[authn-org]
+    mps -. policies_for_user .-> org
+    mps -. passkey_count_in .-> webauthn
+    ams -. MFA durumu .-> mfa
+    pps -. org politikası .-> org
+    aap -. authorize_from .-> org
+    bridge -. NotificationDeliverer .-> notify[authn-notify]
+```
+
+Kancalar çağıranın bağlantısıyla (çoğu zaman `users` satırı `FOR UPDATE` kilitliyken) çalışır ve yalnızca o bağlantıdan okur; böylece "son giriş yöntemi" (PWD-11, PKY-04) ve "son MFA faktörü" (MFA-07) kuralları eşzamanlı silmelere karşı serileşir.
 
 ## İstek yaşam döngüsü
 
@@ -97,9 +133,12 @@ erDiagram
     audit_events ||--o| audit_event_pii : "silinebilir PII"
     users ||--o{ consents : ""
     terms_versions ||--o{ consents : ""
+    users ||--o{ email_reservations : "ayrılmış eski adres (ACC-07)"
+    organizations ||--o{ org_auto_join_exclusions : ""
+    users ||--o{ org_auto_join_exclusions : "otomatik katılım dışı (ORG-06)"
 ```
 
-Bağımsız tablolar: `outbox` (transactional outbox), `audit_chain_head` / `audit_chain_checkpoints` (hash zinciri), `signing_keys` / `data_encryption_keys` (anahtar yönetimi), `rate_limit_buckets` (UNLOGGED), `captcha_pow_challenges`, `oauth_states`, `webauthn_ceremonies`, `account_deletions`, `known_devices` / `known_networks`, `login_soft_locks`.
+Bağımsız tablolar: `outbox` (transactional outbox), `audit_chain_head` / `audit_chain_checkpoints` (hash zinciri), `signing_keys` (JWT anahtar yaşam döngüsü), `data_encryption_keys` (**ayrılmış, kullanılmıyor**: CRY-08 zarfı kendi sarılmış DEK'ini taşır; ileride KMS önbelleği için, bkz. `0014`), `rate_limit_buckets` (UNLOGGED), `captcha_pow_challenges`, `oauth_states`, `webauthn_ceremonies`, `account_deletions`, `known_devices` / `known_networks`, `login_soft_locks`.
 
 Öne çıkan tasarım kararları:
 
@@ -107,7 +146,8 @@ Bağımsız tablolar: `outbox` (transactional outbox), `audit_chain_head` / `aud
 |------|-------|
 | Kimlikler | Uygulamada üretilen UUIDv7; dışa sıralı tamsayı açılmaz |
 | Sırlar | Token/kod → 32 baytlık hash; geri dönüştürülebilir sırlar → zarf şifreli `*_ciphertext` |
-| Tek kullanımlık token | `one_time_tokens` genel tablo; atomik `UPDATE … WHERE consumed_at IS NULL … RETURNING` |
+| Tek kullanımlık token | `one_time_tokens` genel tablo; atomik `UPDATE … WHERE consumed_at IS NULL … RETURNING`; purpose kayıt defteri `authn_store::TokenPurpose` enum'u |
+| Bakım işleri | `FOR UPDATE SKIP LOCKED` ile satır talebi (`UserRepository::claim_next`, outbox kiralama); çoklu instance güvenli (OPS-06) |
 | Refresh rotasyonu | Oturum = token ailesi; aile başına tek canlı token (kısmi benzersiz indeks); yeniden kullanım → aile iptali |
 | Kiracı izolasyonu | `org_id` her kapsamlı tabloda; rol ataması tetikleyicisi ve bileşik FK'lar |
 | Audit | Ekleme-yalnızca tetikleyici, hash zinciri, kişisel veri zincir dışında (takma ad + silinebilir PII tablosu) |
@@ -118,7 +158,7 @@ Bağımsız tablolar: `outbox` (transactional outbox), `audit_chain_head` / `aud
 
 - Konfigürasyon: TOML + `AUTHN__` ortam değişkenleri, tipli ve doğrulanmış (fail-fast); örnek: [`config/example.toml`](../../config/example.toml).
 - Binary alt komutları: `serve`, `migrate`, `check-config`, `create-admin`, `rotate-signing-key`, `rotate-kek` (`reencrypt`), `verify-audit-chain`, `migrate-legacy-hashes`.
-- Yerel bağımlılıklar: `docker compose up -d` (PostgreSQL 16, Redis 7, Mailpit).
+- Yerel bağımlılıklar: `docker compose up -d` (PostgreSQL 16, Redis 7, Mailpit). Mailpit, depodaki sabit ve **herkese açık** geliştirme sertifikasıyla STARTTLS sunar (`config/dev-certs/`); örnek konfigürasyondaki yorumlu `notify.email.smtp.extra_ca_file` satırı açılınca sunucu ona güvenir. Bu ayar `development`/`test` dışında reddedilir.
 - Sağlık: `GET /health/live`, `GET /health/ready` (veritabanı + migration durumu). Metrikler ayrı dinleyicide (`server.metrics_bind_addr`).
 
 ## Lisans politikası

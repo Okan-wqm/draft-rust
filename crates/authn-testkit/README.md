@@ -13,7 +13,7 @@ TST-01 (altyapı), TST-08
 | `MIGRATOR` | `#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]` için tüm migration'lar |
 | `FakeClock` | `advance()` / `set()` ile kontrol edilen saat |
 | `TestPorts` | Her port için bir sahte uygulama, ortak `FakeClock` ile |
-| `fakes::*` | `RecordingAuditSink`, `RecordingEventPublisher`, `RecordingNotifier`, `RecordingEmailTransport`, `RecordingSmsSender`, `AllowAllRateLimiter`, `DenyAllRateLimiter`, `InMemoryRateLimiter`, `FakeCaptcha`, `FakeRiskEvaluator`, `FakeBreachedPasswordChecker`, `FakePasswordValidator`, `RecordingSessionRevoker`, `FakeSessionIssuer`, `FakeDnsTxtResolver`, `FakeGeoIp`, `FakeHttpClient`, `StaticDataExporter` |
+| `fakes::*` | `RecordingAuditSink` (`pseudonymized()` ile `pseudonymize_subject` çağrıları), `RecordingEventPublisher`, `RecordingNotifier` (e-posta: `recorded`/`with_template`/`take`; SMS: `notify_sms_in_tx` → `recorded_sms`/`sms_with_template`/`last_sms`/`take_sms`, `set_sms_available(false)` ile `sms_unavailable`), `RecordingEmailTransport`, `RecordingSmsSender`, `AllowAllRateLimiter`, `DenyAllRateLimiter`, `InMemoryRateLimiter`, `FakeCaptcha`, `FakeRiskEvaluator`, `FakeBreachedPasswordChecker`, `FakePasswordValidator`, `RecordingSessionRevoker`, `FakeSessionIssuer`, `FakeDnsTxtResolver`, `FakeGeoIp`, `FakeHttpClient`, `StaticDataExporter` |
 | `config::test_config()`, `TestConfigBuilder` | Geçerli, deterministik `AppConfig` (herkesçe bilinen test anahtarları; yalnızca testlerde) |
 | `http::TestRequest` / `TestResponse` | İstek oluşturma, `tower::ServiceExt::oneshot` ile gönderme, hata zarfını ayrıştırma (`assert_error`) |
 | `http::with_request_context` | Router'ı `RequestContext` middleware'i ile sarar |

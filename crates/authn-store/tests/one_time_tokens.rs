@@ -759,3 +759,217 @@ async fn arc_06_invalid_inputs_are_refused_before_sql(pool: PgPool) {
         StoreError::ForeignKeyViolation { .. }
     ));
 }
+
+/// Creates a revert link issued at `at` (each with its own id; UUIDv7 ids
+/// break timestamp ties in issue order).
+async fn revert_link(
+    pool: &PgPool,
+    user: UserId,
+    at: OffsetDateTime,
+) -> (OpaqueToken, OneTimeTokenId) {
+    let token = OpaqueToken::generate().unwrap();
+    let mut new = new_token(
+        TokenPurpose::EmailChangeRevert,
+        token.hash(),
+        TokenSubject::user(user),
+        Duration::from_secs(7 * 86_400),
+    );
+    new.created_at = at;
+    new.expires_at = at + Duration::from_secs(7 * 86_400);
+    create(pool, &new, false).await;
+    (token, new.id)
+}
+
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn acc_07_revoke_since_cancels_later_links_but_keeps_earlier_ones(pool: PgPool) {
+    let victim = user(&pool).await;
+    let other = user(&pool).await;
+    // Owner's change (t0), attacker's change from the intermediate address
+    // (t1, same instant as t2), and one more change (t2).
+    let (owner_link, _) = revert_link(&pool, victim, NOW).await;
+    let t1 = NOW + Duration::from_secs(60);
+    let (attacker_link, attacker_id) = revert_link(&pool, victim, t1).await;
+    let (later_link, _) = revert_link(&pool, victim, t1).await;
+    let (unrelated, _) = revert_link(&pool, other, t1).await;
+
+    let mut conn = pool.acquire().await.unwrap();
+    let revoked = OneTimeTokenRepository::revoke_for_user_since(
+        &mut conn,
+        victim,
+        &[TokenPurpose::EmailChangeRevert],
+        (t1, attacker_id),
+        t1,
+    )
+    .await
+    .unwrap();
+    assert_eq!(revoked, 2, "the reference link and the later one");
+    drop(conn);
+    let later = t1 + Duration::from_secs(1);
+    assert!(
+        !consume(
+            &pool,
+            TokenPurpose::EmailChangeRevert,
+            &attacker_link.hash(),
+            later
+        )
+        .await
+    );
+    assert!(
+        !consume(
+            &pool,
+            TokenPurpose::EmailChangeRevert,
+            &later_link.hash(),
+            later
+        )
+        .await
+    );
+    // The owner's earlier link and other users' links survive.
+    assert!(
+        consume(
+            &pool,
+            TokenPurpose::EmailChangeRevert,
+            &owner_link.hash(),
+            later
+        )
+        .await
+    );
+    assert!(
+        consume(
+            &pool,
+            TokenPurpose::EmailChangeRevert,
+            &unrelated.hash(),
+            later
+        )
+        .await
+    );
+}
+
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn acc_10_active_for_user_lists_only_usable_tokens_of_the_given_purposes(pool: PgPool) {
+    let owner = user(&pool).await;
+    let stranger = user(&pool).await;
+    let subject = TokenSubject::user(owner);
+    let live = OpaqueToken::generate().unwrap();
+    let mut live_new = new_token(
+        TokenPurpose::EmailChange,
+        live.hash(),
+        subject,
+        Duration::from_secs(3600),
+    );
+    live_new.target = Some("new@example.com");
+    create(&pool, &live_new, false).await;
+    let newer = OpaqueToken::generate().unwrap();
+    let mut newer_new = new_token(
+        TokenPurpose::AccountDeletionCancel,
+        newer.hash(),
+        subject,
+        Duration::from_secs(3600),
+    );
+    newer_new.created_at = NOW + Duration::from_secs(1);
+    newer_new.expires_at = NOW + Duration::from_secs(3600);
+    create(&pool, &newer_new, false).await;
+    // Consumed, revoked, expired, another module's purpose, another user.
+    let consumed = OpaqueToken::generate().unwrap();
+    create(
+        &pool,
+        &new_token(
+            TokenPurpose::EmailVerification,
+            consumed.hash(),
+            subject,
+            Duration::from_secs(3600),
+        ),
+        false,
+    )
+    .await;
+    assert!(
+        consume(
+            &pool,
+            TokenPurpose::EmailVerification,
+            &consumed.hash(),
+            NOW
+        )
+        .await
+    );
+    let expired = OpaqueToken::generate().unwrap();
+    create(
+        &pool,
+        &new_token(
+            TokenPurpose::EmailVerification,
+            expired.hash(),
+            subject,
+            Duration::from_secs(10),
+        ),
+        false,
+    )
+    .await;
+    let foreign = OpaqueToken::generate().unwrap();
+    create(
+        &pool,
+        &new_token(
+            TokenPurpose::PasswordReset,
+            foreign.hash(),
+            subject,
+            Duration::from_secs(3600),
+        ),
+        false,
+    )
+    .await;
+    let strangers = OpaqueToken::generate().unwrap();
+    create(
+        &pool,
+        &new_token(
+            TokenPurpose::EmailChange,
+            strangers.hash(),
+            TokenSubject::user(stranger),
+            Duration::from_secs(3600),
+        ),
+        false,
+    )
+    .await;
+    let revoked = OpaqueToken::generate().unwrap();
+    create(
+        &pool,
+        &new_token(
+            TokenPurpose::EmailChangeRevert,
+            revoked.hash(),
+            subject,
+            Duration::from_secs(3600),
+        ),
+        false,
+    )
+    .await;
+    let mut conn = pool.acquire().await.unwrap();
+    OneTimeTokenRepository::revoke_for_user(
+        &mut conn,
+        owner,
+        &[TokenPurpose::EmailChangeRevert],
+        NOW,
+    )
+    .await
+    .unwrap();
+
+    let account_purposes = [
+        TokenPurpose::EmailVerification,
+        TokenPurpose::EmailChange,
+        TokenPurpose::EmailChangeRevert,
+        TokenPurpose::AccountDeletionCancel,
+    ];
+    let at = NOW + Duration::from_secs(30);
+    let active = OneTimeTokenRepository::active_for_user(&pool, owner, &account_purposes, at)
+        .await
+        .unwrap();
+    assert_eq!(
+        active.iter().map(|t| t.id).collect::<Vec<_>>(),
+        vec![newer_new.id, live_new.id],
+        "newest first, unusable and foreign rows excluded"
+    );
+    assert_eq!(active[1].target.as_deref(), Some("new@example.com"));
+    // Debug never shows the target (personal data).
+    assert!(!format!("{:?}", active[1]).contains("new@example.com"));
+    assert!(
+        OneTimeTokenRepository::active_for_user(&pool, owner, &[], at)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}

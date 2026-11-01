@@ -2,7 +2,9 @@
 
 Bu belge, aynı çalışma ağacında **paralel çalışan** modül agent'larının uyduğu bağlayıcı sözleşmedir. Gereksinimler için tek kaynak `docs/spec/requirements.md`'dir; bu belge **kimin neyi, nerede ve hangi arayüzle** yaptığını belirler. Bir kural burada yazılı değilse ve başka bir modülü etkiliyorsa, önce §13'teki süreçle sözleşme değişikliği talep edilir.
 
-İçindekiler: 1. Crate'ler ve gereksinim sahipliği · 2. Bağımlılık grafiği · 3. Dosya sahipliği · 4. Portlar · 5. Tablo sahipliği · 6. Migration'lar · 7. AppState / FromRef router deseni · 8. Hata kodları · 9. Konfigürasyon · 10. HTTP katmanı ve istek bağlamı · 11. Güvenlik kuralları · 12. Test kuralları · 13. Sözleşme değişikliği talebi · 14. Mimari kararlar
+İçindekiler: 1. Crate'ler ve gereksinim sahipliği · 2. Bağımlılık grafiği · 3. Dosya sahipliği · 4. Portlar ve modül kancaları · 5. Tablo sahipliği · 6. Migration'lar · 7. AppState / FromRef router deseni · 8. Hata kodları · 9. Konfigürasyon · 10. HTTP katmanı ve istek bağlamı · 11. Güvenlik kuralları · 12. Test kuralları · 13. Sözleşme değişikliği talebi · 14. Mimari kararlar · 15. Sunucu bağlama tablosu
+
+> **Durum (2026-11-01):** Dalga A (password, account, mfa, webauthn, org, protect, audit, notify) tamamlandı ve sözleşme değişikliği talepleri işlendi. Bu belge Dalga A'nın gerçekte dışa açtığı API'leri, tabloları ve bağlama gereksinimlerini yansıtır; Dalga B (session, oidc-client, admin) ve authn-server için bağlama listesi §15'tedir.
 
 ---
 
@@ -95,9 +97,9 @@ Bir agent yalnızca sahibi olduğu dosyaları değiştirir.
 | `crates/authn-core/src/ports/<port>.rs` | portu **uygulayan** crate (§4 tablosu) — yalnızca geriye uyumlu ekleme |
 | `crates/authn-core/src/**` (diğer her şey: `config/mod.rs`, `config/common.rs`, `config/duration.rs`, `error/*.rs`, `error/codes/mod.rs`, `error/codes/common.rs`, `domain/**`, `http/**`, `id.rs`, `secret.rs`, `redact.rs`, `tls.rs`, `macros.rs`, `lib.rs`) | mimar |
 | `migrations/0001`–`0099` | mimar; modüller kendi aralıklarına yazar (§6) |
-| `fuzz/fuzz_targets/<hedef>.rs` | dosya başlığındaki crate (`jwt_parse`, `envelope_parse` → crypto; `api_key_parse` → org; `webhook_signature` → audit; `return_to` → protect; `email_normalize` → core/account; `client_ip` → core) |
+| `fuzz/fuzz_targets/<hedef>.rs` | dosya başlığındaki crate (`jwt_parse`, `envelope_parse`, `password_hash_parse`, `token_parse`, `webhook_verify` → crypto; `api_key_parse` → org; `webhook_signature` → audit; `return_to` → protect; `hibp_range_parse` → password; `mfa_input_parse` → mfa; `webauthn_response_parse` → webauthn; `email_normalize` → core/account; `client_ip` → core). Yeni hedefin `fuzz/Cargo.toml` kaydı mimarın işidir (§13) |
 | `config/example.toml` | authn-server (her modül kendi bölümünün yorumlarını §13 ile günceller) |
-| Kök dosyalar: `Cargo.toml`, `deny.toml`, `clippy.toml`, `rustfmt.toml`, `rust-toolchain.toml`, `.cargo/*`, `.github/**`, `docker-compose.yml`, `docs/architecture/**`, `fuzz/Cargo.toml`, `fuzz/deny.toml` | mimar |
+| Kök dosyalar: `Cargo.toml`, `deny.toml`, `clippy.toml`, `rustfmt.toml`, `rust-toolchain.toml`, `.cargo/*`, `.github/**`, `docker-compose.yml`, `config/dev-certs/**` (yalnızca geliştirme sertifikası), `docs/architecture/**`, `fuzz/Cargo.toml`, `fuzz/deny.toml` | mimar |
 | `Cargo.lock` | yalnızca cargo üretir; birleştirme çakışmasında elle düzenlenmez, `cargo update --workspace` ile yeniden üretilir |
 | `docs/architecture/contract-change-requests.md` | herkes — yalnızca **kendi başlığı altına** ekleme yapar |
 
@@ -105,16 +107,16 @@ Yeni bir modül dosyası eklemek (`config/<modül>.rs` alanları, yeni hata kodu
 
 ---
 
-## 4. Portlar
+## 4. Portlar ve modül kancaları
 
 Tüm portlar `crates/authn-core/src/ports/` altında, nesne güvenli (`Arc<dyn Port>`), `Send + Sync`, `#[async_trait]` ile tanımlıdır. Hata tipi her zaman `AuthError`'dır.
 
 | Port | Dosya | Uygulayan | Başlıca tüketiciler | Transaction semantiği |
 |------|-------|-----------|---------------------|-----------------------|
 | `Clock` | `clock.rs` | core (`SystemClock`) | herkes | — |
-| `AuditSink` | `audit.rs` | audit | herkes | `record` kendi kısa transaction'ı (başarısız iş işleminde de yazılır); `record_in_tx` çağıranın transaction'ında |
-| `EventPublisher` | `event_publisher.rs` | audit | account, org, session | çağıranın transaction'ında (outbox) |
-| `Notifier` | `notifier.rs` | notify | account, password, mfa, org, session, admin, protect | `notify` kendi transaction'ı, `notify_in_tx` çağıranınkinde; teslim outbox ile asenkron |
+| `AuditSink` | `audit.rs` | audit (`PgAuditSink`) | herkes | `record` kendi kısa transaction'ı (başarısız iş işleminde de yazılır); `record_in_tx` ve `pseudonymize_subject` (AUD-05, ACC-09; varsayılan gövde no-op) çağıranın transaction'ında |
+| `EventPublisher` | `event_publisher.rs` | audit (`OutboxEventPublisher`) | account, org, session | çağıranın transaction'ında (outbox) |
+| `Notifier` | `notifier.rs` | notify (`OutboxNotifier`) | account, password, mfa, org, session, admin, protect | `notify` kendi transaction'ı, `notify_in_tx` ve `notify_sms_in_tx` (MFA-06; varsayılan gövde `sms_unavailable`) çağıranınkinde; teslim outbox ile asenkron, sırlar zarf şifreli |
 | `EmailTransport` | `email_transport.rs` | notify | notify (outbox işçisi) | — |
 | `SmsSender` | `sms.rs` | notify | mfa | — |
 | `RateLimiter` | `rate_limit.rs` | protect | herkes | atomik, kendi bağlantısı |
@@ -125,7 +127,7 @@ Tüm portlar `crates/authn-core/src/ports/` altında, nesne güvenli (`Arc<dyn P
 | `BreachedPasswordChecker` | `breached_password.rs` | password | password, account | — |
 | `PasswordValidator` | `password_validator.rs` | password | account (ACC-01), password, admin | — |
 | `DnsTxtResolver` | `dns.rs` | org | org | — |
-| `SessionRevoker` | `session_revoker.rs` | session | password, account, mfa, org, admin, protect | **çağıranın transaction'ında** (`&mut PgConnection`) |
+| `SessionRevoker` | `session_revoker.rs` | session | password, account, mfa, org, admin, protect | **çağıranın transaction'ında** (`&mut PgConnection`); `RevokeOptions::also_trusted_devices` aynı bağlantıda authn-mfa'nın `revoke_trusted_devices_in_tx`'i ile uygulanır (PWD-09, MFA-09) |
 | `SessionIssuer` | `session_issuer.rs` | session | oidc-client (sosyal giriş), admin (impersonation), webauthn akışları session üzerinden | kendi transaction'ı |
 | `DataExporter` | `data_exporter.rs` | her modül kendi bölümü için; toplayıcı account | account | çağıranın bağlantısı |
 
@@ -134,26 +136,44 @@ Kurallar:
 - Tüketiciler belgelenmiş imzaya ve semantiğe göre kod yazar ve testlerde `authn_testkit::TestPorts` sahtelerini kullanır; gerçek uygulama hazır olmadan da paralel çalışabilir.
 - `&mut PgConnection` alan metotlar çağıranın transaction'ının parçasıdır: çağıran commit etmezse etki yoktur (ARC-06).
 - Sır içeren port verileri (`SensitiveString`: token, OTP) yalnızca amacına uygun yere serileştirilir (outbox'ta zarf şifreli `sealed_payload`); `Debug` çıktıları redakte edilmiştir.
+- `RevocationReason` (`session_revoker.rs`) Dalga A'da `MembershipChanged` (`membership_changed`: rol düşürme, özel rolden izin çıkarma, devirde eski sahibin düşürülmesi) ile genişletildi. Değerler `sessions.revoked_reason` / `trusted_devices.revoked_reason` biçim kısıtına (`^[a-z][a-z0-9_]{0,63}$`) uyar; yeni neden migration gerektirmez.
+
+### Modül kancaları (Dalga A trait'leri, uygulayan: authn-server)
+
+Aynı dalgadaki modüller birbirini göremediği için, başka bir modülün verisine ihtiyaç duyan Dalga A crate'i **kendi crate'inde** küçük bir trait tanımlar; uygulamayı (adaptörü) diğer modüllerin API'leriyle authn-server yazar. Varsayılan uygulamalar yalnızca tek kiracılı kurulum ve testler içindir (`NoOtherLoginMethods`, `NoProfiles`, `NoOrganizations`, `StaticMfaPolicySource`, `PasswordOnlyMethods`, `UnrestrictedPolicySource`); son giriş yöntemi kuralı gibi kontrollerde güvenli tarafta kalırlar (bilinmeyen yöntem yok sayılır → silme reddedilir), ama kuruluş politikalarını uygulamazlar — üretimde server adaptörleri zorunludur. Uygulama ayrıntıları ve veri kaynakları §15.1'dedir.
+
+| Trait | Tanımlayan dosya | Çağrı bağlamı |
+|-------|------------------|---------------|
+| `authn_password::LoginMethodInventory` | `crates/authn-password/src/hooks.rs` | verilen `&mut PgConnection` (çağıran `users` satırını `FOR UPDATE` kilitlemiştir) |
+| `authn_password::ProfileLookup` | `crates/authn-password/src/hooks.rs` | havuz |
+| `authn_account::OrganizationOwnership` | `crates/authn-account/src/hooks.rs` | verilen bağlantı (kullanıcı satırı kilitli) |
+| `authn_mfa::MfaPolicySource` | `crates/authn-mfa/src/hooks.rs` | verilen bağlantı (transaction içinde **ve** düz bağlantıyla) |
+| `authn_webauthn::AccountMethodsSource`, `authn_webauthn::PasskeyPolicySource` | `crates/authn-webauthn/src/hooks.rs` | verilen bağlantı (kullanıcı satırı kilitli) |
+| `authn_protect::risk::NotMeTokenIssuer` | `crates/authn-protect/src/risk/alerts.rs` | verilen bağlantı (uygulayan: authn-session) |
+| `authn_audit::AuditAccessPolicy` | `crates/authn-audit/src/policy.rs` | `check(principal, org, permission, client_ip)` |
+| `authn_audit::OutboxHandler` | `crates/authn-audit/src/outbox/worker.rs` | outbox işçisi (konu öneki başına) |
+
+Kural: kanca uygulaması **yalnızca verilen bağlantıdan** okur (ikinci bir havuz bağlantısı kilitli satırı göremez veya kilitlenmeye yol açar) ve yan etki üretmez; yazma gerekiyorsa sahibin `*_in_tx` API'si aynı bağlantıyla çağrılır.
 
 ---
 
 ## 5. Tablo sahipliği
 
-Şema tek bir yerde tasarlandı (`migrations/0001`–`0012`). Sahip modül tabloya yazan **tek** crate'tir; diğerleri yalnızca sahibin API'si veya portu üzerinden erişir. Okuma için doğrudan SQL gerekiyorsa §13.
+Şema tek bir yerde tasarlandı (`migrations/0001`–`0012`); Dalga A modülleri kendi aralıklarında tablo/kolon/indeks ekledi (§6). Sahip modül tabloya yazan **tek** crate'tir; diğerleri yalnızca sahibin API'si veya portu üzerinden erişir. Okuma için doğrudan SQL gerekiyorsa §13; onaylanmış istisnalar aşağıda listelidir.
 
 | Tablo | Sahip | Not |
 |-------|-------|-----|
-| `users`, `password_credentials` | store | Temel CRUD `UserRepository`; durum geçiş kuralları account, hash mantığı crypto/password |
-| `user_profiles`, `terms_versions`, `consents`, `account_deletions` | account | |
+| `users`, `password_credentials` | store | Temel CRUD `UserRepository` (`find_many`, bakım işleri için `claim_next` dahil); durum geçiş kuralları account, hash mantığı crypto/password. Salt-okunur istisna: authn-audit takma ad çözümünde `users.id`/`users.status`'u kendi `audit_subjects` tablosuyla tek ifadede birleştirir (AUD-03, AUD-05) |
+| `user_profiles`, `terms_versions`, `consents`, `account_deletions`, `email_reservations` | account | `email_reservations` (1200): e-posta değişikliğinden sonra eski adres, geri alma süresi boyunca eski sahibine ayrılır (ACC-07); kayıt ve değişiklik ayrılmış adrese kayıtlı adres gibi yanıt verir |
 | `sessions`, `refresh_tokens`, `auth_challenges` | session | |
 | `one_time_tokens` | paylaşımlı | Her `purpose` değeri tek bir modüle aittir (aşağıda) |
 | `mfa_factors`, `recovery_codes`, `mfa_user_settings`, `trusted_devices` | mfa | |
 | `webauthn_user_handles`, `webauthn_credentials`, `webauthn_ceremonies` | webauthn | |
 | `identities`, `oauth_states` | oidc-client | `identities` Faz 2 kurumsal SSO'nun da bağlantı noktasıdır |
-| `organizations`, `roles`, `role_permissions`, `memberships`, `invitations`, `org_domains`, `org_policies`, `service_accounts`, `api_keys` | org | Yerleşik roller sabit kimliklerle `0012`'de |
+| `organizations`, `roles`, `role_permissions`, `memberships`, `invitations`, `org_domains`, `org_policies`, `service_accounts`, `api_keys`, `org_auto_join_exclusions` | org | Yerleşik roller sabit kimliklerle `0012`'de. `org_auto_join_exclusions` (1501): çıkarılan/ayrılan üye domain otomatik katılımıyla geri eklenmez (ORG-02, ORG-06). `memberships_last_owner` ertelenmiş kısıtı (1500) bir organizasyonun son aktif sahibinin `users` satırının silinmesini commit'te reddeder (ACC-09'un ikinci savunma hattı) |
 | `rate_limit_buckets` (UNLOGGED), `login_soft_locks`, `captcha_pow_challenges`, `known_devices`, `known_networks` | protect | |
 | `audit_subjects`, `audit_events`, `audit_event_pii`, `audit_chain_head`, `audit_chain_checkpoints`, `outbox`, `webhook_endpoints`, `webhook_deliveries` | audit | notify, `outbox`'a `notification.*` konulu kayıt **ekler** (Notifier uygulaması) |
-| `data_encryption_keys`, `signing_keys` | crypto | |
+| `signing_keys`, `data_encryption_keys` | crypto | `data_encryption_keys` **ayrılmış, kullanılmıyor** (0014 yorumu): CRY-08 zarfı kendi KEK ile sarılmış DEK'ini taşır (`version ‖ kek_id ‖ wrapped_dek ‖ nonce ‖ ciphertext`); tablo ileride KMS sarılmış-DEK önbelleği için boş tutulur |
 
 `one_time_tokens.purpose` kaydı:
 
@@ -166,6 +186,19 @@ Kurallar:
 | `magic_link` / `login_code` / `not_me` | session | link / code / link |
 | `mfa_email_otp` / `mfa_sms_otp` / `phone_verification` | mfa | code |
 | `org_ownership_transfer` | org | link |
+
+Purpose kayıt defteri **kodda** `authn_store::TokenPurpose` enum'udur (bu tablonun birebir karşılığı; link/kod türü `TokenPurpose::kind()`'dan türetilir, dize ile yeni amaç yaratılamaz, bilinmeyen değer okumada `Corrupt` hatasıdır). Yeni purpose = `TokenPurpose` varyantı + `kind()` kolu + bu tabloya satır; sahibi §13 kaydıyla mimardan ister.
+
+Purpose'a özgü sözleşmeler:
+- `password_reset` / `password_reset_code`: `target` = gönderildiği normalize adres; adres değiştiyse, şifre kaldırıldıysa veya hesap uygun durumdan çıktıysa tüketim reddedilir (PWD-07, PWD-09).
+- `email_change_revert`: geri alma, `OneTimeTokenRepository::revoke_for_user_since` ile yalnızca kendisinden **sonra** verilmiş geri alma linklerini iptal eder; eski sahibin önceki linki korunur (ACC-07).
+- `org_ownership_transfer`: `group_id` = `target` = organizasyon kimliği, `metadata.from_user_id` = başlatan; `revoke_group(org)` organizasyonun tüm bekleyen devirlerini iptal eder (ORG-11).
+
+Başka modülün purpose'ları üzerinde **yalnızca iptal** istisnaları (iptal erişimi kaldırır, hiçbir şey vermez; okuma ve tüketme yasaktır):
+- authn-account, adres değiştiğinde veya değişiklik geri alındığında kullanıcının adresine gönderilmiş **tüm** purpose'ları iptal eder (`authn_account::ADDRESS_BOUND_PURPOSES`: `password_reset*`, `magic_link`, `login_code`, `not_me`, `mfa_email_otp` dahil). Adrese gönderilen yeni bir purpose eklenirse bu listeye de eklenir.
+- authn-password (şifre sıfırlama) ve authn-session ("tümünü kapat", "bu ben değilim") account'un bekleyen `email_change` / `email_change_code` token'larını iptal **edebilir** (önerilir; aksi hâlde 24 saatlik değişiklik linki ele geçirilmiş oturumdan sonra da çalışır).
+
+Okuma API'leri: `OneTimeTokenRepository::active_for_user(executor, user, purposes, now)` (hash hariç, yalnızca kendi purpose'larınız — ör. ACC-10 dışa aktarma), `find_active_link`, `find_by_id`.
 
 Yeni purpose eklemek sahibin işidir; bu tabloya §13 ile eklenir. Kurallar: link token = 256 bit, `token_hash = SHA-256(token)`, global benzersiz; kod = 6 hane, `token_hash = HMAC-SHA256(alt anahtar, kod)`, yalnızca `(user_id | challenge_id, purpose)` ile aranır; tüketim tek atomik `UPDATE … WHERE consumed_at IS NULL AND revoked_at IS NULL AND expires_at > $now RETURNING` ile yapılır; yeni istek öncekileri `revoked_at` ile geçersiz kılar; birlikte üretilen link + kod aynı `group_id`'yi taşır.
 
@@ -206,7 +239,21 @@ Yeni purpose eklemek sahibin işidir; bu tabloya §13 ile eklenir. Kurallar: lin
 - Bir modül yalnızca **kendi tablolarını** değiştirir; başka tabloya kolon/indeks gerekiyorsa §13.
 - Migration'lar eklemelidir (expand/contract): kolon silme/yeniden adlandırma iki adımda yapılır.
 - `authn-store` ve `authn-testkit`'in `build.rs` dosyaları `migrations/` değiştiğinde yeniden gömmeyi tetikler.
-- En az yetki önerisi (OPS-10, AUD-02): uygulama rolü `audit_events` üzerinde `UPDATE`/`DELETE`/`TRUNCATE` yetkisine sahip olmamalıdır; tablo ayrıca tetikleyiciyle ekleme-yalnızca korunur. Saklama temizliği yalnızca `SET LOCAL authn.audit_purge_before = '<zaman>'` ile ve `audit_chain_checkpoints` kaydıyla yapılır.
+- Düşük sürümlü yeni migration'lar (ör. mimarın `0013`'ü, `1200` uygulanmış bir veritabanında) da uygulanır: sqlx sürüm sırasına değil "uygulanmamış" kümesine bakar (`authn-store/tests/schema.rs` `ops_10_architect_migrations_added_after_module_ranges_still_apply`).
+- En az yetki (OPS-10, AUD-02): uygulama rolü `audit_events` üzerinde `UPDATE`/`DELETE`/`TRUNCATE` yetkisine sahip olmamalıdır; tablo ayrıca tetikleyiciyle ekleme-yalnızca korunur. Çalıştırılabilir yardımcı (1700, authn-audit): `SELECT authn_audit_apply_least_privilege('<uygulama_rolü>', '<bakım_rolü>');` — iki rolden de tüm audit/outbox/webhook tablolarındaki yetkileri önce geri alır; sonra uygulama rolüne `audit_events` üzerinde yalnızca `SELECT, INSERT` (ve takma ad / PII tablolarında ekleme-silme, outbox/webhook tablolarında olağan yetkiler), bakım rolüne saklama temizliği (`audit_events`/`outbox`/`webhook_deliveries` üzerinde `DELETE`) ve kontrol noktası ekleme yetkisi verir. Kurulum runbook'unda (DOC-06) uygulama rolü bu çağrıdan sonra tablo sahibi **olmamalıdır** (sahip her yetkiye sahiptir). `AuditService::run_maintenance` ve `create_checkpoint` bakım rolünün havuzuyla çalışır (ayrı `PgPool`, §15.6). Saklama temizliği yalnızca `SET LOCAL authn.audit_purge_before = '<zaman>'` ile ve `audit_chain_checkpoints` kaydıyla yapılır.
+
+Dalga A sonrası migration'lar:
+
+| Sürüm | Sahip | İçerik |
+|-------|-------|--------|
+| `0013` | mimar | `password_credentials_wrapped_pepper_check`: `argon2id*` şemaları (`argon2id_wrapped_md5/sha1` dahil) `pepper_version` taşır (CRY-02, CRY-04) |
+| `0014` | mimar | `data_encryption_keys` "ayrılmış" yorumu (CRY-08); `users_locked_until_idx` (ACC-06 kilit açma işi) |
+| `1200` | account | `account_deletions.previous_status`, `email_reservations` |
+| `1300` | mfa | `mfa_user_settings` kullanıcı kilidi kolonları, kullanıcı başına tek e-posta faktörü, temizlik indeksleri |
+| `1400` | webauthn | `webauthn_credentials.clone_suspected_at`, `discoverable`; seremoni bağlama CHECK'leri |
+| `1500`, `1501` | org | API anahtarı tek sahip / üyelik FK, servis hesabı sahip olamaz, `role_permissions_owner_only`, `memberships_last_owner` ertelenmiş kısıtı; `org_auto_join_exclusions` |
+| `1600` | protect | `rate_limit_buckets.allowed` (tek ifadede GCRA kararı), risk ve temizlik indeksleri |
+| `1700` | audit | `webhook_endpoints.failing_since`, `last_success_at`, teslim/kiralama indeksleri, `authn_audit_apply_least_privilege` |
 
 ---
 
@@ -242,6 +289,9 @@ Kurallar:
 - İstek bilgisi `authn_core::http::RequestContext` extractor'ı ile alınır (istek kimliği, istemci IP'si, user-agent, cihaz kimliği, dil).
 - Gövde/sorgu/yol için `authn_core::http::{Json, Query, Path}` kullanılır (reddedilmeler standart hata zarfıyla döner); axum'un orijinalleri kullanılmaz.
 - Tüm endpoint'ler `/v1/...` altında, JSON alanları `snake_case`, her handler `#[utoipa::path]` ile belgelenir; modül kendi `#[derive(utoipa::OpenApi)]` yapısını dışa açar, server birleştirir.
+- **Yol parametresi adları:** axum 0.8 (matchit), aynı statik önekten sonra aynı konumda farklı adla kaydedilmiş parametreleri çakışma sayar ve `Router::merge` açılışta panikler (`/v1/orgs/{id}/members` + `/v1/orgs/{org_id}/webhooks`). Bu yüzden: parametre adları `snake_case`'tir ve kaynağın kimliği için `<kaynak>_id` biçimindedir; aynı konumdaki parametre her router'da (ve `#[utoipa::path(path = …)]`'ta) **aynı adı** taşır. Kanonik adlar: `/v1/orgs/{org_id}/…`, `/v1/admin/users/{user_id}/…`, `/v1/me/sessions/{session_id}`; alt kaynaklar `{member_id}`, `{role_id}`, `{key_id}`, `{factor_id}`, `{passkey_id}` vb. Zorlayan test: `crates/authn-testkit/tests/routes.rs` (`arc_09_*`; tüm crate'lerin `.route(` ve `path = ` dizelerini tarar).
+- **Aynı yol, farklı metot:** iki router aynı yolu yalnızca farklı HTTP metotlarıyla kaydedebilir (axum metotları birleştirir, aynı metotta panikler). Ayrılmış: `GET /v1/me` → authn-session (SES-16), `DELETE /v1/me` → authn-account (ACC-09).
+- **API anahtarı kapsamı:** `authn_org::api_key_middleware` `Principal`'ı yalnızca `/v1/orgs/{org_id}` ve altındaki yollarda üretir; SES-10 gibi istemci kimlik doğrulaması isteyen uç noktalar `OrgService::authenticate_api_key`'i doğrudan çağırır. `/v1/me/…` okuyucuları derinlemesine savunma olarak `principal.session_id().is_none()` (API anahtarı) olan principal'ları reddetmelidir.
 - Modülün middleware'i (ör. protect katmanları, session kimlik doğrulaması) `pub fn layer(…)`/`from_fn_with_state` olarak dışa açılır; yığına yerleştirme `authn-server`'ın işidir (OPS-02 sırası: `src/app.rs`).
 
 ---
@@ -266,7 +316,8 @@ Kurallar:
 - Süreler `#[serde(with = "authn_core::config::duration")]` ile (`"30s"`, `"15m"`, `"2h"`, `"7d"`), rate limit politikaları `RateLimitPolicy { limit, period }` ile ifade edilir.
 - Sırlar `SecretString`'dir, `Debug`'da görünmez; doğrulama mesajları anahtar adını verir, **değeri asla**. Anahtar materyali base64 ≥ 32 bayt (`ConfigProblems::require_key`).
 - Zorunlu alanlar: `server.public_base_url`, `database.url`, `crypto.peppers`, `crypto.current_pepper_version`, `crypto.keks`, `crypto.current_kek_id`, `crypto.hmac_root_key`.
-- `server.environment` varsayılanı `production`'dır (en katı). Üretim/staging'de depoda yayımlanmış örnek/test anahtarları reddedilir (`KNOWN_PUBLIC_KEYS`), `public_base_url` https olmalıdır, log e-posta taşıyıcısı, bellek içi rate limit ve özel ağlara giden istek izni yasaktır.
+- `server.environment` varsayılanı `production`'dır (en katı). Üretim/staging'de depoda yayımlanmış örnek/test anahtarları reddedilir (`KNOWN_PUBLIC_KEYS`). Üretimde `public_base_url` https olmalıdır; bellek içi rate limit ve özel ağlara giden istek izni yasaktır.
+- Ortama bağlı `[notify]` kuralları (`AppConfig::validate`, `check-config` dahil; authn-notify builder'ları açılışta yeniden uygular): `notify.email.transport = "log"` ve `notify.sms.provider = "log"` yalnızca `development`/`test`'te; `notify.email.transport = "disabled"` üretimde yasak; `notify.email.smtp.extra_ca_file` yalnızca `development`/`test`'te (docker-compose Mailpit'in sabit, **herkese açık** geliştirme sertifikası `config/dev-certs/mailpit.pem` için; bkz. `config/dev-certs/README.md`).
 
 ---
 
@@ -299,7 +350,8 @@ Kurallar:
 - Test adları gereksinim kimliğini içerir: `pwd_07_reset_token_is_single_use`.
 - Veritabanı testleri: `#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]` (her test kendi geçici veritabanını alır). `DATABASE_URL` `.cargo/config.toml`'da varsayılanlıdır ve sunucuda `authn` veritabanı bulunmalıdır (`docker compose up -d` oluşturur).
 - HTTP testleri: `authn_testkit::http::{with_request_context, TestRequest}` ile router üzerinden `oneshot`; hata zarfı `TestResponse::assert_error(status, "code")`.
-- Portlar için `authn_testkit::TestPorts` (ortak `FakeClock`); zaman `ports.clock.advance(..)` ile ilerletilir, `OffsetDateTime::now_utc()` çağrılmaz.
+- Portlar için `authn_testkit::TestPorts` (ortak `FakeClock`); zaman `ports.clock.advance(..)` ile ilerletilir, `OffsetDateTime::now_utc()` çağrılmaz. `RecordingNotifier` SMS'i de kaydeder (`recorded_sms`, `set_sms_available(false)` → `sms_unavailable`); `RecordingAuditSink::pseudonymized()` `pseudonymize_subject` çağrılarını verir.
+- Mimari testler (`crates/authn-testkit/tests/`): `architecture.rs` (bağımlılık grafiği, §2), `routes.rs` (yol parametresi adları, §7), `dev_certs.rs` (geliştirme sertifikası, §9).
 - Dış servisler `wiremock` veya `FakeHttpClient` ile; ağ bağımlılığı yok (TST-08).
 - Entegrasyon test dosyaları (`tests/*.rs`) ilk satırda şunu taşır (clippy test gevşetmeleri yardımcı fonksiyonlara uygulanmaz):
   `#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // integration-test crate`
@@ -346,4 +398,114 @@ Geriye uyumlu **eklemeler** (yeni port metodu varsayılan gövdeyle, yeni hata k
 | SQL'de enum yerine `text` + `CHECK` | Değer eklemek basit bir kısıt değişikliğidir |
 | `EmailAddress` `sqlx::Decode` uygulamaz | Kurallar sertleştiğinde eski satırlar okunamaz hale gelmez |
 | `AuthError` kutulanmış (`Box<Inner>`) | `Result<T, AuthError>` işaretçi boyutunda; `clippy::result_large_err` yok |
-| `fuzz/` ayrı workspace | `libfuzzer-sys` (NCSA) yalnızca geliştirme aracında; `fuzz/deny.toml` istisnayı yalnızca o crate için tanır |
+| `fuzz/` ayrı workspace | `libfuzzer-sys` (NCSA) yalnızca geliştirme aracında; `fuzz/deny.toml` istisnayı yalnızca o crate için tanır (webauthn-rs ailesinin MPL-2.0 istisnaları kökle aynı) |
+| Dalga A modülleri arası veri ihtiyacı → modülün kendi crate'inde kanca trait'i, uygulaması server'da (§4, §15.1) | Dalga A'nın birbirine bağımlı olmaması korunur; varsayılan uygulamalar testleri ve tek kiracılı kurulumu basit tutar |
+| `data_encryption_keys` tablosu ayrılmış (kullanılmıyor) | Değer başına DEK zarfın içinde taşınır: şifre çözmede DB araması yok, nonce yeniden kullanımı imkânsız, KEK rotasyonu satır bazında `rewrap` |
+| Bakım işleri `UserRepository::claim_next` (`FOR UPDATE SKIP LOCKED`) ile satır talep eder | Çoklu instance güvenli (OPS-06); kilitli satır beklenmez, atlanır |
+| Mailpit için depoda sabit, herkese açık geliştirme sertifikası (`config/dev-certs`) | SMTP taşıyıcısı TLS'i doğrular (NTF-03); her açılışta değişen sertifikaya güvenilemez. `extra_ca_file` geliştirme/test dışında reddedilir |
+
+---
+
+## 15. Sunucu bağlama tablosu
+
+Dalga A modüllerinin authn-server (ve gerekli yerlerde Dalga B) tarafından bağlanması gereken her trait, port uygulaması, servis, router, katman, iş ve CLI adımı. Kaynak: modül README'lerinin "server'ın bağlaması gerekenler" bölümleri ve `contract-change-requests.md`'deki bağlama kayıtları. Bir satır uygulanınca ilgili talep kaydı "Uygulandı" olarak işaretlenir.
+
+### 15.1 Kanca trait'leri (server uygular)
+
+| Trait | Sahip / dosya | Server uygulaması (veri kaynağı) | Tüketen ve gereksinim |
+|-------|---------------|----------------------------------|-----------------------|
+| `authn_password::LoginMethodInventory::other_login_methods(conn, user)` | password / `crates/authn-password/src/hooks.rs` | `WebauthnService::passkey_count_in(conn, user, true) > 0` → `LoginMethod::Passkey`; bağlı kimlikler (oidc-client `identities`) → `LoginMethod::Social`; **yalnızca `conn`'dan** | `PasswordService` şifre kaldırma (PWD-11) |
+| `authn_password::ProfileLookup::profile(user)` | password / `hooks.rs` | `AccountService::profile_of(user)` → `ProfileHints { display_name, locale }` | zxcvbn girdileri ve bildirim dili (PWD-04) |
+| `authn_account::OrganizationOwnership::sole_owner_organizations(conn, user)` | account / `crates/authn-account/src/hooks.rs` | `authn_org::sole_owner_organizations(conn, user)` | hesap silme (ACC-09) |
+| `authn_mfa::MfaPolicySource::org_policy_for_user(conn, user)` | mfa / `crates/authn-mfa/src/hooks.rs` | `authn_org::policies_for_user(conn, user)` → her biri `OrgMfaPolicy`'ye, `OrgMfaPolicy::strictest` ile birleştir (tüm aktif üyelikler); düz bağlantıyla da çağrılır | son faktör kuralı, güvenilir cihaz izni (MFA-07, MFA-08, MFA-09) |
+| `authn_mfa::MfaPolicySource::webauthn_factor_count(conn, user)` | mfa / `hooks.rs` | `WebauthnService::passkey_count_in(conn, user, false)` | son faktör kuralı (MFA-07) |
+| `authn_webauthn::AccountMethodsSource::other_login_methods(conn, user)` | webauthn / `crates/authn-webauthn/src/hooks.rs` | şifre (`UserRepository::find_password(conn, user)`), bağlı sosyal kimlikler, kurulumda açıksa magic link / e-posta kodu | passkey silme (PKY-04, PWD-11) |
+| `authn_webauthn::AccountMethodsSource::mfa_facts(conn, user)` | webauthn / `hooks.rs` | `MfaService` durumu + kuruluş politikası (`mfa_required`, passkey dışı etkin faktör sayısı) | passkey silme (MFA-07) |
+| `authn_webauthn::PasskeyPolicySource::policy_for_user(conn, user, active_org)` | webauthn / `hooks.rs` | `active_org = Some` → o organizasyonun AAGUID politikası; `None` (her kimlik doğrulamada) → tüm aktif üyeliklerin `PasskeyPolicy::strictest` birleşimi | PKY-08 |
+| `authn_protect::risk::NotMeTokenIssuer::issue_not_me_token(conn, user, now)` | protect / `crates/authn-protect/src/risk/alerts.rs` | **authn-session**: `one_time_tokens` `not_me` linki; tüketimi tüm oturumları kapatır ve şifre sıfırlamaya zorlar | RSK-04 |
+| `authn_audit::AuditAccessPolicy::check(principal, org, permission, client_ip)` | audit / `crates/authn-audit/src/policy.rs` | `OrgService::authorize_from(principal, Permission::{AuditRead, WebhooksRead, WebhooksManage}, org, client_ip)`: `Ok` → izin, `Err` → ret; servis hesabı yalnızca kendi organizasyonunda, platform admini örtük erişimsiz, IP izin listesi `client_ip`'ye uygulanır | AUD-04, AUD-07, ORG-07 |
+| `authn_audit::OutboxHandler` (`notification` öneki) | audit / `crates/authn-audit/src/outbox/worker.rs` | `OutboxMessage` → `authn_notify::DeliveryRequest`, `NotificationDeliverer::deliver`; `DeliveryFailure::Retry` → `HandlerError::Retry`, `Permanent` → `HandlerError::permanent` (örnek: `crates/authn-notify/README.md`); `OutboxHandlers::register("notification", …)` | AUD-06, NTF-03 |
+| `authn_core::ports::DataExporter` (bölüm başına) | her modül | `MfaDataExporter` (`crates/authn-mfa/src/export.rs`), `PasskeyDataExporter` (`crates/authn-webauthn/src/export.rs`), `OrgDataExporter` (`crates/authn-org/src/export.rs`); session / oidc-client / protect / audit bölümleri Dalga B'de. `AccountServiceDeps.exporters`'a verilir; adlar benzersiz, `^[a-z][a-z0-9_]{0,63}$`, `account` ayrılmış | ACC-10 |
+
+### 15.2 Port uygulamaları (`AppState`)
+
+| Port | Uygulama | Yapıcı / kaynak |
+|------|----------|-----------------|
+| `Clock` | `SystemClock` | `crates/authn-core/src/ports/clock.rs` |
+| `AuditSink`, `EventPublisher` | `PgAuditSink`, `OutboxEventPublisher` | `crates/authn-audit/src/{sink.rs,outbox/publisher.rs}` (`AuditService`) |
+| `Notifier`, `EmailTransport`, `SmsSender` | `OutboxNotifier`, SMTP/log/disabled, HTTP/log/none | `authn_notify::NotifyServices::from_config(&config, pool, envelopes, clock, rate_limiter, http)` — Tokio runtime içinde; `notifier_port()`, `.email`, `.sms` (`crates/authn-notify/src/services.rs`) |
+| `RateLimiter` | Postgres (varsayılan) / Redis (`authn-protect` `redis` feature) / bellek (yalnızca geliştirme) | `authn_protect::build_rate_limiter` (`crates/authn-protect/src/rate_limit/mod.rs`) |
+| `CaptchaVerifier` | Turnstile / hCaptcha / proof-of-work / kapalı | `authn_protect::build_captcha_verifier` (`captcha/mod.rs`); `CaptchaService` (`FromRef`) |
+| `RiskEvaluator` | `DefaultRiskEvaluator` | `crates/authn-protect/src/risk/mod.rs` |
+| `GeoIpLookup` | opsiyonel — paketle gelen adaptör yok; takılmazsa imkânsız seyahat sinyali kapalı (RSK-02) | — |
+| `HttpClient` | `SsrfSafeHttpClient::new(&config.protect.outbound)` | `crates/authn-protect/src/outbound/mod.rs` (HIBP, webhook, CAPTCHA, SMS, OIDC) |
+| `BreachedPasswordChecker` | `HibpBreachChecker::from_config(&config.password.breach_check, http)` | `crates/authn-password/src/breach.rs` |
+| `PasswordValidator` | `PasswordService::validator()` | `crates/authn-password/src/service/mod.rs` (authn-account'a ACC-01 için) |
+| `DnsTxtResolver` | `HickoryDnsTxtResolver::from_system_conf(config.org.dns_timeout)` | `crates/authn-org/src/dns.rs` |
+| `SessionRevoker`, `SessionIssuer` | authn-session (Dalga B) | `also_trusted_devices` ⇒ aynı `conn` ile `MfaService::revoke_trusted_devices_in_tx` |
+
+### 15.3 Servisler, router'lar, OpenAPI
+
+| Crate | `FromRef<AppState>` | Router ve yerleşim | OpenAPI |
+|-------|---------------------|--------------------|---------|
+| password | `PasswordService` (`PasswordService::new(PasswordServiceDeps{…}, PasswordServiceSettings::from_app_config(&config))`) | `authn_password::router` — `/v1/password/*` kimliksiz, `/v1/me/password*` kimlik doğrulama katmanının arkasında | `PasswordApi` |
+| account | `AccountService` (`AccountService::new(…, AccountServiceSettings::from_app_config(&config)?)?`) | `authn_account::router` — `/v1/signup`, `/v1/email/*`, `/v1/terms` kimliksiz; `/v1/me*` oturum arkasında (`GET /v1/me` session'ın) | `AccountApi` |
+| mfa | `MfaService` (`sms: Some(notify.sms)`, `policy_source`) | `authn_mfa::router` — oturum arkasında; `passkey` kapalıysa `settings.webauthn_available = false` | `MfaApi` |
+| webauthn | `WebauthnService`, `WellKnownDocuments` (`service.well_known()`) | `authn_webauthn::router` oturum + CSRF arkasında; `authn_webauthn::well_known_router` kökte, kimliksiz | `WebauthnApi` |
+| org | `OrgService` (`dns`, `session_revoker`) | `authn_org::router` kimlik doğrulama arkasında | `OrgApi` |
+| protect | `CaptchaService` | `authn_protect::router` (`/v1/captcha/challenge`) | `ProtectApi` |
+| audit | `AuditService` (`policy`: §15.1) | `authn_audit::router` (`/v1/me/security-events`, `/v1/orgs/{org_id}/audit-events`, webhook'lar) | `AuditApi` |
+| notify | — (router yok) | — | — |
+
+Cargo feature'ları (ARC-11): workspace girdileri `default-features = false` olduğundan authn-server `authn-mfa`'yı `features = ["sms"]`, `authn-webauthn`'u `["passkey"]`, `authn-notify`'ı `["sms"]` ile; Redis isteniyorsa `authn-protect`'i `["redis"]` ile alır.
+
+### 15.4 Katmanlar (OPS-02, `crates/authn-server/src/app.rs`)
+
+| Yuva | Katman (dıştan içe) | Kaynak |
+|------|---------------------|--------|
+| (7) | `validate_host` → `security_headers` → `cors` → `http_rate_limit` (`from_fn_with_state`, hepsi `request_context_middleware`'in içinde) | `crates/authn-protect/src/web/{host,headers,cors}.rs`, `rate_limit/layer.rs`; örnek yığın `crates/authn-protect/tests/web_stack.rs` |
+| (8) | session kimlik doğrulaması → CSRF (Dalga B); `authn_org::api_key_middleware` tam `/v1/...` yolunu görecek şekilde (yalnızca `/v1/orgs/{org_id}…` için `Principal` üretir) | authn-session; `crates/authn-org/src/middleware.rs` |
+
+### 15.5 Arka plan işleri (OPS-06, çoklu instance güvenli)
+
+| İş | Fonksiyon | Dosya |
+|----|-----------|-------|
+| Outbox teslimi (bildirim + webhook + domain olayları) | `AuditService::outbox_worker(handlers).run(shutdown)`; `handlers = AuditService::outbox_handlers(http)` + `notification` köprüsü | `crates/authn-audit/src/service.rs` |
+| Audit saklama ve kontrol noktaları (günlük) | `AuditService::run_maintenance(&maintenance_pool)` | `crates/authn-audit/src/service.rs`, `retention.rs` |
+| Doğrulanmamış hesap temizliği (ACC-05) | `AccountService::purge_unverified_accounts(max)` | `crates/authn-account/src/service/maintenance.rs` |
+| Hesap silme tamamlama (ACC-09) | `AccountService::purge_due_deletions(max)` | `crates/authn-account/src/service/deletion.rs` |
+| Geçici kilitlerin açılması (ACC-06) | `AccountService::release_expired_locks(max)` | `maintenance.rs` |
+| Süresi dolan adres rezervasyonları (ACC-07) | `AccountService::purge_expired_reservations(max)` | `maintenance.rs` |
+| Organizasyon silme tamamlama (ORG-12) | `OrgService::purge_due_deletions(limit)` | `crates/authn-org/src/service/orgs.rs` |
+| Süresi dolan davetler (ORG-05) | `OrgService::expire_invitations()` | `orgs.rs` |
+| MFA bekleyen kayıt / güvenilir cihaz temizliği | `MfaService::purge_expired()` | `crates/authn-mfa/src/service/manage.rs` |
+| Passkey seremonileri | `WebauthnService::purge_expired_ceremonies()` | `crates/authn-webauthn/src/service/mod.rs` |
+| Rate limit kovaları | `PostgresRateLimiter::purge_expired(batch)` | `crates/authn-protect/src/rate_limit/postgres.rs` |
+| PoW CAPTCHA kayıtları | `ProofOfWorkCaptcha::purge_expired()` (`PURGE_GRACE` = 15 dk) | `crates/authn-protect/src/captcha/pow.rs` |
+| Yumuşak kilitler | `LoginProtection::purge_expired()` | `crates/authn-protect/src/login.rs` |
+| Tek kullanımlık token'lar | `OneTimeTokenRepository::delete_expired(conn, before, limit)` | `crates/authn-store/src/one_time_tokens.rs` |
+| İmza anahtarı rotasyonu (CRY-10) | `SigningKeyRepository::rotate_if_due` | `crates/authn-store/src/signing_keys.rs` |
+| Oturum / challenge temizliği | authn-session (Dalga B) | — |
+
+### 15.6 Açılış, kapanış ve CLI
+
+- **Açılış:** `authn_core::tls::install_crypto_provider()`; `NotifyServices::from_config` Tokio runtime içinde; `AccountService::sync_terms_versions()`; ayrı **bakım rolü havuzu** (OPS-10; yapılandırılmamışsa uygulama havuzu) `run_maintenance` / `create_checkpoint` için.
+- **Zarif kapanış (OPS-07):** outbox işçisine kapanış sinyali; `PasswordService::drain_background_jobs()`, `AccountService::drain_background_jobs()`.
+- **`check-config`:** `AppConfig::load` (ortama bağlı `[notify]` kuralları dahil) + `TemplateRenderer::from_config(&config)` şablon doğrulaması.
+- **`verify-audit-chain`:** `authn_audit::verify_chain` / `verify_chain_from` (`crates/authn-audit/src/verify.rs`).
+- **`rotate-kek` / `reencrypt`:** `SigningKeyRepository::rewrap_private_keys`, `authn_audit::webhooks::rewrap_webhook_secrets` ve zarf şifreli her `*_ciphertext` kolonu için `EnvelopeCipher::rewrap` (mfa faktör sırları dahil).
+- **En az yetki kurulumu:** `SELECT authn_audit_apply_least_privilege('<uygulama_rolü>', '<bakım_rolü>');` (§6).
+
+### 15.7 Dalga B için bağlayıcı çağrı kuralları (özet)
+
+| Sahip | Kural | Kaynak talep |
+|-------|-------|--------------|
+| authn-session | `verify_login_password` sonucunu **enum ile** eşle (`MustChangePassword` ⇒ `RequiredAction::ChangePassword`, tam oturum yok; `is_valid()` tek başına kullanılmaz) | password: "authn-session / authn-admin için şifre API'si" |
+| authn-session | `LoginProtection::check_attempt` her şifre denemesinde **tam bir kez**; başarıda `record_success`, başarısızlıkta `record_failure` | protect: "LoginProtection" |
+| authn-session | `verify_factor`'dan önce `proof.kind()` challenge'ın `allowed_factors` listesinde değilse reddet | mfa: "Güvenlik incelemesi sonrası bağlama notları" |
+| authn-session | `SessionRevoker` uygulaması `also_trusted_devices`'ı aynı bağlantıda `revoke_trusted_devices_in_tx` ile uygular; "tümünü kapat" güvenilir cihazları da iptal eder | password: PWD-09, mfa |
+| authn-session | Passkey: `binding_token` web'de `HttpOnly; Secure; SameSite=Strict` çerezde; `target` istemciden değil session kaydından | webauthn: "passkey kimlik doğrulama API'si" |
+| authn-session | SES-10 istemci doğrulaması `OrgService::authenticate_api_key`'i doğrudan çağırır; giriş ve e-posta doğrulamasından sonra `auto_join_verified_domains` | org: "Server / Dalga B bağlama notları" |
+| authn-session | doğru şifreden sonra `AccountService::assess_login`; `Denied(reason)` ⇒ `reason.into_error(now)`; `required_actions` ⇒ SES-22 | account: "Server / Dalga B bağlama notları" |
+| authn-oidc-client | kimlik ayırma transaction'ının başında `UserRepository::lock_for_update(conn, user)` (PWD-11 yarışı) | password: "PWD-11 yarışına karşı kullanıcı satırı kilidi" |
+| authn-admin | `change_status_in_tx` + aynı transaction'da `SessionRevoker`; `reset_user_mfa_in_tx`; `set_must_change_password`; `LoginProtection::unlock`; personel işlemleri `admin.*` olay türleriyle veya impersonator ile | account, mfa, password, protect, audit |

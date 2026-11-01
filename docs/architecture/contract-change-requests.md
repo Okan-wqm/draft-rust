@@ -15,6 +15,14 @@ Kayıt şablonu:
 - **Durum:** Açık | Uygulandı (<tarih>, <commit/özet>) | Reddedildi (<gerekçe>)
 ```
 
+## Mimar — Dalga A işleme özeti (2026-11-01)
+
+Dalga A'nın tüm talepleri işlendi; her kaydın **Durum** satırı güncellendi. Özet:
+
+- **Uygulandı (mimar):** `UserRepository::{find_many, claim_next}` + `UserClaim`; `OneTimeTokenRepository::{revoke_for_user_since, active_for_user}`; `RevocationReason::MembershipChanged`; `RevokeOptions::also_trusted_devices` semantiği; `RecordingNotifier` SMS kaydı ve `RecordingAuditSink::pseudonymized`; migration `0013` (sarmalanmış hash'lerde pepper zorunluluğu) ve `0014` (ayrılmış DEK tablosu, kilit açma indeksi); ortama bağlı `[notify]` kuralları `AppConfig::validate`'te; Mailpit sabit geliştirme sertifikası (`config/dev-certs/`); contracts §4/§5/§6/§7/§9/§14 ve yeni **§15 Sunucu bağlama tablosu**; yol parametresi kuralını zorlayan `authn-testkit/tests/routes.rs`.
+- **Reddedilen:** yok.
+- **Açık kalanlar** durum satırında sahibine yönlendirildi: **authn-server** ve **Dalga B** (authn-session, authn-oidc-client, authn-admin) için ilgili contracts §15 satırları; **authn-notify** (bildirim türleri/şablon metni — mimar onaylı) ve **authn-crypto** (`KeyPurpose::KnownDevice` — mimar onaylı, düşük öncelik). Kendi kayıtlarınızı bulmak için bu dosyada `Açık — **authn-<crate>` arayın.
+
 ## authn-crypto
 
 ### 2026-10-31 — `authn-store` bağımlılığı ve yeni store modülleri
@@ -33,7 +41,7 @@ Kayıt şablonu:
 - **Gerekçe:** Zarf şifreleme değer başına DEK kullanır; DEK, KEK ile sarılmış olarak zarfın içinde taşınır (`version ‖ kek_id ‖ wrapped_dek ‖ nonce ‖ ciphertext`). Bu, şifre çözme yolunda veritabanı araması/önbellek gerektirmez, nonce yeniden kullanımını imkânsız kılar ve KEK rotasyonunu `EnvelopeCipher::rewrap` ile satır bazında yapar. `0011` yorumundaki "zarf başlığı DEK kimliğini taşır" modeli uygulanmadı.
 - **Önerilen değişiklik:** Tablo şimdilik olduğu gibi kalsın (ileride KMS sağlayıcısı için sarılmış-DEK önbelleği olarak kullanılabilir); `0011_keys.sql` yorumu ve `overview.md` bir sonraki mimar düzenlemesinde "kullanılmıyor / ayrılmış" olarak güncellensin. Tablo silinmesi istenirse authn-crypto aralığında (`1000–1099`) bir `DROP TABLE` migration'ı yazılabilir.
 - **Geriye uyumluluk:** Etkisi yok (tabloya yazan/okuyan kod yok).
-- **Durum:** Açık
+- **Durum:** Uygulandı (2026-11-01, mimar: `migrations/0014_reserved_dek_table_and_user_job_index.sql` tabloya "ayrılmış, kullanılmıyor" yorumu ekler; `0011` yorumunun yerini alır; `overview.md` ve contracts §5/§14 güncellendi. Tablo silinmedi: ileride KMS sarılmış-DEK önbelleği için ayrılmış; test `cry_08_data_encryption_keys_is_documented_as_reserved`)
 
 ### 2026-10-31 — Sarmalanmış eski hash'ler için pepper zorunluluğu (şema kısıtı)
 - **Talep eden:** authn-crypto
@@ -42,7 +50,7 @@ Kayıt şablonu:
 - **Gerekçe:** `argon2id_wrapped_md5` ve `argon2id_wrapped_sha1` hash'leri de pepper ile üretilir; `pepper_version` olmadan doğrulanamazlar (kod `Invalid` döner ve loglar). Mevcut kısıt yalnızca `algorithm = 'argon2id'` için `pepper_version`'ı zorunlu kılıyor.
 - **Önerilen değişiklik:** `ALTER TABLE password_credentials ADD CONSTRAINT password_credentials_wrapped_pepper_check CHECK (algorithm NOT LIKE 'argon2id%' OR pepper_version IS NOT NULL);`
 - **Geriye uyumluluk:** Mevcut veride bu biçimde satır yok; ekleme.
-- **Durum:** Açık
+- **Durum:** Uygulandı (2026-11-01, mimar: `migrations/0013_password_wrapped_pepper_check.sql` — `CHECK (NOT starts_with(algorithm, 'argon2id') OR pepper_version IS NOT NULL)`; önek gelecekteki argon2id şemalarını da kapsar; test `cry_04_wrapped_legacy_hashes_require_pepper_version`)
 
 ### 2026-10-31 — Fuzz harness'ine authn-crypto hedefleri eklendi
 - **Talep eden:** authn-crypto
@@ -60,7 +68,7 @@ Kayıt şablonu:
 - **Gerekçe:** Amaçlar dize değil, contracts §5 tablosunun birebir karşılığı olan `TokenPurpose` enum'udur (link/kod türü enum'dan türetilir, yazım hatası yeni bir amaç yaratamaz). Yeni amaç isteyen modül §13 kaydıyla birlikte enum'a varyant eklenmesini talep eder.
 - **Önerilen değişiklik:** contracts §5'e "Yeni purpose = `TokenPurpose` varyantı" notu eklensin.
 - **Geriye uyumluluk:** Etkisi yok.
-- **Durum:** Açık
+- **Durum:** Uygulandı (2026-11-01, mimar: contracts §5 — purpose kayıt defteri kodda `authn_store::TokenPurpose`; yeni purpose = varyant + `kind()` kolu + tablo satırı)
 
 ## authn-store
 
@@ -73,7 +81,7 @@ Kayıt şablonu:
 - **Gerekçe:** HIBP aralık yanıtı ve çevrimdışı sızıntı listesi dış kaynaklı girdidir. Hedef dosyası yazıldı (`fuzz/fuzz_targets/hibp_range_parse.rs`, sahibi authn-password); aynı değişmezler `crates/authn-password/tests/breach.rs` içinde `proptest` ile de çalışıyor.
 - **Önerilen değişiklik:** `fuzz/Cargo.toml`'a `authn-password = { path = "../crates/authn-password" }` bağımlılığı ve `[[bin]] name = "hibp_range_parse", path = "fuzz_targets/hibp_range_parse.rs", test = false, doc = false, bench = false`.
 - **Geriye uyumluluk:** Ekleme.
-- **Durum:** Açık
+- **Durum:** Uygulandı (2026-11-01, mimar: `fuzz/Cargo.toml`, commit 339cc7d)
 
 ### 2026-11-01 — Şifre sıfırlamada güvenilir cihazların silinmesi `SessionRevoker` üzerinden
 - **Talep eden:** authn-password
@@ -82,7 +90,7 @@ Kayıt şablonu:
 - **Gerekçe:** PWD-09 "güvenilir cihazlar silinir" der; authn-password `trusted_devices` tablosuna erişemez. Mevcut sözleşmede yol zaten var: `RevokeOptions { also_trusted_devices: true }`. authn-password sıfırlamayı `revoke_all_for_user(conn, user, RevocationReason::PasswordReset, RevokeOptions { also_trusted_devices: true })` ile, kendi transaction'ında çağırır (test: `pwd_09_reset_revokes_every_session_refresh_token_and_trusted_device`).
 - **Önerilen değişiklik:** authn-session'ın `SessionRevoker` uygulaması bu bayrakta authn-mfa'nın güvenilir cihaz silme API'sini **aynı `&mut PgConnection` üzerinde** çağırmalı (commit edilmezse cihazlar da kalır). Port belgesine "also_trusted_devices çağıranın transaction'ında uygulanır" cümlesi eklenebilir.
 - **Geriye uyumluluk:** Semantik netleştirme; imza değişmez.
-- **Durum:** Açık (authn-session uygulaması bekleniyor)
+- **Durum:** Kısmen uygulandı (2026-11-01, mimar: `RevokeOptions::also_trusted_devices` belgesine "aynı bağlantıda, çağıranın transaction'ında; bayrak yok sayılamaz" sözleşmesi eklendi — `crates/authn-core/src/ports/session_revoker.rs`; contracts §4, §15.2). Açık — **authn-session:** `SessionRevoker` uygulaması (contracts §15.7)
 
 ### 2026-11-01 — Server'ın uygulayacağı trait'ler ve bağlama
 - **Talep eden:** authn-password
@@ -91,7 +99,7 @@ Kayıt şablonu:
 - **Gerekçe:** Dalga A modülleri birbirine bağımlı olamaz; PWD-11 başka giriş yöntemlerini (webauthn, oidc-client), PWD-04 ve bildirimler görünen ad/dili (account) bilmelidir.
 - **Önerilen değişiklik:** (1) `authn_password::LoginMethodInventory` — `async fn other_login_methods(&self, conn: &mut PgConnection, user: UserId) -> Result<Vec<LoginMethod>, AuthError>`; passkey → `LoginMethod::Passkey`, bağlı kimlik → `LoginMethod::Social`; verilen bağlantı üzerinden okunur (çağıran kullanıcı satırını `FOR UPDATE` kilitlemiştir). (2) `authn_password::ProfileLookup` — `async fn profile(&self, user: UserId) -> Result<ProfileHints, AuthError>` (`display_name`, `locale`). (3) `PasswordService::new(PasswordServiceDeps { … }, PasswordServiceSettings::from_app_config(&config))`, `breach_checker = HibpBreachChecker::from_config(&config.password.breach_check, protect_http_client)`, `impl FromRef<AppState> for PasswordService`, `.merge(authn_password::router::<AppState>())` (`/v1/me/password*` kimlik doğrulama katmanının arkasında), `openapi.rs`'e `authn_password::PasswordApi`. (4) Zarif kapanışta `drain_background_jobs().await`. (5) authn-account'a `PasswordValidator` olarak `password_service.validator()`.
 - **Geriye uyumluluk:** Ekleme.
-- **Durum:** Açık (sahiplerin uygulaması bekleniyor)
+- **Durum:** Açık — **authn-server:** contracts §15.1 (`LoginMethodInventory`, `ProfileLookup`), §15.2 (`BreachedPasswordChecker`, `PasswordValidator`), §15.3, §15.6 (`drain_background_jobs`)
 
 ### 2026-11-01 — authn-session / authn-admin için şifre API'si
 - **Talep eden:** authn-password
@@ -100,7 +108,7 @@ Kayıt şablonu:
 - **Gerekçe:** Şifre doğrulama, rehash ve `must_change_password` mantığı tek yerde (authn-password) kalmalı.
 - **Önerilen değişiklik:** Giriş ve step-up: `verify_login_password(&ctx, Option<UserId>, &SecretString) -> Result<LoginPasswordOutcome, AuthError>` (`Valid` / `MustChangePassword` / `Invalid`; kullanıcı yoksa `None` verin — sahte doğrulama ve eşdeğer sorgu içeride). `MustChangePassword` → `RequiredAction::ChangePassword` challenge'ı; tamamlama `apply_required_password_change(&ctx, user, Some(session), &new)` (bayrak yoksa `forbidden`). Admin: `set_must_change_password(&ctx, Actor::User(admin), user, bool)`.
 - **Geriye uyumluluk:** Ekleme.
-- **Durum:** Açık
+- **Durum:** Açık — **authn-session / authn-admin:** contracts §15.7
 
 ### 2026-11-01 — PWD-11 yarışına karşı kullanıcı satırı kilidi
 - **Talep eden:** authn-password
@@ -109,7 +117,7 @@ Kayıt şablonu:
 - **Gerekçe:** "Son giriş yöntemi silinemez" kuralı üç modüle dağılmıştır. authn-password şifre kaldırmayı `users` satırı `FOR UPDATE` kilitliyken kontrol eder; diğer modüller de aynı satırı kilitlerse "son passkey'i sil" ile "şifreyi kaldır" eşzamanlı olarak ikisi birden başarılı olamaz.
 - **Önerilen değişiklik:** Passkey silme ve kimlik ayırma transaction'larının başında `authn_store::UserRepository::lock_for_update(conn, user)`.
 - **Geriye uyumluluk:** Davranış değişikliği yok (yalnızca serileştirme).
-- **Durum:** Açık
+- **Durum:** Kısmen uygulandı: authn-webauthn passkey silme transaction'ı `UserRepository::lock_for_update` ile başlıyor (`crates/authn-webauthn/src/service/manage.rs`). Açık — **authn-oidc-client:** kimlik ayırma (contracts §15.7)
 
 ### 2026-11-01 — `[password]` yeni alanlar
 - **Talep eden:** authn-password
@@ -147,7 +155,7 @@ Kayıt şablonu:
 - **Gerekçe:** E-posta değişikliğinden sonra eski adres, geri alma süresi boyunca eski sahibine rezerve edilir; aksi hâlde saldırgan eski adresle yeni hesap açarak geri almayı imkânsız kılabilir.
 - **Önerilen değişiklik:** §5 tablosunda authn-account satırına `email_reservations` eklenmesi; ER diyagramına `users ||--o{ email_reservations`.
 - **Geriye uyumluluk:** Belge güncellemesi.
-- **Durum:** Açık
+- **Durum:** Uygulandı (2026-11-01, mimar: contracts §5 account satırı; `overview.md` ER diyagramına `users ||--o{ email_reservations`)
 
 ### 2026-11-01 — Paylaşılan tablolarda salt-okunur sorgular ve adrese bağlı token iptali
 - **Talep eden:** authn-account
@@ -156,7 +164,7 @@ Kayıt şablonu:
 - **Gerekçe:** (1) Temizlik işleri aday satırları tek sorguda, çoklu instance güvenli seçmeli: `SELECT id FROM users WHERE status='pending_verification' AND email_verified_at IS NULL AND created_at < $1 … FOR UPDATE SKIP LOCKED` (ACC-05) ve `… WHERE status='locked' AND locked_until <= $1 … FOR UPDATE SKIP LOCKED` (ACC-06). Yazma yine `UserRepository` (`update_status`, `delete`) ile yapılır. (2) Dışa aktarma, `one_time_tokens`'tan **yalnızca account purpose'larının** aktif satırlarını (hash hariç) okur. (3) E-posta adresi değiştiğinde / geri alındığında, kullanıcının adresine gönderilmiş **tüm** token'lar `OneTimeTokenRepository::revoke_for_user` ile iptal edilir: `password_reset`, `password_reset_code`, `magic_link`, `login_code`, `not_me`, `mfa_email_otp` dahil (`authn_account::ADDRESS_BOUND_PURPOSES`). Aksi hâlde eski adrese (veya geri almada saldırganın adresine) gönderilmiş bir şifre sıfırlama linki hesabı yeniden ele geçirmeye yarar. İptal yalnızca erişimi kaldırır, hiçbir şey vermez.
 - **Önerilen değişiklik:** (1) için authn-store'a `UserRepository::claim_by_status(conn, status, before, skip) -> Option<UserId>` eklenirse account ona geçer. (3) için contracts §5'e not: "adres değişikliği, adrese gönderilmiş tüm purpose'ları iptal eder (authn-account)".
 - **Geriye uyumluluk:** Etkisi yok.
-- **Durum:** Açık (kod bu sorgularla çalışıyor)
+- **Durum:** Uygulandı (2026-11-01, mimar): (1) `UserRepository::claim_next(conn, UserClaim::{UnverifiedCreatedBefore(t), LockExpiredAt(t)}, skip: &[UserId]) -> Option<UserRecord>` — aynı koşullar ve sıralama, `FOR UPDATE SKIP LOCKED`, `users_locked_until_idx` (0014); (2) `OneTimeTokenRepository::active_for_user(executor, user, purposes, now)` (hash hariç; dışa aktarma kendi purpose'larını verir); (3) contracts §5 "yalnızca iptal" istisnaları (adrese bağlı purpose'lar; password/session'ın `email_change*` iptali). Testler `acc_05_claim_next_returns_only_expired_unverified_accounts`, `acc_06_claim_next_is_exclusive_across_instances`, `acc_10_active_for_user_lists_only_usable_tokens_of_the_given_purposes`. authn-account `SharedReads`'i bunlara geçirebilir (davranış aynı)
 
 ### 2026-11-01 — `RegistrationAttempt` bildirimi ve olası yeni bildirim türleri
 - **Talep eden:** authn-account
@@ -165,7 +173,7 @@ Kayıt şablonu:
 - **Gerekçe:** `RegistrationAttempt` iki durumda gönderilir: kayıtlı adresle kayıt denemesi ve e-posta değişikliğinde başka bir hesabın adresinin istenmesi. Geri alma sonrası "şifrenizi sıfırlayın" uyarısı için tür yok.
 - **Önerilen değişiklik:** Şablon metni genel olsun ("Bu adres bir hesap için kullanılmak istendi; siz değilseniz bir şey yapmanıza gerek yok"). İsteğe bağlı yeni tür: `EmailChangeReverted { at }` (account geri almada gönderir).
 - **Geriye uyumluluk:** Şablon metni; yeni tür ekleme.
-- **Durum:** Açık
+- **Durum:** Açık — **authn-notify** (port ve şablon sahibi). Mimar kararı: onaylandı — `registration_attempt` metni kayıt ve e-posta değişikliği girişimlerini kapsayacak şekilde genelleştirilsin (şu an yalnızca kaydı anlatıyor); `NotificationKind::EmailChangeReverted { at }` eklensin (eklemeli varyant; tam eşleşme yapan üretici yok)
 
 ### 2026-11-01 — Server / Dalga B bağlama notları
 - **Talep eden:** authn-account
@@ -174,7 +182,7 @@ Kayıt şablonu:
 - **Gerekçe:** Dalga A modülleri birbirine bağımlı olamaz.
 - **Önerilen değişiklik:** (1) `authn_account::OrganizationOwnership` — `async fn sole_owner_organizations(&self, conn: &mut PgConnection, user: UserId) -> Result<Vec<OrgId>, AuthError>`; authn-org ile, verilen bağlantı üzerinden (çağıran kullanıcı satırını kilitlemiştir). (2) `AccountService::new(AccountServiceDeps { … }, AccountServiceSettings::from_app_config(&config)?)?`, `impl FromRef<AppState> for AccountService`, `.merge(authn_account::router::<AppState>())` (`/v1/me*` oturum katmanının arkasında; `GET /v1/me` session'ındır), `openapi.rs`'e `authn_account::AccountApi`. (3) Açılışta `sync_terms_versions()`; işler: `purge_unverified_accounts`, `purge_due_deletions`, `release_expired_locks`, `purge_expired_reservations`; kapanışta `drain_background_jobs()`. (4) Her modül kendi tabloları için `DataExporter` uygular (bölüm adı `^[a-z][a-z0-9_]{0,63}$`, benzersiz, `account` ayrılmış) ve server `exporters` listesine ekler. (5) authn-session: doğru şifreden sonra `assess_login(&UserRecord)`; `Denied(reason)` → `reason.into_error(now)`; `required_actions` (`verify_email`, `accept_terms`) → SES-22; `accept_terms(ctx, user, …)`. (6) authn-admin: `change_status_in_tx` + aynı transaction'da `SessionRevoker`. (7) authn-password `ProfileLookup` adaptörü: `AccountService::profile_of`.
 - **Geriye uyumluluk:** Ekleme.
-- **Durum:** Açık (sahiplerin uygulaması bekleniyor)
+- **Durum:** Açık — **authn-server / authn-session / authn-admin:** contracts §15.1 (`OrganizationOwnership`, `ProfileLookup`, `DataExporter`), §15.3, §15.5 (dört bakım işi), §15.6 (`sync_terms_versions`, `drain_background_jobs`), §15.7
 
 ### 2026-11-01 — Güvenlik incelemesi: `email_change_revert` satırlarında hedefli iptal ve okuma
 - **Talep eden:** authn-account
@@ -183,7 +191,7 @@ Kayıt şablonu:
 - **Gerekçe:** Geri alma, kendisinden **sonra** verilmiş geri alma linklerini iptal etmeli, öncekileri korumalı (aksi hâlde ara adresi kontrol eden saldırgan, sahibin geri alma linkini iptal edebiliyordu). `OneTimeTokenRepository::revoke_for_user` purpose'un tüm satırlarını iptal eder; zamana göre süzme yok.
 - **Önerilen değişiklik:** (uygulandı, `crates/authn-account/src/repo.rs` `RevertLinkRepository`) `UPDATE one_time_tokens SET revoked_at = $5 WHERE user_id = $1 AND purpose = 'email_change_revert' AND consumed_at IS NULL AND revoked_at IS NULL AND (created_at, id) >= ($3, $4)` ve aynı purpose'un aktif satırlarının `target`/`expires_at` okuması. authn-store'a `revoke_for_user_since(conn, user, purposes, since: (OffsetDateTime, OneTimeTokenId), now)` eklenirse account ona geçer. Ayrıca `change_status` / `change_status_in_tx` artık `pending_deletion` ve `deleted` hedeflerini reddeder (authn-admin bilgi notu: silme yalnızca silme akışıyla).
 - **Geriye uyumluluk:** Yalnızca account'un kendi purpose'u; şema değişikliği yok.
-- **Durum:** Açık (kod bu sorgularla çalışıyor)
+- **Durum:** Uygulandı (2026-11-01, mimar: `OneTimeTokenRepository::revoke_for_user_since(conn, user, purposes, (created_at, id), now)` ve `active_for_user` — `crates/authn-store/src/one_time_tokens.rs`; test `acc_07_revoke_since_cancels_later_links_but_keeps_earlier_ones`). authn-account `RevertLinkRepository`'yi bunlara geçirebilir
 
 ## authn-mfa
 
@@ -212,7 +220,7 @@ Kayıt şablonu:
 - **Gerekçe:** Kurtarma kodu, E.164 telefon ve güvenilir cihaz token'ı kullanıcı girdisidir. Hedef dosyası yazıldı (`fuzz/fuzz_targets/mfa_input_parse.rs`, sahibi authn-mfa) ve `fuzz/Cargo.toml`'un geçici bir kopyasında `cargo +nightly check` ile derlendi; aynı değişmezler `crates/authn-mfa/tests/properties.rs` içinde `proptest` ile de çalışıyor.
 - **Önerilen değişiklik:** `fuzz/Cargo.toml`'a `authn-mfa = { path = "../crates/authn-mfa" }` ve `[[bin]] name = "mfa_input_parse", path = "fuzz_targets/mfa_input_parse.rs", test = false, doc = false, bench = false`.
 - **Geriye uyumluluk:** Ekleme.
-- **Durum:** Açık
+- **Durum:** Uygulandı (2026-11-01, mimar: `fuzz/Cargo.toml`, commit 339cc7d)
 
 ### 2026-11-01 — authn-server'ın uygulayacağı `MfaPolicySource` ve bağlama
 - **Talep eden:** authn-mfa
@@ -221,7 +229,7 @@ Kayıt şablonu:
 - **Gerekçe:** Son faktör kuralı ve güvenilir cihaz izni organizasyon politikasına (authn-org) ve passkey sayısına (authn-webauthn) bağlıdır; Dalga A modülleri birbirini göremez.
 - **Önerilen değişiklik:** (1) `authn_mfa::MfaPolicySource` uygulaması: `async fn org_policy_for_user(&self, conn: &mut PgConnection, user: UserId) -> Result<Option<OrgMfaPolicy>, AuthError>` (aktif üyeliklerin `org_policies` kayıtlarının `OrgMfaPolicy::strictest` birleşimi) ve `async fn webauthn_factor_count(&self, conn: &mut PgConnection, user: UserId) -> Result<u32, AuthError>`; ikisi de verilen bağlantıdan okur (çağıran kullanıcı satırlarını kilitlemiştir). (2) `MfaService::new(MfaServiceDeps { pool, clock, keys, otp, envelopes, rate_limiter, notifier, audit, sms: Some(sms_sender), policy_source }, MfaServiceSettings::from_app_config(&config))`, `impl FromRef<AppState> for MfaService`, `.merge(authn_mfa::router::<AppState>())` oturum katmanının arkasında, `openapi.rs`'e `authn_mfa::MfaApi`; `passkey` feature'ı kapalıysa `settings.webauthn_available = false`. (3) Arka plan işi `MfaService::purge_expired()`. (4) authn-account dışa aktarma toplayıcısına `authn_mfa::MfaDataExporter`. (5) Workspace girdisi `default-features = false` olduğundan authn-server'ın `authn-mfa`'yı `features = ["sms"]` ile alması (ARC-11).
 - **Geriye uyumluluk:** Ekleme.
-- **Durum:** Açık (sahiplerin uygulaması bekleniyor)
+- **Durum:** Açık — **authn-server:** contracts §15.1 (`MfaPolicySource`, `MfaDataExporter`), §15.3 (`features = ["sms"]`), §15.5 (`purge_expired`)
 
 ### 2026-11-01 — authn-session / authn-admin için MFA API'si
 - **Talep eden:** authn-mfa
@@ -230,7 +238,7 @@ Kayıt şablonu:
 - **Gerekçe:** Giriş challenge durumu authn-session'dadır; faktör doğrulama, kod gönderme, politika ve güvenilir cihaz mantığı tek yerde (authn-mfa) kalmalı.
 - **Önerilen değişiklik:** Giriş: `evaluate_for_user(user, Option<OrgMfaPolicy>, phishing_resistant_required) -> MfaRequirement` (`EnrollmentRequired` + boş liste ⇒ reddet; kullanıcının izin dışı kalmış faktörleri varsa önce biri doğrulatılsın), `is_trusted_device(user, token, trusted_devices_allowed)`, `send_code(&ctx, user, Some(challenge_id), OtpChannel::{Email, Sms{factor_id}})`, `verify_factor(&ctx, user, Some(challenge_id), FactorProof) -> VerifiedFactor { kind, factor_id, amr, recovery_codes_remaining }` (`amr` birleştirmesi `authn_mfa::amr::combine`), başarılı MFA + "hatırla" için `trust_device(&ctx, user, trusted_devices_allowed) -> Option<IssuedTrustedDevice>` (cookie `authn_mfa::TRUSTED_DEVICE_COOKIE`, başlık `TRUSTED_DEVICE_HEADER`). `SessionRevoker` uygulamasında `RevokeOptions::also_trusted_devices` ⇒ aynı bağlantıyla `revoke_trusted_devices_in_tx(conn, user, reason)` (authn-password'un PWD-09 talebiyle aynı). `GET /v1/me` için `status_for_user(user)`. Admin: `reset_user_mfa_in_tx(conn, &ctx, user) -> MfaResetSummary` (audit olayını gerekçesiyle admin yazar).
 - **Geriye uyumluluk:** Ekleme.
-- **Durum:** Açık
+- **Durum:** Açık — **authn-session / authn-admin:** contracts §15.7 (`also_trusted_devices` için port belgesi güncellendi)
 
 ### 2026-11-01 — authn-testkit: `RecordingNotifier` SMS kaydı
 - **Talep eden:** authn-mfa
@@ -239,7 +247,7 @@ Kayıt şablonu:
 - **Gerekçe:** authn-mfa SMS kodlarını `Notifier::notify_sms_in_tx` ile (outbox) gönderir; `RecordingNotifier` bu metodu uygulamadığından testlerde varsayılan gövde `sms_unavailable` döner. authn-mfa testleri şimdilik kendi `TestNotifier` sarmalayıcısını kullanıyor (`crates/authn-mfa/tests/common/mod.rs`). authn-notify'ın aynı öneriyi içeren kaydını destekler.
 - **Önerilen değişiklik:** `RecordingNotifier`'a `sms: Mutex<Vec<SmsNotification>>`, `recorded_sms()` ve `notify_sms_in_tx` uygulaması.
 - **Geriye uyumluluk:** Ekleme.
-- **Durum:** Açık
+- **Durum:** Uygulandı (2026-11-01, mimar: `RecordingNotifier::notify_sms_in_tx` + `recorded_sms`, `sms_with_template`, `last_sms`, `take_sms`, `set_sms_available(false)` → `sms_unavailable`; test `mfa_06_recording_notifier_records_sms_and_can_switch_it_off`). authn-mfa kendi `TestNotifier` sarmalayıcısını bırakabilir
 
 ### 2026-11-01 — Güvenlik incelemesi sonrası bağlama notları (authn-session / authn-server)
 - **Talep eden:** authn-mfa
@@ -248,7 +256,7 @@ Kayıt şablonu:
 - **Gerekçe:** (1) `verify_factor` kanıtın geçerliliğini denetler, kanıt türünün o girişte izinli olup olmadığını değil (organizasyon bağlamı yalnızca session'da bilinir). (2) Güvenilir cihazlar artık kullanıcının **tüm** üyeliklerinin en katı politikasına da bağlıdır: herhangi bir organizasyon `trusted_devices_allowed = false` ise cihaz ne verilir ne kabul edilir (çağıranın bayrağı yalnızca giriş bağlamıdır).
 - **Önerilen değişiklik:** (1) authn-session, `proof.kind()` challenge'ın `MfaRequirement::allowed_factors()` listesinde değilse `verify_factor`'ı çağırmadan reddetmeli (admin'ler için yalnızca phishing'e dayanıklı faktör; kurtarma kodu yalnızca listedeyse). (2) `MfaPolicySource::org_policy_for_user` `is_trusted_device` tarafından transaction'sız düz bir bağlantıyla da çağrılır; uygulama yalnızca verilen bağlantıdan okumalıdır (mevcut sözleşmeyle uyumlu).
 - **Geriye uyumluluk:** İmza değişikliği yok; davranış yalnızca sıkılaştı.
-- **Durum:** Bilgi
+- **Durum:** Bilgi — **authn-session / authn-server:** contracts §15.1 (`MfaPolicySource` yalnızca verilen bağlantıdan okur), §15.7 (`allowed_factors` kontrolü)
 
 
 ## authn-webauthn
@@ -269,7 +277,7 @@ Kayıt şablonu:
 - **Gerekçe:** İstemcinin gönderdiği WebAuthn JSON'u (içindeki CBOR attestation nesnesi ve authenticator verisi dahil), passkey adları ve RP yapılandırma değerleri saldırgan kontrollü girdidir. Hedef dosyası yazıldı (`fuzz/fuzz_targets/webauthn_response_parse.rs`, sahibi authn-webauthn) ve `fuzz/Cargo.toml`'un geçici bir kopyasında `cargo +nightly check` ile derlendi.
 - **Önerilen değişiklik:** `fuzz/Cargo.toml`'a `authn-webauthn = { path = "../crates/authn-webauthn" }`, `webauthn-rs = { version = "0.6.2", features = ["conditional-ui", "danger-allow-state-serialisation", "danger-credential-internals", "resident-key-support"] }` ve `[[bin]] name = "webauthn_response_parse", path = "fuzz_targets/webauthn_response_parse.rs", test = false, doc = false, bench = false`; `fuzz/deny.toml`'a kök `deny.toml`'daki webauthn-rs ailesi MPL-2.0 istisnalarının aynısı.
 - **Geriye uyumluluk:** Ekleme.
-- **Durum:** Açık
+- **Durum:** Uygulandı (2026-11-01, mimar: `fuzz/Cargo.toml` ve `fuzz/deny.toml` MPL-2.0 istisnaları, commit 339cc7d)
 
 ### 2026-11-01 — authn-server'ın uygulayacağı trait'ler ve bağlama
 - **Talep eden:** authn-webauthn
@@ -278,7 +286,7 @@ Kayıt şablonu:
 - **Gerekçe:** Son giriş yöntemi kuralı şifreye (authn-password/store), bağlı kimliklere (authn-oidc-client) ve MFA zorunluluğuna (authn-mfa/authn-org) bağlıdır; kuruluş AAGUID politikası authn-org'dadır. Dalga A modülleri birbirini göremez.
 - **Önerilen değişiklik:** (1) `authn_webauthn::AccountMethodsSource`: `async fn other_login_methods(&self, conn: &mut PgConnection, user: UserId) -> Result<Vec<LoginMethod>, AuthError>` (passkey dışındaki yöntemler: şifre, bağlı sosyal kimlikler, deployment'a göre magic link/e-posta kodu) ve `async fn mfa_facts(&self, conn, user) -> Result<MfaFacts, AuthError>` (`mfa_required`, passkey dışı etkin faktör sayısı; authn-mfa `MfaService`/politika); ikisi de verilen bağlantıdan okur (çağıran `users` satırını `FOR UPDATE` kilitlemiştir). Varsayılan `PasswordOnlyMethods` yalnızca şifreyi bilir (güvenli tarafta kalır). (2) `authn_webauthn::PasskeyPolicySource`: `async fn policy_for_user(&self, conn, user, active_org: Option<OrgId>) -> Result<PasskeyPolicy, AuthError>` (örn. etkin üyeliklerin `PasskeyPolicy::strictest` birleşimi); varsayılan `UnrestrictedPolicySource`. (3) `WebauthnService::new(WebauthnServiceDeps { pool, clock, rate_limiter, notifier, audit, account_methods, policy_source }, WebauthnServiceSettings::from_app_config(&config)?)`, `impl FromRef<AppState> for WebauthnService`, `.merge(authn_webauthn::router::<AppState>())` oturum + CSRF katmanının arkasında; `impl FromRef<AppState> for WellKnownDocuments` (`service.well_known()`), `.merge(authn_webauthn::well_known_router::<AppState>())` kökte, kimlik doğrulamasız; `openapi.rs`'e `authn_webauthn::WebauthnApi`. (4) Arka plan işi `WebauthnService::purge_expired_ceremonies()`. (5) authn-account dışa aktarma toplayıcısına `authn_webauthn::PasskeyDataExporter`. (6) authn-mfa `MfaPolicySource::webauthn_factor_count` ⇒ `service.passkey_count_in(conn, user, false)`; authn-password `LoginMethodInventory` ⇒ `passkey_count_in(conn, user, true) > 0` ise `LoginMethod::Passkey`. (7) Workspace girdisi `default-features = false` olduğundan authn-server `authn-webauthn`'u `features = ["passkey"]` ile almalı (ARC-11).
 - **Geriye uyumluluk:** Ekleme.
-- **Durum:** Açık (sahiplerin uygulaması bekleniyor)
+- **Durum:** Açık — **authn-server:** contracts §15.1 (`AccountMethodsSource`, `PasskeyPolicySource`, `PasskeyDataExporter`), §15.3 (`features = ["passkey"]`, `well_known_router`), §15.5
 
 ### 2026-11-01 — authn-session için passkey kimlik doğrulama API'si
 - **Talep eden:** authn-webauthn
@@ -287,7 +295,7 @@ Kayıt şablonu:
 - **Gerekçe:** Passkey ile giriş, ikinci faktör ve step-up uç noktaları authn-session'dadır; WebAuthn doğrulaması, seremoni durumu ve klon tespiti tek yerde (authn-webauthn) kalmalı.
 - **Önerilen değişiklik:** `start_authentication(&ctx, AuthenticationTarget, &PasskeyPolicy) -> AuthenticationStart { ceremony_id, binding_token, options, expires_at }` ve `finish_authentication(&ctx, AuthenticationFinish { ceremony_id, binding_token, target, credential }) -> AuthenticatedPasskey { user_id, credential_id, purpose, user_verified, backup_eligible, backup_state, amr }`. Hedefler: `Discoverable { conditional_ui }` (kullanıcı adısız giriş, UV zorunlu), `SecondFactor { user_id, challenge_id }` (giriş challenge'ına bağlı), `StepUp { user_id, session_id }` (oturuma bağlı, UV zorunlu). `binding_token` web'de `HttpOnly; Secure; SameSite=Strict` kısa ömürlü bir çerezde, native'de yanıt gövdesinde taşınmalı ve bitişte aynen geri verilmeli; `target` istemciden değil, session'ın kendi kaydından (challenge/oturum) kurulmalı. Başarıdan sonra hesap durumu, oturum/challenge geçerliliği, `login.*`/`step_up.*`/`mfa.*` audit olayları ve AMR birleştirmesi session'ın işidir (`amr` alanı `hwk`/`swk` + `user` + UV'de `mfa`). Hatalar: `passkey_ceremony_invalid`, `passkey_authentication_failed` (giriş akışında `invalid_credentials`'a eşlenebilir), `passkey_not_available`, `rate_limited`.
 - **Geriye uyumluluk:** Ekleme.
-- **Durum:** Açık
+- **Durum:** Açık — **authn-session:** contracts §15.7
 
 ### 2026-11-01 — `NotificationKind` için passkey'e özel tür (öneri)
 - **Talep eden:** authn-webauthn
@@ -296,7 +304,7 @@ Kayıt şablonu:
 - **Gerekçe:** Passkey ekleme/kaldırma bildirimleri şimdilik `MfaFactorAdded/MfaFactorRemoved { factor: FactorKind::Webauthn }` ile gönderiliyor (NTF-01 "MFA eklendi/kaldırıldı" kapsamında). Şablonda "passkey" ifadesi ve şüpheli klon (PKY-05) için ayrı bir uyarı e-postası kullanıcı deneyimini iyileştirir.
 - **Önerilen değişiklik:** İsteğe bağlı: `NotificationKind::PasskeyCloneSuspected { at }` ve şablonları; eklenirse authn-webauthn klon tespitinde kullanıcıyı da bilgilendirir.
 - **Geriye uyumluluk:** Yeni varyant (tam eşleşme yapan tüketiciler için kırıcı olabilir, §13).
-- **Durum:** Açık
+- **Durum:** Açık — **authn-notify**. Mimar kararı: onaylandı (isteğe bağlı) — `NotificationKind::PasskeyCloneSuspected { at }` + TR/EN şablonları eklenirse authn-webauthn klon tespitinde kullanıcıyı da bilgilendirir; eklemeli varyant
 
 ### 2026-11-01 — Güvenlik incelemesi: `PasskeyPolicySource` her kimlik doğrulamada, impersonation kaydı yasak (bilgi)
 - **Talep eden:** authn-webauthn
@@ -326,7 +334,7 @@ Kayıt şablonu:
 - **Gerekçe:** Dalga A modülleri birbirini göremez.
 - **Önerilen değişiklik:** (1) `OrgService::new(OrgServiceDeps { pool, clock, audit, events, notifier, rate_limiter, session_revoker, dns: Arc::new(HickoryDnsTxtResolver::from_system_conf(config.org.dns_timeout)?) }, OrgServiceSettings::from_app_config(&config))`, `impl FromRef<AppState> for OrgService`, `.merge(authn_org::router::<AppState>())`, `openapi.rs`'e `authn_org::OrgApi`. (2) `authn_org::api_key_middleware` (`from_fn_with_state(org_service, …)`) request-context'ten sonra, session kimlik doğrulama katmanının yanında. (3) İşler: `purge_due_deletions(limit)`, `expire_invitations()`. (4) `authn_account::OrganizationOwnership` → `authn_org::sole_owner_organizations(conn, user)`. (5) `authn_mfa::MfaPolicySource::org_policy_for_user` → `authn_org::policies_for_user(conn, user)` → `OrgMfaPolicy` eşlemesi + `strictest`. (6) `authn_audit::AuditAccessPolicy` → `OrgService::authorize_from(principal, Permission::{AuditRead,WebhooksRead,WebhooksManage}, org, None)`. (7) `OrgDataExporter` dışa aktarma listesine. (8) authn-session: SES-10 istemci kimlik doğrulaması `authenticate_api_key(&ctx, raw)`; SES-17 `check_membership(principal, org, Some(ip))` + `Authorization::policy` (`allows_login_method`, `session_lifetime_cap`, `allows_ip`); girişten / e-posta doğrulamasından sonra `auto_join_verified_domains(user)`.
 - **Geriye uyumluluk:** Ekleme.
-- **Durum:** Açık (sahiplerin uygulaması bekleniyor)
+- **Durum:** Açık — **authn-server / authn-session:** contracts §15.1 (`OrganizationOwnership`, `MfaPolicySource`, `AuditAccessPolicy`, `PasskeyPolicySource`, `OrgDataExporter`), §15.2 (`DnsTxtResolver`), §15.4 (`api_key_middleware`), §15.5, §15.7
 
 ### 2026-11-01 — `AuditAccessPolicy::check` için istemci IP'si
 - **Talep eden:** authn-org
@@ -344,7 +352,7 @@ Kayıt şablonu:
 - **Gerekçe:** Rol düşürme, özel rolden izin çıkarma ve sahiplik devrinde eski sahibin düşürülmesi oturumları kapatır; şu an en yakın neden `MembershipRemoved` kullanılıyor.
 - **Önerilen değişiklik:** `RevocationReason::MembershipChanged => "membership_changed"` eklenmesi; eklenirse authn-org ona geçer.
 - **Geriye uyumluluk:** Ekleme (yeni enum varyantı; `match` yapan tüketici yok).
-- **Durum:** Açık
+- **Durum:** Uygulandı (2026-11-01, mimar: `RevocationReason::MembershipChanged => "membership_changed"` — `crates/authn-core/src/ports/session_revoker.rs`; migration gerekmez (`sessions_revoked_reason_check` biçim kısıtıdır); test `ses_15_membership_changed_is_a_distinct_revocation_reason`). authn-org ona geçebilir
 
 ### 2026-11-01 — Audit olay türleri: domain ekleme, silme iptali, devir iptali
 - **Talep eden:** authn-org
@@ -362,7 +370,7 @@ Kayıt şablonu:
 - **Gerekçe:** Üye listesi e-posta adreslerini satır başına `find_by_id` ile okur (sayfa ≤ 100 sorgu); `users` tablosuna doğrudan SQL yazılmadı.
 - **Önerilen değişiklik:** `UserRepository::find_many(executor, &[UserId]) -> Vec<UserRecord>` (`WHERE id = ANY($1)`).
 - **Geriye uyumluluk:** Ekleme.
-- **Durum:** Açık
+- **Durum:** Uygulandı (2026-11-01, mimar: `UserRepository::find_many(executor, &[UserId]) -> Vec<UserRecord>` — `WHERE id = ANY($1) ORDER BY id`, bilinmeyenler atlanır, tekrarlar bir kez döner; `crates/authn-store/src/users.rs`; test `org_02_find_many_loads_a_page_in_one_query`)
 
 ### 2026-11-01 — `org_ownership_transfer` token'larında `group_id` sözleşmesi ve fuzz kilidi (bilgi)
 - **Talep eden:** authn-org
@@ -372,6 +380,7 @@ Kayıt şablonu:
 - **Önerilen değişiklik:** contracts §5 purpose tablosuna not olarak eklenebilir.
 - **Geriye uyumluluk:** Etkisi yok.
 - **Durum:** Uygulandı (2026-11-01)
+- **Mimar notu (2026-11-01):** contracts §5 "purpose'a özgü sözleşmeler"e eklendi.
 
 ### 2026-11-01 — Güvenlik incelemesi: API anahtarları yalnızca organizasyon yollarında, `org_auto_join_exclusions` tablosu, yeni `[org]` alanı (bilgi)
 - **Talep eden:** authn-org
@@ -381,6 +390,7 @@ Kayıt şablonu:
 - **Önerilen değişiklik:** (uygulandı, yalnızca authn-org dosyalarında) (1) Ara katman anahtarı yalnızca `/v1/orgs/{org_id}` ve `/v1/orgs/{org_id}/…` yollarında doğrular (`authn_org::middleware::is_api_key_path`); diğer yollarda istek dokunulmadan geçer. **authn-server:** ara katman tam (`/v1/...`) yolu görmeli. **authn-session (SES-10):** API anahtarıyla istemci doğrulaması yapan uç noktalar `OrgService::authenticate_api_key`'i doğrudan çağırmalı (ara katmana güvenmemeli). **authn-account / authn-webauthn / authn-audit (öneri, derinlemesine savunma):** `/v1/me/…` okuyucuları da `principal.session_id().is_none()` olan (API anahtarı) principal'ları reddetmeli (authn-mfa zaten reddediyor). (2) Yeni tablo `org_auto_join_exclusions (org_id, user_id, reason ∈ {removed, left}, created_at)`, sahibi authn-org, `users`/`organizations` silinince kaskad; contracts §5 org tablo listesine eklenmeli. Dışa aktarma bölümü `organizations` artık `auto_join_exclusions` içerir. (3) `[org] invitation_sends_per_recipient` (varsayılan 5 / 1 gün; organizasyon + alıcı adresi başına davet e-postası).
 - **Geriye uyumluluk:** Varsayılanlı yeni alan; eklemeli migration. Davranış değişikliği: API anahtarı `/v1/orgs/{org_id}` dışındaki yollarda artık `Principal` üretmez (ör. `POST /v1/orgs`, `GET /v1/org-permissions` API anahtarıyla `401`).
 - **Durum:** Uygulandı (2026-11-01)
+- **Mimar notu (2026-11-01):** `org_auto_join_exclusions` contracts §5 org satırına ve `overview.md` ER diyagramına eklendi; API anahtarı kapsam kuralı contracts §7'de.
 
 ## authn-protect
 
@@ -391,7 +401,7 @@ Kayıt şablonu:
 - **Gerekçe:** `known_devices.device_hash` için anahtarlı hash gerekiyor; `KeyPurpose` içinde uygun bir amaç yok. Şimdilik `RateLimitKey` amaç anahtarı, alanları uzunluk önekli ve **ayrı etiketli** (`authn/protect/known-device/v1` ↔ `authn/protect/rate-limit-key/v1`, `HmacKey::sign_fields`) olarak kullanılıyor; iki kullanım birbirine çakışamaz.
 - **Önerilen değişiklik:** `KeyPurpose::KnownDevice` (`info = "authn/v1/known-device"`) eklenmesi. Eklenirse authn-protect `KeyHasher::device`'ı yeni anahtara taşır (mevcut satırlar bir sonraki girişte yeniden öğrenilir; tek etkisi bir kerelik "yeni cihaz" sinyalidir).
 - **Geriye uyumluluk:** Ekleme; acil değil.
-- **Durum:** Açık
+- **Durum:** Açık — **authn-crypto** (`kdf.rs` sahibi). Mimar kararı: onaylandı, öncelik düşük — CRY-11 her amaç için ayrı HKDF `info` etiketi ister; mevcut kullanım ayrı etiketli ve uzunluk önekli alanlarla çakışmasız olduğundan acil güvenlik açığı değildir. `KeyPurpose::KnownDevice` eklenince authn-protect `KeyHasher::device`'ı taşır (tek etkisi bir kerelik "yeni cihaz" sinyali)
 
 ### 2026-11-01 — Migration 1600: `rate_limit_buckets.allowed` ve risk indeksleri
 - **Talep eden:** authn-protect
@@ -418,7 +428,7 @@ Kayıt şablonu:
 - **Gerekçe:** Katmanlar ve servisler hazır; yerleştirme sahiplerin işidir.
 - **Önerilen değişiklik:** (1) `app.rs` (7) yuvasına, dıştan içe: `validate_host` → `security_headers` → `cors` → `http_rate_limit` (`from_fn_with_state`, ayrıntı: `crates/authn-protect/README.md`, örnek: `crates/authn-protect/tests/web_stack.rs`). (2) `AppState`: `CaptchaService: FromRef`, `.merge(authn_protect::router::<AppState>())`, `openapi.rs`'e `authn_protect::ProtectApi` nest. (3) Arka plan işleri: `PostgresRateLimiter::purge_expired`, `ProofOfWorkCaptcha::purge_expired`, `LoginProtection::purge_expired`. (4) authn-session: `NotMeTokenIssuer`'ı (`one_time_tokens` amaç `not_me`) uygular, giriş akışında `LoginProtection::{check_attempt, record_failure, record_success}`, `RiskEvaluator::evaluate` + `authn_protect::risk::decide` + `RiskAlerts::{on_successful_login, on_blocked_login}` çağırır; `return_to` için `RedirectValidator`. (5) authn-admin: kilit açma için `LoginProtection::unlock`.
 - **Geriye uyumluluk:** Ekleme.
-- **Durum:** Açık (sahiplerin uygulaması bekleniyor)
+- **Durum:** Açık — **authn-server / authn-session / authn-admin:** contracts §15.2 (`RateLimiter`, `CaptchaVerifier`, `RiskEvaluator`, `HttpClient`), §15.3 (`CaptchaService`), §15.4 (yuva 7), §15.5 (üç temizlik işi), §15.7
 
 ### 2026-11-01 — `fuzz/Cargo.lock` yeniden üretildi
 - **Talep eden:** authn-protect
@@ -450,6 +460,7 @@ Kayıt şablonu:
 - **authn-testkit için (öneri):** `RecordingAuditSink` `pseudonymize_subject` çağrılarını kaydedebilir (şu an varsayılan gövde kullanılıyor).
 - **Geriye uyumluluk:** Ekleme; mevcut uygulayıcılar/sahteler varsayılan gövdeyle derlenir. Yeni enum varyantları yalnızca `SecurityEventKind` üzerinde tam eşleşme (`match`) yapan koda etki eder (bilinen tüketici yok).
 - **Durum:** Uygulandı (2026-11-01, authn-audit görevi)
+- **Mimar notu (2026-11-01):** authn-testkit önerisi uygulandı — `RecordingAuditSink::pseudonymized()` (test `aud_05_recording_audit_sink_records_pseudonymization`).
 
 ### 2026-11-01 — Takma ad çözümü için `users` tablosunun salt-okunur kullanımı
 - **Talep eden:** authn-audit
@@ -458,7 +469,7 @@ Kayıt şablonu:
 - **Gerekçe:** `PgAuditSink`, olaydaki kullanıcı kimliklerini (aktör, taklitçi, özne ve kaynak/metadata içindeki kullanıcı kimlikleri) tek sorguda takma ada çevirir: `SELECT u.id, u.status = 'deleted' … FROM unnest($1::uuid[]) JOIN users u … LEFT JOIN audit_subjects s …`. `UserRepository::find_by_id` her UUID için ayrı sorgu gerektirirdi (metadata'da onlarca UUID olabilir). Yalnızca `id` ve `status` okunur; yazma yoktur. `audit_subjects.user_id → users` FK'sı zaten bu ilişkiyi şemada tanımlar.
 - **Önerilen değişiklik:** contracts §5'e not: "authn-audit, takma ad çözümü için `users.id`/`users.status`'u salt-okunur sorgular". Alternatif: authn-store'a `UserRepository::statuses(conn, &[UserId]) -> Vec<(UserId, AccountStatus)>` eklenirse audit ona geçer.
 - **Geriye uyumluluk:** Etkisi yok.
-- **Durum:** Açık (kod bu okuma ile çalışıyor)
+- **Durum:** Uygulandı (2026-11-01, mimar: contracts §5'te kayıtlı salt-okunur istisna. `audit_subjects` ile tek ifadede birleştirme atomik olduğu için repository'ye taşınmadı; toplu kullanıcı okuması gerekirse `UserRepository::find_many` mevcut)
 
 ### 2026-11-01 — Yol parametresi adları: `/v1/orgs/{org_id}/…`
 - **Talep eden:** authn-audit
@@ -467,7 +478,7 @@ Kayıt şablonu:
 - **Gerekçe:** axum 0.8 (matchit), aynı konumdaki yol parametrelerinin farklı adlarla kaydını çakışma sayar (`/v1/orgs/{id}/members` ile `/v1/orgs/{org_id}/webhooks` birleştirilemez; `merge` panikler). authn-audit şu yolları kullanır: `/v1/orgs/{org_id}/audit-events`, `/v1/orgs/{org_id}/webhooks[/{endpoint_id}[/rotate-secret|/deliveries[/{delivery_id}/redeliver]]]`, `/v1/me/security-events`.
 - **Önerilen değişiklik:** contracts §7'ye "organizasyon yol parametresi her router'da `{org_id}`" kuralı eklensin.
 - **Geriye uyumluluk:** Etkisi yok.
-- **Durum:** Açık
+- **Durum:** Uygulandı (2026-11-01, mimar: contracts §7 kuralı — aynı konumda aynı ad, `snake_case` `<kaynak>_id`, `/v1/orgs/{org_id}`; zorlayan testler `crates/authn-testkit/tests/routes.rs` `arc_09_*` tüm crate'lerin rota ve OpenAPI yollarını her `cargo test`'te tarar)
 
 ### 2026-11-01 — Migration 1700 ve en az yetki yardımcı fonksiyonu
 - **Talep eden:** authn-audit
@@ -477,6 +488,7 @@ Kayıt şablonu:
 - **Önerilen değişiklik:** authn-server: bakım işi için ayrı havuz (yapılandırılmışsa) ve OPS-10 dokümantasyonunda bu fonksiyona atıf.
 - **Geriye uyumluluk:** Ekleme.
 - **Durum:** Uygulandı (2026-11-01)
+- **Mimar notu (2026-11-01):** contracts §6 (verilen yetkiler, bakım havuzu) ve §15.6 (kurulum adımı) bu fonksiyona atıf yapıyor; authn-server bakım havuzu için Açık.
 
 ### 2026-11-01 — Güvenlik incelemesi: `AuditAccessPolicy` imzası, yeni olay türleri, migration 1700 sıkılaştırması
 - **Talep eden:** authn-audit
@@ -497,7 +509,7 @@ Kayıt şablonu:
 - **Önerilen değişiklik:** (uygulandı) `SmsNotification { to: PhoneNumber, user_id: Option<UserId>, locale: Locale, kind: SmsNotificationKind }`, `SmsNotificationKind::{MfaSmsCode, PhoneVerification} { code: SensitiveString, expires_at }` + `template_name()`, `Notifier::notify_sms_in_tx(&self, conn, sms) -> Result<(), AuthError>` — varsayılan gövde `sms_unavailable` döner. `ports/mod.rs`'e yalnızca `SmsNotification, SmsNotificationKind` yeniden dışa aktarımı eklendi (tipler aksi halde erişilemezdi).
 - **Geriye uyumluluk:** Ekleme; mevcut uygulayıcılar/sahteler varsayılan gövdeyle derlenir. `SmsSender`'ı doğrudan çağırmak (senkron) geçerli kalır.
 - **authn-testkit için (öneri):** `RecordingNotifier` `notify_sms_in_tx` çağrılarını kaydetsin (şu an varsayılan gövde `sms_unavailable` döner).
-- **Durum:** Uygulandı (2026-11-01, authn-notify görevi) — testkit önerisi Açık
+- **Durum:** Uygulandı (2026-11-01, authn-notify görevi; testkit önerisi mimar tarafından uygulandı: `RecordingNotifier::notify_sms_in_tx`)
 
 ### 2026-11-01 — Yeni hata kodları ve `[notify]` alanları (bilgi)
 - **Talep eden:** authn-notify
@@ -515,7 +527,7 @@ Kayıt şablonu:
 - **Gerekçe:** `NotifyConfig::validate` `server.environment`'ı göremez. Şu kurallar şimdilik authn-notify builder'larında açılışta (fail-fast) uygulanıyor; `check-config`'in de görmesi için çapraz bölüm doğrulamasına eklenmeleri önerilir.
 - **Önerilen değişiklik:** production **ve staging**'de `notify.email.transport = "log"` ve `notify.sms.provider = "log"` reddi; production'da `notify.email.transport = "disabled"` reddi; development/test dışında `notify.email.smtp.extra_ca_file` reddi.
 - **Geriye uyumluluk:** Builder'lar zaten reddediyor; davranış değişmez, yalnızca hata daha erken görünür.
-- **Durum:** Açık
+- **Durum:** Uygulandı (2026-11-01, mimar: `AppConfig::validate_notify_environment` — `crates/authn-core/src/config/mod.rs`: log e-posta/SMS yalnızca development/test, `disabled` üretimde yasak, `extra_ca_file` yalnızca development/test; testler `ntf_03_development_only_notify_settings_are_refused_outside_development`, `ntf_03_disabled_email_transport_is_refused_in_production_only`)
 
 ### 2026-11-01 — Mailpit için sabit geliştirme sertifikası
 - **Talep eden:** authn-notify
@@ -524,7 +536,7 @@ Kayıt şablonu:
 - **Gerekçe:** SMTP taşıyıcısı TLS'i zorunlu kılar ve sertifikayı doğrular. Mailpit `MP_SMTP_TLS_CERT: "sans:localhost"` ile her açılışta yeni bir kendinden imzalı sertifika üretir; `notify.email.smtp.extra_ca_file` ile güvenilecek sabit bir dosya yoktur, bu yüzden `config/example.toml` (`smtp`, `localhost:1025`) yerelde TLS doğrulamasında başarısız olur.
 - **Önerilen değişiklik:** Depoya yalnızca geliştirme amaçlı (herkese açık) bir `localhost` sertifikası/anahtarı (ör. `config/dev-certs/mailpit.{pem,key}`) eklenip Mailpit'e bağlanması (`MP_SMTP_TLS_CERT=/certs/mailpit.pem`, `MP_SMTP_TLS_KEY=/certs/mailpit.key`) ve `config/example.toml`'da `extra_ca_file = "config/dev-certs/mailpit.pem"` satırının açılması. Alternatif: örnek konfigürasyonda `transport = "log"`.
 - **Geriye uyumluluk:** Yalnızca geliştirme ortamı.
-- **Durum:** Açık
+- **Durum:** Uygulandı (2026-11-01, mimar: `config/dev-certs/{mailpit.pem,mailpit.key,README.md}` — P-256, SAN `localhost`/`127.0.0.1`/`::1`, `CA:FALSE`, `serverAuth`, 2046'ya kadar, konu adında "DEVELOPMENT ONLY"; `docker-compose.yml` dizini salt-okunur bağlar ve `MP_SMTP_REQUIRE_STARTTLS=true`; `config/example.toml`'da hazır, yorumlu `# extra_ca_file = "config/dev-certs/mailpit.pem"` satırı — yerelde açılır (authn-notify'ın `ntf_03_example_config_documents_every_notify_key` testi isteğe bağlı `[notify]` anahtarlarının yorum satırı olarak belgelenmesini ister; ayrıca üretime kopyalanan dosyada ayar kendiliğinden gelmez) ya da `AUTHN__NOTIFY__EMAIL__SMTP__EXTRA_CA_FILE` ile verilir; staging/production'da `AppConfig::validate` reddeder; testler `crates/authn-testkit/tests/dev_certs.rs`)
 
 ### 2026-11-01 — authn-server ve authn-mfa için bağlama notları
 - **Talep eden:** authn-notify
@@ -533,7 +545,7 @@ Kayıt şablonu:
 - **Gerekçe:** Teslim `authn-audit`'in outbox işçisinde yapılır; authn-notify ona bağımlı olamaz.
 - **Önerilen değişiklik:** (1) Açılışta Tokio runtime içinde `authn_notify::NotifyServices::from_config(&config, pool, crypto.envelopes, clock, rate_limiter, http)`; `AppState`'e `Arc<dyn Notifier>` = `notifier_port()`, `Arc<dyn SmsSender>` = `sms`. (2) `notification` öneki için `authn_audit::OutboxHandler` köprüsü: `DeliveryRequest`'i `OutboxMessage`'dan doldurup `NotificationDeliverer::deliver` çağırır; `DeliveryFailure::Retry { reason, retry_after }` → `HandlerError::Retry`, `Permanent { reason }` → `HandlerError::permanent` (örnek kod: `crates/authn-notify/README.md`). (3) `check-config`: `TemplateRenderer::from_config` ile şablon doğrulaması. (4) authn-mfa: `SmsSender::is_configured() == false` iken SMS faktörünü sunmamalı; asenkron gönderim için `Notifier::notify_sms_in_tx`.
 - **Geriye uyumluluk:** Ekleme.
-- **Durum:** Açık (sahiplerin uygulaması bekleniyor)
+- **Durum:** Açık — **authn-server:** contracts §15.1 (`OutboxHandler` köprüsü), §15.2 (`NotifyServices`), §15.6 (`check-config`); authn-mfa maddesi (4) uygulanmış durumda (`SmsSender::is_configured`, `notify_sms_in_tx`)
 
 ## authn-session
 

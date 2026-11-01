@@ -664,6 +664,73 @@ impl OneTimeTokenRepository {
         Ok(result.rows_affected())
     }
 
+    /// Revokes the active tokens of `user` for any of `purposes` that were
+    /// issued at or after `since` = `(created_at, id)` of a reference token,
+    /// the reference itself included; older tokens are kept.
+    ///
+    /// ACC-07 uses it on `email_change_revert`: reverting one e-mail change
+    /// cancels the revert links of *later* changes but never the original
+    /// owner's earlier link, so an attacker controlling an intermediate
+    /// address cannot cancel the owner's way back. Ids are UUIDv7, so the
+    /// `(created_at, id)` order is a total issue order even for equal
+    /// timestamps. Runs in the caller's transaction.
+    pub async fn revoke_for_user_since(
+        conn: &mut PgConnection,
+        user: UserId,
+        purposes: &[TokenPurpose],
+        since: (OffsetDateTime, OneTimeTokenId),
+        now: OffsetDateTime,
+    ) -> Result<u64, StoreError> {
+        let purposes: Vec<&str> = purposes.iter().map(|p| p.as_str()).collect();
+        let (created_at, id) = since;
+        let result = sqlx::query(
+            "UPDATE one_time_tokens SET revoked_at = $5 WHERE user_id = $1 \
+             AND purpose = ANY($2) AND consumed_at IS NULL AND revoked_at IS NULL \
+             AND (created_at, id) >= ($3, $4)",
+        )
+        .bind(user)
+        .bind(&purposes)
+        .bind(created_at)
+        .bind(id)
+        .bind(now)
+        .execute(conn)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
+    /// The usable tokens of `user` for any of `purposes` (not consumed, not
+    /// revoked, not expired at `now`), newest first. The hash is never
+    /// selected. For read paths of the purpose owner: the data export
+    /// (ACC-10, "pending actions") or checking which links are still live.
+    /// A module passes **only its own purposes** (contracts §5).
+    pub async fn active_for_user<'e>(
+        executor: impl PgExecutor<'e>,
+        user: UserId,
+        purposes: &[TokenPurpose],
+        now: OffsetDateTime,
+    ) -> Result<Vec<OneTimeTokenRecord>, StoreError> {
+        if purposes.is_empty() {
+            return Ok(Vec::new());
+        }
+        let purposes: Vec<&str> = purposes.iter().map(|p| p.as_str()).collect();
+        let sql = concat!(
+            "SELECT ",
+            token_columns!(),
+            " FROM one_time_tokens WHERE user_id = $1 AND purpose = ANY($2) \
+             AND consumed_at IS NULL AND revoked_at IS NULL AND expires_at > $3 \
+             ORDER BY created_at DESC, id DESC"
+        );
+        sqlx::query_as::<_, TokenRow>(sql)
+            .bind(user)
+            .bind(&purposes)
+            .bind(now)
+            .fetch_all(executor)
+            .await?
+            .into_iter()
+            .map(OneTimeTokenRecord::try_from)
+            .collect()
+    }
+
     /// Revokes every active token of a group.
     pub async fn revoke_group(
         conn: &mut PgConnection,

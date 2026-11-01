@@ -9,6 +9,10 @@
 //! Methods take any executor (`&PgPool`, `&mut PgConnection`, `&mut *tx`)
 //! for reads and `&mut PgConnection` for writes, so writes always happen in
 //! an explicit transaction chosen by the caller.
+//!
+//! Registered read-only exception (contracts §5): authn-audit resolves
+//! user ids to pseudonyms with one statement that joins `users.id` /
+//! `users.status` with its own `audit_subjects` table.
 
 use authn_core::domain::{AccountStatus, EmailAddress};
 use authn_core::id::UserId;
@@ -85,6 +89,21 @@ impl UserRecord {
     pub fn is_email_verified(&self) -> bool {
         self.email_verified_at.is_some()
     }
+}
+
+/// Which accounts a maintenance job claims with
+/// [`UserRepository::claim_next`] (OPS-06).
+///
+/// The instants come from the injected `Clock` (ARC-04), never from the
+/// database's `now()`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UserClaim {
+    /// `pending_verification` accounts whose address was never verified and
+    /// that were created strictly before the instant (ACC-05 purge).
+    UnverifiedCreatedBefore(OffsetDateTime),
+    /// `locked` accounts whose `locked_until` is at or before the instant
+    /// (ACC-06 automatic unlock).
+    LockExpiredAt(OffsetDateTime),
 }
 
 /// Input of [`UserRepository::create`].
@@ -198,6 +217,74 @@ impl UserRepository {
         Ok(sqlx::query_as::<_, UserRecord>(sql)
             .bind(id)
             .fetch_optional(executor)
+            .await?)
+    }
+
+    /// Loads every user of `ids` in one query (`WHERE id = ANY($1)`),
+    /// ordered by id. Unknown ids are skipped and duplicates are returned
+    /// once, so the result may be shorter than `ids`. Meant for page-sized
+    /// batches (e.g. a member list, ORG-02) instead of one `find_by_id` per
+    /// row; read-only.
+    pub async fn find_many<'e>(
+        executor: impl PgExecutor<'e>,
+        ids: &[UserId],
+    ) -> Result<Vec<UserRecord>, StoreError> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let sql = concat!(
+            "SELECT ",
+            user_columns!(),
+            " FROM users WHERE id = ANY($1) ORDER BY id"
+        );
+        Ok(sqlx::query_as::<_, UserRecord>(sql)
+            .bind(ids)
+            .fetch_all(executor)
+            .await?)
+    }
+
+    /// Claims the next user matching `claim` for a maintenance job (OPS-06):
+    /// the oldest matching row whose id is not in `skip` is returned
+    /// row-locked (`FOR UPDATE SKIP LOCKED`), so several instances running
+    /// the same job never process the same account, and a row held by a
+    /// concurrent request is skipped instead of waited for.
+    ///
+    /// Must run inside the caller's transaction: the lock is what makes the
+    /// claim exclusive, and it is released when that transaction ends. Put
+    /// the ids already handled (or deliberately skipped) by this run in
+    /// `skip` so a row that is left unchanged is not claimed again.
+    pub async fn claim_next(
+        conn: &mut PgConnection,
+        claim: UserClaim,
+        skip: &[UserId],
+    ) -> Result<Option<UserRecord>, StoreError> {
+        let (sql, at) = match claim {
+            UserClaim::UnverifiedCreatedBefore(before) => (
+                concat!(
+                    "SELECT ",
+                    user_columns!(),
+                    " FROM users WHERE status = 'pending_verification' \
+                     AND email_verified_at IS NULL AND created_at < $1 \
+                     AND NOT (id = ANY($2)) \
+                     ORDER BY created_at, id LIMIT 1 FOR UPDATE SKIP LOCKED"
+                ),
+                before,
+            ),
+            UserClaim::LockExpiredAt(now) => (
+                concat!(
+                    "SELECT ",
+                    user_columns!(),
+                    " FROM users WHERE status = 'locked' AND locked_until <= $1 \
+                     AND NOT (id = ANY($2)) \
+                     ORDER BY locked_until, id LIMIT 1 FOR UPDATE SKIP LOCKED"
+                ),
+                now,
+            ),
+        };
+        Ok(sqlx::query_as::<_, UserRecord>(sql)
+            .bind(at)
+            .bind(skip)
+            .fetch_optional(conn)
             .await?)
     }
 

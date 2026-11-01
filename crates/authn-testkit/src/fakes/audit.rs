@@ -2,15 +2,18 @@ use std::sync::Mutex;
 
 use async_trait::async_trait;
 use authn_core::error::AuthError;
+use authn_core::id::UserId;
 use authn_core::ports::{AuditSink, DomainEvent, EventPublisher, SecurityEvent, SecurityEventKind};
 use sqlx::PgConnection;
 
 use super::lock;
 
-/// Records security events in memory.
+/// Records security events and pseudonymization requests (AUD-05) in
+/// memory.
 #[derive(Debug, Default)]
 pub struct RecordingAuditSink {
     events: Mutex<Vec<SecurityEvent>>,
+    pseudonymized: Mutex<Vec<UserId>>,
 }
 
 impl RecordingAuditSink {
@@ -34,6 +37,12 @@ impl RecordingAuditSink {
     pub fn take(&self) -> Vec<SecurityEvent> {
         std::mem::take(&mut *lock(&self.events))
     }
+
+    /// Users passed to `pseudonymize_subject`, in order (ACC-09, AUD-05).
+    #[must_use]
+    pub fn pseudonymized(&self) -> Vec<UserId> {
+        lock(&self.pseudonymized).clone()
+    }
 }
 
 #[async_trait]
@@ -49,6 +58,15 @@ impl AuditSink for RecordingAuditSink {
         event: SecurityEvent,
     ) -> Result<(), AuthError> {
         lock(&self.events).push(event);
+        Ok(())
+    }
+
+    async fn pseudonymize_subject(
+        &self,
+        _conn: &mut PgConnection,
+        user: UserId,
+    ) -> Result<(), AuthError> {
+        lock(&self.pseudonymized).push(user);
         Ok(())
     }
 }

@@ -171,11 +171,6 @@ impl AppConfig {
                 "web origins must use https in production",
             );
             p.require(
-                self.notify.email.transport != notify::EmailTransportKind::Log,
-                "notify.email.transport",
-                "the log transport is for development only",
-            );
-            p.require(
                 !self.protect.outbound.allow_private_networks,
                 "protect.outbound.allow_private_networks",
                 "must be false in production (SSRF protection, PRT-12)",
@@ -186,6 +181,7 @@ impl AppConfig {
                 "the in-memory backend is per instance; use postgres or redis in production",
             );
         }
+        self.validate_notify_environment(p);
         p.require(
             self.crypto.signing_keys.retired_retention >= self.session.access_token_ttl,
             "crypto.signing_keys.retired_retention",
@@ -195,6 +191,41 @@ impl AppConfig {
             self.admin.step_up_max_age <= self.session.step_up_max_age,
             "admin.step_up_max_age",
             "must not be longer than session.step_up_max_age",
+        );
+    }
+
+    /// Environment-dependent `[notify]` rules (NTF-03, NTF-04). The
+    /// authn-notify builders enforce the same rules again at startup; here
+    /// they also reach `check-config` and every other `AppConfig` consumer.
+    fn validate_notify_environment(&self, p: &mut ConfigProblems) {
+        let environment = self.server.environment;
+        let development = matches!(environment, Environment::Development | Environment::Test);
+        p.require(
+            development || self.notify.email.transport != notify::EmailTransportKind::Log,
+            "notify.email.transport",
+            "the log transport is for development and test only",
+        );
+        p.require(
+            development || self.notify.sms.provider != notify::SmsProviderKind::Log,
+            "notify.sms.provider",
+            "the log provider is for development and test only",
+        );
+        p.require(
+            environment != Environment::Production
+                || self.notify.email.transport != notify::EmailTransportKind::Disabled,
+            "notify.email.transport",
+            "\"disabled\" is not allowed in production (verification and reset mails would be lost)",
+        );
+        p.require(
+            development
+                || self
+                    .notify
+                    .email
+                    .smtp
+                    .as_ref()
+                    .is_none_or(|smtp| smtp.extra_ca_file.is_none()),
+            "notify.email.smtp.extra_ca_file",
+            "is for development and test only (e.g. the docker-compose Mailpit certificate)",
         );
     }
 
@@ -445,6 +476,80 @@ mod tests {
             text.contains("crypto.hmac_root_key: is a published"),
             "{text}"
         );
+    }
+
+    fn problems(toml: &str) -> Vec<String> {
+        match load(toml) {
+            Ok(_) => Vec::new(),
+            Err(ConfigError::Invalid(problems)) => problems,
+            Err(other) => panic!("unexpected error: {other}"),
+        }
+    }
+
+    fn with_environment(environment: &str, extra: &str) -> String {
+        minimal_toml().replace(
+            "environment = \"development\"",
+            &format!("environment = \"{environment}\""),
+        ) + extra
+    }
+
+    const DEV_ONLY_NOTIFY: &str = "
+        [notify.email.smtp]
+        host = \"localhost\"
+        port = 1025
+        extra_ca_file = \"config/dev-certs/mailpit.pem\"
+        [notify.sms]
+        provider = \"log\"
+        ";
+
+    #[test]
+    fn ntf_03_development_only_notify_settings_are_refused_outside_development() {
+        for environment in ["staging", "production"] {
+            let found = problems(&with_environment(environment, DEV_ONLY_NOTIFY));
+            for expected in [
+                "notify.email.transport: the log transport",
+                "notify.sms.provider: the log provider",
+                "notify.email.smtp.extra_ca_file: is for development",
+            ] {
+                assert!(
+                    found.iter().any(|p| p.starts_with(expected)),
+                    "{environment}: {expected} missing in {found:?}"
+                );
+            }
+        }
+        // Development and test accept all of them (docker-compose Mailpit).
+        for environment in ["development", "test"] {
+            let found = problems(&with_environment(environment, DEV_ONLY_NOTIFY));
+            assert!(
+                !found.iter().any(|p| p.starts_with("notify.")),
+                "{environment}: {found:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn ntf_03_disabled_email_transport_is_refused_in_production_only() {
+        let disabled = |environment: &str| {
+            with_environment(environment, "").replace(
+                "[notify.email]\n            transport = \"log\"",
+                "[notify.email]\n            transport = \"disabled\"",
+            )
+        };
+        assert!(disabled("staging").contains("transport = \"disabled\""));
+        let production = problems(&disabled("production"));
+        assert!(
+            production
+                .iter()
+                .any(|p| p.starts_with("notify.email.transport: \"disabled\"")),
+            "{production:?}"
+        );
+        for environment in ["staging", "development", "test"] {
+            let found = problems(&disabled(environment));
+            assert!(
+                !found.iter().any(|p| p.starts_with("notify.")),
+                "{environment}: {found:?}"
+            );
+        }
     }
 
     #[test]

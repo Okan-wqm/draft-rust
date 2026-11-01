@@ -309,7 +309,8 @@ tls = "starttls"                       # starttls | tls (plain text is not suppo
 # password = "..."
 # timeout = "10s"
 # hello_name = "example.com"           # EHLO name; default: domain of from_address (never the machine host name)
-# extra_ca_file = "/path/to/mailpit-cert.pem" # development/test only: extra trusted root, e.g. Mailpit's self-signed certificate
+# extra_ca_file = "config/dev-certs/mailpit.pem" # development/test only (refused in staging/production); uncomment to trust the
+                                       # fixed, PUBLIC docker-compose Mailpit certificate (config/dev-certs/README.md); path relative to the working directory
 
 [notify.sms]
 # provider = "none"                    # none | http | log (development/test only)

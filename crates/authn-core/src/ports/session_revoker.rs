@@ -4,7 +4,9 @@
 //! (ACC-07), MFA changes, membership removal, admin and emergency actions.
 //! All methods run inside the caller's transaction and revoke web sessions
 //! *and* their refresh-token families. Revoked sessions must be rejected on
-//! the very next request (no stale cache).
+//! the very next request (no stale cache). Every side effect requested
+//! through [`RevokeOptions`] happens on the same connection, so it commits or
+//! rolls back together with the caller's change (ARC-06).
 
 use async_trait::async_trait;
 use sqlx::PgConnection;
@@ -72,8 +74,15 @@ pub trait SessionRevoker: Send + Sync {
 /// Extra effects of a bulk revocation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RevokeOptions {
-    /// Also delete the user's trusted devices (MFA-09: password reset, MFA
-    /// change, "sign out everywhere").
+    /// Also revoke the user's trusted devices (MFA-09: password reset, MFA
+    /// change, "sign out everywhere"; PWD-09).
+    ///
+    /// Applied on the **same connection, inside the caller's transaction**
+    /// (the implementation calls authn-mfa's
+    /// `revoke_trusted_devices_in_tx(conn, user, reason)`): if the caller
+    /// rolls back, sessions and trusted devices both stay; if it commits,
+    /// both are gone. An implementation must never revoke them in a
+    /// separate transaction or ignore the flag.
     pub also_trusted_devices: bool,
 }
 
@@ -102,6 +111,10 @@ text_enum! {
         AccountDeleted => "account_deleted",
         /// Membership removed or suspended.
         MembershipRemoved => "membership_removed",
+        /// Role or permissions of a membership changed (demotion, a
+        /// permission removed from a custom role, previous owner demoted
+        /// by an ownership transfer; ORG-02, ORG-04, SES-03).
+        MembershipChanged => "membership_changed",
         /// Organization policy changed or organization deleted.
         OrgPolicyChanged => "org_policy_changed",
         /// Admin action (ADM-03).

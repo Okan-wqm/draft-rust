@@ -32,9 +32,17 @@ services:
   mailpit:
     image: axllent/mailpit
     environment:
-      # Offer STARTTLS with a self-signed certificate (NTF-03 requires TLS).
-      MP_SMTP_TLS_CERT: "sans:localhost"
-      MP_SMTP_TLS_KEY: "sans:localhost"
+      # STARTTLS with the FIXED, PUBLIC development certificate of
+      # config/dev-certs (NTF-03: TLS is mandatory and verified). The server
+      # trusts it only through notify.email.smtp.extra_ca_file, which
+      # AppConfig::validate refuses outside development/test. Its private key
+      # is published: never use it for anything but this local container.
+      MP_SMTP_TLS_CERT: /certs/mailpit.pem
+      MP_SMTP_TLS_KEY: /certs/mailpit.key
+      # Like production: no MAIL/AUTH before STARTTLS.
+      MP_SMTP_REQUIRE_STARTTLS: "true"
+    volumes:
+      - ./config/dev-certs:/certs:ro
     ports:
       - "127.0.0.1:1025:1025" # SMTP
       - "127.0.0.1:8025:8025" # web UI

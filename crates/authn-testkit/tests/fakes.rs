@@ -319,3 +319,89 @@ fn arc_04_fake_clock_is_a_clock() {
     let clock: Arc<dyn Clock> = Arc::new(FakeClock::at(OffsetDateTime::UNIX_EPOCH));
     assert_eq!(clock.now(), OffsetDateTime::UNIX_EPOCH);
 }
+
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn mfa_06_recording_notifier_records_sms_and_can_switch_it_off(pool: PgPool) {
+    let ports = TestPorts::new();
+    let mut conn = pool.acquire().await.unwrap();
+    let notifier: Arc<dyn Notifier> = ports.notifier.clone();
+    let sms = SmsNotification {
+        to: PhoneNumber::parse("+905551112233").unwrap(),
+        user_id: Some(UserId::generate()),
+        locale: Locale::Tr,
+        kind: SmsNotificationKind::MfaSmsCode {
+            code: SensitiveString::new("123456"),
+            expires_at: ports.clock.now(),
+        },
+    };
+    notifier
+        .notify_sms_in_tx(&mut conn, sms.clone())
+        .await
+        .unwrap();
+    assert_eq!(ports.notifier.recorded_sms(), vec![sms.clone()]);
+    assert_eq!(ports.notifier.sms_with_template("mfa_sms_code").len(), 1);
+    assert!(
+        ports
+            .notifier
+            .sms_with_template("phone_verification")
+            .is_empty()
+    );
+    assert_eq!(ports.notifier.last_sms(), Some(sms.clone()));
+    assert!(
+        ports.notifier.recorded().is_empty(),
+        "SMS and e-mail recordings are separate"
+    );
+
+    // A deployment without an SMS provider: the port's `sms_unavailable`.
+    ports.notifier.set_sms_available(false);
+    let err = notifier
+        .notify_sms_in_tx(&mut conn, sms.clone())
+        .await
+        .unwrap_err();
+    assert_eq!(
+        err.code(),
+        authn_core::error::codes::notify::SMS_UNAVAILABLE
+    );
+    assert_eq!(
+        ports.notifier.take_sms().len(),
+        1,
+        "the refused SMS is not recorded"
+    );
+    assert!(ports.notifier.recorded_sms().is_empty());
+    // The recorded code never shows up in Debug output.
+    assert!(!format!("{sms:?}").contains("123456"));
+}
+
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn aud_05_recording_audit_sink_records_pseudonymization(pool: PgPool) {
+    let ports = TestPorts::new();
+    let mut conn = pool.acquire().await.unwrap();
+    let audit: Arc<dyn AuditSink> = ports.audit.clone();
+    let user = UserId::generate();
+    audit.pseudonymize_subject(&mut conn, user).await.unwrap();
+    assert_eq!(ports.audit.pseudonymized(), vec![user]);
+    assert!(ports.audit.recorded().is_empty());
+}
+
+#[test]
+fn ses_15_membership_changed_is_a_distinct_revocation_reason() {
+    use std::str::FromStr;
+    let reason = RevocationReason::MembershipChanged;
+    assert_eq!(reason.as_str(), "membership_changed");
+    assert_eq!(
+        RevocationReason::from_str("membership_changed").unwrap(),
+        reason
+    );
+    assert_ne!(reason, RevocationReason::MembershipRemoved);
+    // Every reason fits `sessions_revoked_reason_check` (^[a-z][a-z0-9_]{0,63}$).
+    for r in RevocationReason::ALL {
+        let s = r.as_str();
+        assert!(
+            (1..=64).contains(&s.len())
+                && s.starts_with(|c: char| c.is_ascii_lowercase())
+                && s.chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'),
+            "{s}"
+        );
+    }
+}

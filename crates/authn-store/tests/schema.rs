@@ -300,3 +300,42 @@ async fn aud_05_deleting_a_user_unlinks_audit_pseudonym_and_pii(pool: PgPool) {
     .unwrap();
     assert_eq!(counts, (1, 0, 0));
 }
+
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn cry_08_data_encryption_keys_is_documented_as_reserved(pool: PgPool) {
+    // Envelopes carry their own wrapped DEK (CRY-08); the table is a reserved
+    // slot and must say so to operators inspecting the schema.
+    let comment: Option<String> =
+        sqlx::query_scalar("SELECT obj_description('data_encryption_keys'::regclass, 'pg_class')")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let comment = comment.unwrap();
+    assert!(comment.starts_with("Reserved, unused"), "{comment}");
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM data_encryption_keys")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(rows, 0);
+}
+
+#[sqlx::test(migrations = false)]
+async fn ops_10_architect_migrations_added_after_module_ranges_still_apply(pool: PgPool) {
+    // A database migrated before 0013/0014 existed (module migrations
+    // 1200+ already applied) must pick the new low versions up: sqlx applies
+    // every unapplied version, not only those above the newest one.
+    authn_store::run_migrations(&pool).await.unwrap();
+    exec(
+        &pool,
+        "DELETE FROM _sqlx_migrations WHERE version IN (13, 14);
+         ALTER TABLE password_credentials DROP CONSTRAINT password_credentials_wrapped_pepper_check;
+         DROP INDEX users_locked_until_idx;
+         COMMENT ON TABLE data_encryption_keys IS NULL;",
+    )
+    .await
+    .unwrap();
+    let status = migration_status(&pool).await.unwrap();
+    assert_eq!(status.pending, vec![13, 14]);
+    authn_store::run_migrations(&pool).await.unwrap();
+    assert!(migration_status(&pool).await.unwrap().is_up_to_date());
+}
