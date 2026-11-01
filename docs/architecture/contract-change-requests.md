@@ -232,6 +232,15 @@ Kayıt şablonu:
 - **Geriye uyumluluk:** Ekleme.
 - **Durum:** Açık
 
+### 2026-11-01 — Güvenlik incelemesi sonrası bağlama notları (authn-session / authn-server)
+- **Talep eden:** authn-mfa
+- **Etkilenen dosya / sahip:** `crates/authn-session` / authn-session; `MfaPolicySource` uygulaması / authn-server
+- **Gereksinim:** MFA-08, MFA-09, SES-02, SES-21
+- **Gerekçe:** (1) `verify_factor` kanıtın geçerliliğini denetler, kanıt türünün o girişte izinli olup olmadığını değil (organizasyon bağlamı yalnızca session'da bilinir). (2) Güvenilir cihazlar artık kullanıcının **tüm** üyeliklerinin en katı politikasına da bağlıdır: herhangi bir organizasyon `trusted_devices_allowed = false` ise cihaz ne verilir ne kabul edilir (çağıranın bayrağı yalnızca giriş bağlamıdır).
+- **Önerilen değişiklik:** (1) authn-session, `proof.kind()` challenge'ın `MfaRequirement::allowed_factors()` listesinde değilse `verify_factor`'ı çağırmadan reddetmeli (admin'ler için yalnızca phishing'e dayanıklı faktör; kurtarma kodu yalnızca listedeyse). (2) `MfaPolicySource::org_policy_for_user` `is_trusted_device` tarafından transaction'sız düz bir bağlantıyla da çağrılır; uygulama yalnızca verilen bağlantıdan okumalıdır (mevcut sözleşmeyle uyumlu).
+- **Geriye uyumluluk:** İmza değişikliği yok; davranış yalnızca sıkılaştı.
+- **Durum:** Bilgi
+
 
 ## authn-webauthn
 

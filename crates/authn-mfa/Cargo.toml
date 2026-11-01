@@ -22,6 +22,7 @@ authn-crypto.workspace = true
 authn-store.workspace = true
 async-trait.workspace = true
 axum.workspace = true
+http.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

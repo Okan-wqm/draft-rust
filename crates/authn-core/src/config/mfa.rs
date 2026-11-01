@@ -62,6 +62,9 @@ pub struct EmailOtpConfig {
     /// Minimum time between sends. Default `60s`.
     #[serde(with = "super::duration")]
     pub resend_cooldown: Duration,
+    /// Codes sent per user (enrollment + login + step-up). Default 10 per
+    /// hour.
+    pub sends_per_user: RateLimitPolicy,
 }
 
 impl Default for EmailOtpConfig {
@@ -71,6 +74,7 @@ impl Default for EmailOtpConfig {
             ttl: mins(10),
             max_attempts: 5,
             resend_cooldown: secs(60),
+            sends_per_user: RateLimitPolicy::new(10, hours(1)),
         }
     }
 }
@@ -94,6 +98,11 @@ pub struct SmsOtpConfig {
     pub per_ip: RateLimitPolicy,
     /// Global daily SMS budget (pumping protection). Default 1000 per day.
     pub global_daily_budget: RateLimitPolicy,
+    /// Minimum time between two SMS to the same user. Default `60s`.
+    #[serde(with = "super::duration")]
+    pub resend_cooldown: Duration,
+    /// Messages per user across all of their numbers. Default 5 per hour.
+    pub per_user: RateLimitPolicy,
 }
 
 impl Default for SmsOtpConfig {
@@ -105,6 +114,8 @@ impl Default for SmsOtpConfig {
             per_number: RateLimitPolicy::new(5, hours(1)),
             per_ip: RateLimitPolicy::new(10, hours(1)),
             global_daily_budget: RateLimitPolicy::new(1000, days(1)),
+            resend_cooldown: secs(60),
+            per_user: RateLimitPolicy::new(5, hours(1)),
         }
     }
 }
@@ -151,6 +162,13 @@ pub struct MfaConfig {
     pub lockout_duration: Duration,
     /// Trusted devices.
     pub trusted_device: TrustedDeviceConfig,
+    /// How long a pending (unconfirmed) factor enrollment stays usable
+    /// (MFA-01, MFA-05, MFA-06). Default `15m`.
+    #[serde(with = "super::duration")]
+    pub enrollment_ttl: Duration,
+    /// Factors per user, pending ones included (MFA-07; bounds storage per
+    /// account). Default 10.
+    pub max_factors_per_user: u32,
 }
 
 impl Default for MfaConfig {
@@ -164,6 +182,8 @@ impl Default for MfaConfig {
             per_user_failures: RateLimitPolicy::new(10, mins(15)),
             lockout_duration: mins(15),
             trusted_device: TrustedDeviceConfig::default(),
+            enrollment_ttl: mins(15),
+            max_factors_per_user: 10,
         }
     }
 }
@@ -172,9 +192,12 @@ impl MfaConfig {
     /// Validates the section.
     pub fn validate(&self, p: &mut ConfigProblems) {
         p.require(
-            !self.totp.issuer.trim().is_empty(),
+            !self.totp.issuer.trim().is_empty()
+                && self.totp.issuer.chars().count() <= 64
+                && !self.totp.issuer.contains(':')
+                && !self.totp.issuer.chars().any(char::is_control),
             "mfa.totp.issuer",
-            "must not be empty",
+            "must be 1-64 characters without ':' or control characters",
         );
         p.require(
             matches!(self.totp.digits, 6 | 8),
@@ -198,6 +221,17 @@ impl MfaConfig {
             "mfa.email_otp.max_attempts",
             "must be between 1 and 10",
         );
+        p.require_range(
+            self.email_otp.resend_cooldown,
+            secs(10),
+            mins(15),
+            "mfa.email_otp.resend_cooldown",
+        );
+        validate_policy(
+            p,
+            &self.email_otp.sends_per_user,
+            "mfa.email_otp.sends_per_user",
+        );
         for (i, cc) in self.sms.allowed_country_codes.iter().enumerate() {
             p.require(
                 (1..=3).contains(&cc.len())
@@ -220,6 +254,13 @@ impl MfaConfig {
             &self.sms.global_daily_budget,
             "mfa.sms.global_daily_budget",
         );
+        p.require_range(
+            self.sms.resend_cooldown,
+            secs(10),
+            mins(15),
+            "mfa.sms.resend_cooldown",
+        );
+        validate_policy(p, &self.sms.per_user, "mfa.sms.per_user");
         p.require(
             (1..=20).contains(&self.max_failed_attempts),
             "mfa.max_failed_attempts",
@@ -238,5 +279,71 @@ impl MfaConfig {
             days(90),
             "mfa.trusted_device.ttl",
         );
+        p.require_range(self.enrollment_ttl, mins(1), hours(1), "mfa.enrollment_ttl");
+        p.require(
+            (1..=50).contains(&self.max_factors_per_user),
+            "mfa.max_factors_per_user",
+            "must be between 1 and 50",
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn problems(config: &MfaConfig) -> Vec<String> {
+        let mut p = ConfigProblems::default();
+        config.validate(&mut p);
+        p.problems().to_vec()
+    }
+
+    #[test]
+    fn mfa_01_defaults_follow_the_spec_and_validate() {
+        let config = MfaConfig::default();
+        assert!(problems(&config).is_empty(), "{:?}", problems(&config));
+        assert_eq!(config.totp.digits, 6);
+        assert_eq!(config.totp.period, secs(30));
+        assert_eq!(config.totp.skew_steps, 1);
+        assert_eq!(config.recovery_codes.count, 10);
+        assert_eq!(config.email_otp.ttl, mins(10));
+        assert_eq!(config.email_otp.max_attempts, 5);
+        assert_eq!(config.trusted_device.ttl, days(30));
+        assert!(config.sms.allowed_country_codes.is_empty());
+    }
+
+    #[test]
+    fn mfa_01_issuer_must_be_usable_in_an_otpauth_label() {
+        for bad in ["", "  ", "Acme:Corp", "Ac\nme", &"x".repeat(65)] {
+            let mut config = MfaConfig::default();
+            config.totp.issuer = bad.to_owned();
+            assert!(
+                problems(&config)
+                    .iter()
+                    .any(|p| p.starts_with("mfa.totp.issuer")),
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn mfa_06_country_codes_and_limits_are_validated() {
+        let mut config = MfaConfig::default();
+        config.sms.allowed_country_codes =
+            vec!["+90".to_owned(), "0".to_owned(), "1234".to_owned()];
+        config.sms.per_user = RateLimitPolicy::new(0, hours(1));
+        config.enrollment_ttl = secs(1);
+        config.max_factors_per_user = 0;
+        let found = problems(&config);
+        for key in [
+            "mfa.sms.allowed_country_codes[0]",
+            "mfa.sms.allowed_country_codes[1]",
+            "mfa.sms.allowed_country_codes[2]",
+            "mfa.sms.per_user",
+            "mfa.enrollment_ttl",
+            "mfa.max_factors_per_user",
+        ] {
+            assert!(found.iter().any(|p| p.starts_with(key)), "{key}: {found:?}");
+        }
     }
 }
