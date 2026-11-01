@@ -22,6 +22,7 @@ authn-crypto.workspace = true
 authn-store.workspace = true
 async-trait.workspace = true
 axum.workspace = true
+http.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -46,3 +47,21 @@ http-body-util.workspace = true
 serde_json.workspace = true
 proptest.workspace = true
 webauthn-authenticator-rs.workspace = true
+
+# The integration tests drive real ceremonies with the software
+# authenticator and need the `passkey` feature.
+[[test]]
+name = "registration"
+required-features = ["passkey"]
+
+[[test]]
+name = "authentication"
+required-features = ["passkey"]
+
+[[test]]
+name = "manage"
+required-features = ["passkey"]
+
+[[test]]
+name = "http"
+required-features = ["passkey"]

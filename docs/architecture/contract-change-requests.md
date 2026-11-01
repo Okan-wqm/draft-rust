@@ -298,6 +298,15 @@ Kayıt şablonu:
 - **Geriye uyumluluk:** Yeni varyant (tam eşleşme yapan tüketiciler için kırıcı olabilir, §13).
 - **Durum:** Açık
 
+### 2026-11-01 — Güvenlik incelemesi: `PasskeyPolicySource` her kimlik doğrulamada, impersonation kaydı yasak (bilgi)
+- **Talep eden:** authn-webauthn
+- **Etkilenen dosya / sahip:** `crates/authn-server` (`PasskeyPolicySource` uygulaması), `crates/authn-session` (passkey uç noktaları), `crates/authn-admin` (impersonation) / ilgili sahipler
+- **Gereksinim:** PKY-05, PKY-08, ADM-04
+- **Gerekçe:** Güvenlik incelemesi: (1) kullanıcı adısız girişte kuruluş AAGUID politikası uygulanmıyordu; (2) imzadan önce üretilen yedekleme bayrağı hataları sahte klon işaretlerine yol açıyordu; (3) yazılabilir impersonation passkey ekleyebiliyordu.
+- **Önerilen değişiklik:** Uygulandı (yalnızca authn-webauthn içinde, imza değişikliği yok): `start_authentication`'a verilen politika artık her seremonide `PasskeyPolicySource::policy_for_user(conn, user, None)` ile `PasskeyPolicy::strictest` birleştirilir (bilinen kullanıcıda başlangıçta, kullanıcı adısız girişte bitişte). **authn-server için:** `policy_for_user` kimlik doğrulamada `active_org = None` ile çağrılır; bu durumda kullanıcının etkin üyeliklerinin en katı politikasını döndürmelidir. **authn-session için:** passkey uç noktaları politikayı yine geçirebilir (birleştirilir), ama artık zorunlu değildir. `start_registration`/`finish_registration` her impersonation'ı `forbidden` ile reddeder. `passkey.clone_suspected` yalnızca imzası doğrulanmış sayaç gerilemesinde üretilir; risk katmanı bu olayı güvenilir sinyal olarak kullanabilir.
+- **Geriye uyumluluk:** Daha katı davranış; API değişmedi. Politikasız (varsayılan `UnrestrictedPolicySource`) kurulumlar etkilenmez.
+- **Durum:** Uygulandı (2026-11-01)
+
 ## authn-org
 
 ### 2026-11-01 — Hata kodları, `[org]` alanları, migration 1500 (bilgi)
