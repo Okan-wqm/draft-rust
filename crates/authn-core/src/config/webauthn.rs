@@ -336,7 +336,13 @@ pub fn is_valid_rp_id(rp_id: &str) -> bool {
     let tld_ok = labels
         .last()
         .is_some_and(|tld| !tld.bytes().all(|b| b.is_ascii_digit()));
-    labels_ok && tld_ok
+    // Browsers parse hosts with the WHATWG URL rules, where a last label such
+    // as `0x` or `0x7f` is an IPv4 number (`https://0x` is `0.0.0.0`). Accept
+    // only ids that the URL parser keeps as exactly this domain, so the RP id
+    // always equals the host an origin check compares it with.
+    let parses_as_same_domain =
+        matches!(url::Host::parse(rp_id), Ok(url::Host::Domain(domain)) if domain == rp_id);
+    labels_ok && tld_ok && parses_as_same_domain
 }
 
 /// The host of a web origin (`scheme://host[:port]`, no path, query,
@@ -426,6 +432,8 @@ fn is_app_link_path(path: &str) -> bool {
 }
 
 #[cfg(test)]
+// Tests mutate one field of a default config at a time on purpose.
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
 
@@ -611,5 +619,19 @@ mod tests {
         assert!(!host_matches_rp_id("badexample.com", "example.com"));
         assert!(!host_matches_rp_id(".example.com", "example.com"));
         assert!(!host_matches_rp_id("example.com.evil", "example.com"));
+    }
+
+    #[test]
+    fn pky_06_rp_id_rejects_whatwg_ipv4_number_forms() {
+        // Found by the webauthn_response_parse fuzz target: `0x` passed the
+        // label rules but `https://0x` is the IPv4 address 0.0.0.0.
+        for bad in ["0x", "0x7f", "0x7f.0x1", "example.0x10", "1.0x", "0"] {
+            assert!(!is_valid_rp_id(bad), "{bad}");
+        }
+        for good in ["example.com", "0xfoo.com", "a.0xg", "auth.example.com"] {
+            assert!(is_valid_rp_id(good), "{good}");
+            let host = web_origin_host(&format!("https://{good}")).unwrap();
+            assert!(host_matches_rp_id(&host, good), "{good}");
+        }
     }
 }
