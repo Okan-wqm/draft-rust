@@ -32,11 +32,37 @@ pub trait AuditSink: Send + Sync {
     async fn record(&self, event: SecurityEvent) -> Result<(), AuthError>;
 
     /// Records an event inside the caller's transaction.
+    ///
+    /// Appends are serialized on the chain head until the caller commits, so
+    /// call this as late as possible in the transaction (ideally as the last
+    /// statement before `COMMIT`) and at most once per transaction.
     async fn record_in_tx(
         &self,
         conn: &mut PgConnection,
         event: SecurityEvent,
     ) -> Result<(), AuthError>;
+
+    /// Pseudonymises a user in the audit log (AUD-05), inside the caller's
+    /// transaction: removes the user ↔ pseudonym mapping and every
+    /// personal-data row (IP, user agent) linked to it. Chained events keep
+    /// their now unlinkable pseudonym, so the hash chain stays intact.
+    ///
+    /// Account deletion (ACC-09) calls this in the same transaction that
+    /// removes or anonymises the user row. A user whose status is `deleted`
+    /// is never linked again (later events get a one-off pseudonym and no
+    /// personal data, even if a mapping was left behind). Hard-deleting the
+    /// user row has the same effect through `ON DELETE CASCADE`.
+    ///
+    /// The default implementation does nothing (test fakes); the real
+    /// implementation in `authn-audit` overrides it.
+    async fn pseudonymize_subject(
+        &self,
+        conn: &mut PgConnection,
+        user: UserId,
+    ) -> Result<(), AuthError> {
+        let _ = (conn, user);
+        Ok(())
+    }
 }
 
 text_enum! {
@@ -141,14 +167,20 @@ text_enum! {
         OrgUpdated => "org.updated",
         /// Organization deletion scheduled.
         OrgDeletionScheduled => "org.deletion_scheduled",
+        /// Scheduled organization deletion cancelled (ORG-12).
+        OrgDeletionCancelled => "org.deletion_cancelled",
         /// Organization deleted.
         OrgDeleted => "org.deleted",
         /// Ownership transfer requested (ORG-11).
         OrgOwnershipTransferRequested => "org.ownership_transfer_requested",
         /// Ownership transferred.
         OrgOwnershipTransferred => "org.ownership_transferred",
+        /// Pending ownership transfer cancelled (ORG-11).
+        OrgOwnershipTransferCancelled => "org.ownership_transfer_cancelled",
         /// Organization policy changed (ORG-07).
         OrgPolicyChanged => "org.policy_changed",
+        /// Domain added, verification pending (ORG-06).
+        OrgDomainAdded => "org.domain_added",
         /// Domain verified (ORG-06).
         OrgDomainVerified => "org.domain_verified",
         /// Domain removed.
@@ -195,6 +227,11 @@ text_enum! {
         WebhookEndpointDeleted => "webhook.endpoint_deleted",
         /// Webhook signing secret rotated.
         WebhookSecretRotated => "webhook.secret_rotated",
+        /// Webhook endpoint disabled automatically after sustained delivery
+        /// failures (AUD-07).
+        WebhookEndpointAutoDisabled => "webhook.endpoint_auto_disabled",
+        /// Manual redelivery of a webhook delivery requested (AUD-07).
+        WebhookRedeliveryRequested => "webhook.redelivery_requested",
         /// Generic admin action (ADM-08); metadata names the action + reason.
         AdminAction => "admin.action",
         /// Impersonation started (ADM-04).

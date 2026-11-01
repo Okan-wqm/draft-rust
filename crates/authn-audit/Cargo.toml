@@ -33,6 +33,8 @@ url.workspace = true
 utoipa.workspace = true
 metrics.workspace = true
 futures.workspace = true
+http.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 authn-testkit.workspace = true

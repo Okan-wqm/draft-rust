@@ -1,14 +1,57 @@
 //! # authn-audit
 //!
-//! Tamper-evident audit log with hash chain and pseudonymised personal data, the transactional outbox worker and signed webhooks (Standard Webhooks).
+//! Tamper-evident audit log with hash chain and pseudonymised personal data,
+//! the transactional outbox worker and signed webhooks (Standard Webhooks).
 //!
-//! Owned requirements: AUD-01… AUD-07.
+//! Owned requirements: AUD-01 … AUD-07.
+//!
+//! | Module | Requirement | What |
+//! |--------|-------------|------|
+//! | [`sink`] | AUD-01, AUD-02, AUD-03, AUD-05 | [`PgAuditSink`] — the `AuditSink` port: sanitization, pseudonyms, hash-chained append |
+//! | [`chain`], [`canonical`] | AUD-02 | Record layout, canonical JSON, `SHA-256(prev_hash ‖ canonical_json(event))` |
+//! | [`sanitize`] | AUD-03 | Structural "no secrets, no personal data" enforcement |
+//! | [`verify`] | AUD-02 | Full / from-anchor chain verification |
+//! | [`retention`] | AUD-05 | Retention purge through the checkpointed escape hatch |
+//! | [`query`], [`api`] | AUD-04, AUD-07 | Own security events, organization audit log, webhook endpoints (HTTP) |
+//! | [`policy`] | AUD-04, AUD-07, ORG-10 | [`AuditAccessPolicy`] — authorization delegated to the server |
+//! | [`outbox`] | AUD-06 | [`OutboxEventPublisher`], [`OutboxWorker`], [`OutboxHandler`] registry |
+//! | [`webhooks`] | AUD-07 | Endpoint management, fan-out, signed SSRF-safe delivery |
+//! | [`service`] | ARC-03 | [`AuditService`] (state of [`router`]) and background-job entry points |
 //!
 //! Conventions (see `README.md` and `docs/architecture/contracts.md`):
 //! * HTTP handlers are exposed as `pub fn router<S>() -> axum::Router<S>`
-//!   requiring this crate's service via `FromRef<S>` — reference
-//!   implementation: `authn_server::routes::example`.
+//!   requiring [`AuditService`] via `FromRef<S>`.
 //! * Side effects go through the ports of `authn_core::ports`; tests use the
 //!   fakes of `authn-testkit`.
-//! * Errors are `authn_core::AuthError` with codes from this crate's file in
-//!   `authn_core::error::codes`.
+//! * Errors are `authn_core::AuthError` with codes from
+//!   `authn_core::error::codes::audit`.
+
+#![forbid(unsafe_code)]
+
+pub mod api;
+pub mod canonical;
+pub mod chain;
+pub mod outbox;
+pub mod policy;
+pub mod query;
+pub mod retention;
+pub mod sanitize;
+pub mod service;
+pub mod sink;
+pub mod verify;
+pub mod webhooks;
+
+pub use api::{AuditApi, router};
+pub use outbox::{
+    HandlerError, NewOutboxMessage, OutboxEventPublisher, OutboxHandler, OutboxHandlers,
+    OutboxMessage, OutboxRepository, OutboxWorker,
+};
+pub use policy::{AccessDecision, AuditAccessPolicy, AuditPermission, DenyAllAuditAccess};
+pub use query::{AuditEventDetail, AuditEventFilter, list_events};
+pub use service::{AuditService, AuditServiceParts, MaintenanceReport};
+
+pub use retention::{PurgeReport, create_checkpoint, purge_before, purge_expired};
+pub use sink::{AppendedEvent, PgAuditSink};
+pub use verify::{
+    ChainAnchor, ChainBreak, ChainProblem, ChainReport, verify_chain, verify_chain_from,
+};

@@ -290,6 +290,7 @@ dependencies = [
  "thiserror 2.0.21",
  "time",
  "tokio",
+ "tokio-util",
  "tower",
  "tracing",
  "unicode-normalization",
@@ -365,6 +366,7 @@ dependencies = [
  "utoipa",
  "uuid",
  "wiremock",
+ "zeroize",
 ]
 
 [[package]]
@@ -479,14 +481,11 @@ dependencies = [
  "authn-store",
  "authn-testkit",
  "http",
- "http-body-util",
  "lettre",
  "metrics",
  "minijinja",
  "proptest",
- "reqwest",
  "rustls",
- "secrecy",
  "serde",
  "serde_json",
  "sqlx",
@@ -494,11 +493,10 @@ dependencies = [
  "thiserror 2.0.21",
  "time",
  "tokio",
- "tower",
  "tracing",
  "url",
  "uuid",
- "wiremock",
+ "zeroize",
 ]
 
 [[package]]
@@ -556,7 +554,6 @@ dependencies = [
  "ipnet",
  "metrics",
  "proptest",
- "secrecy",
  "serde",
  "serde_json",
  "sqlx",
@@ -566,9 +563,10 @@ dependencies = [
  "tokio",
  "tower",
  "tracing",
- "url",
+ "unicode-normalization",
  "utoipa",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]
@@ -595,6 +593,7 @@ dependencies = [
  "thiserror 2.0.21",
  "time",
  "tokio",
+ "tokio-util",
  "tower",
  "tracing",
  "unicode-normalization",

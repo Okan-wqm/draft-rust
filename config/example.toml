@@ -69,13 +69,14 @@ key = "EmFt2e6K4mRNa00b7YSb9pmCX5Ak+/U7pL0JNQfO7wk="
 # min_strength_score = 3
 # service_name = "rust-authentication"
 # check_endpoint_per_ip = { limit = 30, period = "1m" }
+# change_attempts_per_user = { limit = 5, period = "15m" }   # PWD-06 current-password guesses
 
 [password.breach_check]                # PWD-03
 # enabled = true
 # hibp_range_url = "https://api.pwnedpasswords.com/range/"
 # timeout = "3s"
-# fail_open = true
-# offline_list_file = "/etc/authn/breached-sha1.txt"
+# fail_open = true                     # false: refuse new passwords while HIBP is down (503)
+# offline_list_file = "/etc/authn/breached-sha1.txt"   # SHA-1 hex per line, `HASH:COUNT` allowed
 
 [password.reset]                       # PWD-07, PWD-08
 # token_ttl = "30m"
@@ -84,18 +85,31 @@ key = "EmFt2e6K4mRNa00b7YSb9pmCX5Ak+/U7pL0JNQfO7wk="
 # code_max_attempts = 5
 # per_email = { limit = 3, period = "1h" }
 # per_ip = { limit = 20, period = "1h" }
+# verify_per_ip = { limit = 30, period = "1h" }             # completions (link or code) per IP
+# code_attempts_per_email = { limit = 10, period = "1h" }   # code submissions per address
 
 [account]                              # ACC-*
-# unverified_login = "block"           # block | limited
-# unverified_purge_after = "7d"
-# email_change_revert_ttl = "7d"
+# unverified_login = "block"           # block | limited (login with the verify_email required action)
+# unverified_purge_after = "7d"        # never-verified accounts are deleted after this
+# email_change_revert_ttl = "7d"       # revert link + reservation of the previous address
 # deletion_grace_period = "30d"
-# disposable_domains_file = "/etc/authn/disposable-domains.txt"
+# disposable_domains_file = "/etc/authn/disposable-domains.txt"   # one domain per line, '#' comments
 # registration_captcha = "risk_based"  # always | risk_based | never
 # registration_per_ip = { limit = 10, period = "1h" }
+# registration_captcha_free_per_ip = { limit = 3, period = "1h" }   # risk_based: CAPTCHA after this
+# registration_notice_per_email = { limit = 3, period = "1d" }      # "someone tried to register" mails
+# email_change_per_user = { limit = 5, period = "1d" }
+# link_actions_per_ip = { limit = 30, period = "1h" }               # confirm / revert / cancel links
+# display_name_max_chars = 64          # at most 128
 # require_terms_acceptance = false
 # reaccept_terms_on_new_version = true
 # export_per_user = { limit = 2, period = "1d" }
+# [[account.terms]]                    # published versions (immutable once published)
+# document = "privacy_policy"          # terms_of_service | privacy_policy
+# version = "2026-11"
+# url = "https://example.com/privacy"
+# published_at = "2026-11-01T00:00:00Z"
+# requires_reacceptance = false
 
 [account.verification]                 # ACC-04
 # link_ttl = "24h"
@@ -103,6 +117,9 @@ key = "EmFt2e6K4mRNa00b7YSb9pmCX5Ak+/U7pL0JNQfO7wk="
 # code_max_attempts = 5
 # resend_cooldown = "60s"
 # max_sends_per_hour = 5
+# code_attempts_per_email = { limit = 10, period = "1h" }   # across re-sent codes
+# verify_per_ip = { limit = 30, period = "1h" }
+# resend_per_ip = { limit = 20, period = "1h" }
 
 [session]                              # SES-*
 # access_token_ttl = "10m"
@@ -124,32 +141,50 @@ key = "EmFt2e6K4mRNa00b7YSb9pmCX5Ak+/U7pL0JNQfO7wk="
 # refresh_token = { idle_timeout = "30d", absolute_timeout = "90d" }
 
 [mfa]                                  # MFA-*
-# max_failed_attempts = 5
-# per_user_failures = { limit = 10, period = "15m" }
-# lockout_duration = "15m"
-# totp = { issuer = "rust-authentication", digits = 6, period = "30s", skew_steps = 1 }
+# max_failed_attempts = 5              # failed verifications per factor before a temporary lock (MFA-03)
+# per_user_failures = { limit = 10, period = "15m" }   # failed verifications per user across factors
+# lockout_duration = "15m"             # lock after either limit; answers 429 + Retry-After
+# enrollment_ttl = "15m"               # a pending (unconfirmed) factor is discarded after this
+# max_factors_per_user = 10            # pending factors included
+# totp = { issuer = "rust-authentication", digits = 6, period = "30s", skew_steps = 1 }  # issuer: no ':'
 # recovery_codes = { count = 10 }
-# email_otp = { enabled = true, ttl = "10m", max_attempts = 5, resend_cooldown = "60s" }
-# trusted_device = { enabled = true, ttl = "30d" }
+# email_otp = { enabled = true, ttl = "10m", max_attempts = 5, resend_cooldown = "60s", sends_per_user = { limit = 10, period = "1h" } }
+# trusted_device = { enabled = true, ttl = "30d" }   # never for platform admins; org policy can forbid
 
-[mfa.sms]                              # MFA-06 (needs [notify.sms])
-# allowed_country_codes = ["90"]
+[mfa.sms]                              # MFA-06 (needs [notify.sms]; empty country list = SMS off)
+# allowed_country_codes = ["90"]       # E.164 calling codes without '+'
 # ttl = "10m"
 # max_attempts = 5
+# resend_cooldown = "60s"              # per user
+# per_user = { limit = 5, period = "1h" }
 # per_number = { limit = 5, period = "1h" }
 # per_ip = { limit = 10, period = "1h" }
-# global_daily_budget = { limit = 1000, period = "1d" }
+# global_daily_budget = { limit = 1000, period = "1d" }   # pumping protection, checked last
 
 [webauthn]                             # PKY-*
-rp_id = "localhost"
+rp_id = "localhost"                    # registrable domain; changing it invalidates every passkey (PKY-06)
 # rp_name = "rust-authentication"
-allowed_origins = ["http://localhost:8080"]
-# ceremony_ttl = "5m"
-# apple_app_ids = ["TEAMID.com.example.app"]
-# related_origins = []
-# [[webauthn.android_apps]]
+allowed_origins = ["http://localhost:8080"]  # exact match; rp_id or its subdomains (http only for localhost),
+                                       # related_origins entries, "android:apk-key-hash:<base64url sha256>"
+# ceremony_ttl = "5m"                  # server-side challenge lifetime, single use (PKY-01)
+# max_credentials_per_user = 20
+# step_up_for_first_passkey = true     # false: only additional passkeys need step-up (SES-13)
+# registration_per_user = { limit = 10, period = "1h" }
+# authentication_per_ip = { limit = 60, period = "15m" }
+# apple_app_ids = ["TEAMID.com.example.app"]   # /.well-known/apple-app-site-association (PKY-07)
+# related_origins = []                 # /.well-known/webauthn (Related Origin Requests)
+# app_link_paths = []                  # universal links / app links, e.g. ["/login/*"]
+# well_known_max_age = "1h"
+# [[webauthn.android_apps]]            # /.well-known/assetlinks.json
 # package_name = "com.example.app"
-# sha256_cert_fingerprints = ["AA:BB:..."]
+# sha256_cert_fingerprints = ["AA:BB:..."]     # 32 upper-case hex bytes separated by ':'
+# [[webauthn.attestation_roots]]       # PKY-08: only for organization AAGUID allow-lists
+# name = "Example vendor"
+# aaguids = ["00000000-0000-0000-0000-000000000000"]
+# ca_pem = """
+# -----BEGIN CERTIFICATE-----
+# ...
+# -----END CERTIFICATE-----"""
 
 [oidc_client]                          # SOC-*
 # state_ttl = "10m"
@@ -184,12 +219,19 @@ allowed_origins = ["http://localhost:8080"]
 # client_secret = "..."
 
 [org]                                  # ORG-*
-# invitation_ttl = "7d"
-# invitation_sends_per_org = { limit = 50, period = "1h" }
-# domain_verification_label = "_authn-verification"
-# ownership_transfer_ttl = "7d"
-# deletion_grace_period = "30d"
-# api_keys = { environment = "live", max_lifetime = "365d", default_lifetime = "90d", rotation_grace = "24h" }
+# invitation_ttl = "7d"                # ORG-05, 1h-30d
+# invitation_sends_per_org = { limit = 50, period = "1h" }      # invitation e-mails (new + resend) per organization
+# invitation_resend_cooldown = "1m"    # minimum gap between two sends of one invitation
+# creates_per_user = { limit = 10, period = "1d" }              # organizations a user may create (ORG-01)
+# token_attempts_per_user = { limit = 30, period = "1h" }       # invitation preview/accept + ownership-transfer accept per user
+# domain_verification_label = "_authn-verification"             # ORG-06: TXT record name is <label>.<domain>
+# domain_checks_per_org = { limit = 30, period = "1h" }         # DNS verification checks per organization
+# dns_timeout = "5s"                   # one TXT lookup, 1s-30s
+# ownership_transfer_ttl = "7d"        # ORG-11 acceptance window
+# ownership_transfers_per_org = { limit = 10, period = "1h" }
+# deletion_grace_period = "30d"        # ORG-12; 0 = purged by the next cleanup run
+# limits = { custom_roles = 50, domains = 20, service_accounts = 100, api_keys = 500, pending_invitations = 1000 }
+# api_keys = { environment = "live", max_lifetime = "365d", default_lifetime = "90d", rotation_grace = "24h", last_used_update_interval = "1m", auth_failures_per_ip = { limit = 30, period = "15m" } }
 
 [protect]                              # PRT-*, RSK-*
 # allowed_hosts = []                   # "host" or "host:port"; default: host of public_base_url (PRT-09, 421 otherwise)
@@ -241,16 +283,20 @@ backend = "memory"                     # postgres (default) | redis | memory (si
 # allow_private_networks = false       # tests / dev only: private ranges AND plain http for user-supplied URLs
 
 [audit]                                # AUD-*
-# retention = "400d"
-# user_visible_window = "90d"
-# outbox = { poll_interval = "1s", batch_size = 100, max_attempts = 10, backoff_base = "2s", backoff_max = "1h", lease = "60s" }
-# webhooks = { timeout = "10s", max_attempts = 8, secret_rotation_overlap = "24h", max_endpoints_per_org = 10 }
+# retention = "400d"                   # audit events older than this are purged (checkpointed, AUD-05)
+# user_visible_window = "90d"          # GET /v1/me/security-events window (AUD-04)
+# outbox = { poll_interval = "1s", batch_size = 100, max_attempts = 10, backoff_base = "2s", backoff_max = "1h", lease = "60s", concurrency = 16, delivered_retention = "7d", dead_retention = "30d" }
+# webhooks = { timeout = "10s", max_attempts = 8, secret_rotation_overlap = "24h", max_endpoints_per_org = 10, backoff_base = "1m", backoff_max = "6h", disable_after_failures = 20, disable_after = "24h", delivery_retention = "30d" }
+# rate_limits = { events_read = { limit = 60, period = "1m" }, webhook_write = { limit = 60, period = "1h" }, webhook_redeliver = { limit = 30, period = "1h" } }
 
 [notify]                               # NTF-*
-# template_dir = "/etc/authn/templates"
+# app_name = "rust-authentication"     # product name shown in e-mails and SMS
+# template_dir = "/etc/authn/templates" # overrides <locale>/email/<kind>.{subject.txt,txt,html} and <locale>/sms/<kind>.txt; every file validated at startup
+# max_attempts = 10                    # outbox delivery attempts before the dead-letter state
+# recipient_limit = { limit = 30, period = "1h" } # user-triggerable messages per recipient (anti mail/SMS bombing); excess dropped silently, security alerts never
 
 [notify.email]
-transport = "smtp"                     # smtp | log (development only) | disabled
+transport = "smtp"                     # smtp | log (development/test only) | disabled (not in production)
 from_address = "no-reply@localhost.localdomain"
 # from_name = "rust-authentication"
 
@@ -261,12 +307,19 @@ tls = "starttls"                       # starttls | tls (plain text is not suppo
 # username = "..."
 # password = "..."
 # timeout = "10s"
+# hello_name = "example.com"           # EHLO name; default: domain of from_address (never the machine host name)
+# extra_ca_file = "/path/to/mailpit-cert.pem" # development/test only: extra trusted root, e.g. Mailpit's self-signed certificate
 
 [notify.sms]
-# provider = "none"                    # none | http | log
+# provider = "none"                    # none | http | log (development/test only)
 # http_url = "https://sms.example.com/send"
 # http_api_key = "..."
+# http_auth_header = "authorization"
+# http_auth_scheme = "Bearer"          # "" sends the raw key
+# http_body_template = '{"to":"{{to}}","text":"{{text}}","from":"{{sender_id}}"}' # placeholders substituted inside the parsed JSON
+# http_message_id_pointer = "/message_id" # JSON pointer of the provider message id
 # sender_id = "AUTHN"
+# timeout = "10s"
 
 [admin]                                # ADM-*
 # ip_allow_list = ["10.0.0.0/8"]
