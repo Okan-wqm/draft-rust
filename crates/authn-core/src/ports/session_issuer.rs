@@ -48,6 +48,32 @@ pub trait SessionIssuer: Send + Sync {
         ctx: &RequestContext,
         request: ImpersonationRequest,
     ) -> Result<IssuedSession, AuthError>;
+
+    /// [`SessionIssuer::start_impersonation`] with the client kind of the
+    /// impersonation session (a web cookie session, or native tokens whose
+    /// access tokens carry the RFC 8693 `act` claim) and the admin's own
+    /// session, whose authentication methods (`amr` / `acr`) the
+    /// impersonation session inherits. `admin_session = None` uses the
+    /// admin's most recently authenticated active session; an admin without
+    /// an active session cannot impersonate.
+    ///
+    /// The default implementation serves web sessions through
+    /// [`SessionIssuer::start_impersonation`] and refuses native ones; the
+    /// authn-session implementation overrides it.
+    async fn start_impersonation_with(
+        &self,
+        ctx: &RequestContext,
+        request: ImpersonationRequest,
+        client: ClientKind,
+        admin_session: Option<SessionId>,
+    ) -> Result<IssuedSession, AuthError> {
+        let _ = admin_session;
+        match client {
+            ClientKind::Web => self.start_impersonation(ctx, request).await,
+            ClientKind::Native => Err(AuthError::new(crate::error::codes::common::BAD_REQUEST)
+                .with_context("native impersonation is not supported by this issuer")),
+        }
+    }
 }
 
 /// Proof of a successful primary authentication.

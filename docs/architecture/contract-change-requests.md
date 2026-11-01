@@ -558,6 +558,51 @@ Dalga A'nın tüm talepleri işlendi; her kaydın **Durum** satırı güncellend
 
 ## authn-session
 
+### 2026-11-01 — Oturum çekirdeği: migration 2000, `[session]` alanları, hata kodları (bilgi)
+- **Talep eden:** authn-session
+- **Etkilenen dosya / sahip:** `migrations/2000_session_core.sql`, `crates/authn-core/src/config/session.rs`, `crates/authn-core/src/error/codes/session.rs`, `config/example.toml` `[session]` yorumları / authn-session; contracts §6 migration tablosu / mimar
+- **Gereksinim:** SES-03 … SES-17
+- **Gerekçe:** SES-17 izinli giriş yöntemi kontrolü oturumun birincil yöntemini, SES-08 `scope` claim'i oturum kapsamlarını gerektirir; oturum kontrolü, anahtar önbelleği, touch seyreltme ve oran sınırları yapılandırılabilir olmalı (ARC-07).
+- **Önerilen değişiklik:** (uygulandı, yalnızca sahip olunan dosyalarda) Migration `2000`: `sessions.login_method` (CHECK, NULL = impersonation / bilinmiyor), `sessions.scopes text[]`, `auth_challenges.primary_method`, `sessions_revoked_idx`, `refresh_tokens_successor_idx`, `sessions_impersonator_active_idx` (güvenlik incelemesi, aşağıya bakın). Yeni `[session]` alanları: `access_token_session_check` (true), `signing_key_cache_ttl` (30s), `touch_interval` (1m), `default_scopes` (`["api"]`), `step_up_per_user` (10/15dk), `refresh_per_ip` (300/dk). Yeni hata kodları: `csrf_failed`, `invalid_refresh_token`, `reauthentication_failed`, `step_up_method_not_allowed`, `challenge_invalid`, `login_method_not_allowed`, `impersonation_not_allowed`. **Mimar için:** contracts §6 "Dalga A sonrası migration'lar" tablosuna `2000 | session | sessions.login_method/scopes, auth_challenges.primary_method, temizlik indeksleri` satırı.
+- **Geriye uyumluluk:** Ekleme (yeni kolonlar NULL/varsayılanlı; diğer modüllerin test fixture'ları etkilenmez).
+- **Durum:** Uygulandı (2026-11-01). Açık — **mimar:** contracts §6 satırı
+
+### 2026-11-01 — `SessionIssuer::start_impersonation_with` (port eklemesi)
+- **Talep eden:** authn-session
+- **Etkilenen dosya / sahip:** `crates/authn-core/src/ports/session_issuer.rs` / authn-session; tüketici authn-admin
+- **Gereksinim:** ADM-04, SES-08
+- **Gerekçe:** RFC 8693 `act` claim'li impersonation token'ları native oturum gerektirir ve impersonation oturumu adminin kendi oturumunun `amr`/`acr`'ını miras almalıdır; `ImpersonationRequest`'e alan eklemek yapı literal'lerini kırardı.
+- **Önerilen değişiklik:** (uygulandı) varsayılan gövdeli yeni metot `start_impersonation_with(ctx, request, client: ClientKind, admin_session: Option<SessionId>) -> Result<IssuedSession, AuthError>`; varsayılan gövde web için `start_impersonation`'a devreder, native için `bad_request`. authn-session uygulaması: admin DB'de etkin platform admini + canlı kendi oturumu (verilmezse en son doğrulanmış canlı oturumu), hedef etkin/admin değil/break-glass değil/kendisi değil, süre ≤ `admin.impersonation_max_ttl`, gerekçe 1–1000 karakter; kullanıcı bildirimi (`ImpersonationStarted`) ve `admin.impersonation_started` audit'i aynı transaction'da (authn-admin tekrar göndermez). Yeni tip eklenmedi (ports `mod.rs` mimarındır).
+- **Geriye uyumluluk:** Ekleme; mevcut uygulayıcılar (testkit `FakeSessionIssuer`) değişmeden derlenir.
+- **Durum:** Uygulandı (2026-11-01)
+
+### 2026-11-01 — Server bağlaması: oturum katmanı, revoker inşa sırası, işler
+- **Talep eden:** authn-session
+- **Etkilenen dosya / sahip:** `crates/authn-server/src/{state.rs,app.rs,openapi.rs,serve.rs}` / authn-server; contracts §15.2, §15.3, §15.4, §15.5 / mimar
+- **Gereksinim:** SES-03, SES-04, SES-05, SES-15, OPS-02, OPS-06, ACC-10
+- **Gerekçe:** Kimlik doğrulama tek katmanda yapılmalı (çerez, bearer, API anahtarı); `SessionRevoker` hem `AccountService`'in bağımlılığı hem de `SessionService`'in (dolaylı) kullanıcısıdır.
+- **Önerilen değişiklik:** (1) İnşa sırası: `MfaService` → `authn_session::PgSessionRevoker::new(clock, audit, events, mfa)` → `AccountService` (`sessions` = iç revoker) → `AccountAwareSessionRevoker::new(Arc::new(revoker), account)` diğer modüllere → `SessionService::new(SessionServiceDeps{…, passwords, mfa, webauthn, orgs, accounts}, SessionSettings::from_app_config(&config))`. (2) `SessionIssuer` portu = `Arc::new(session_service.clone())`. (3) OPS-02 yuva (8): `from_fn_with_state(session_service, authn_session::authenticate)` — `authn_org::api_key_middleware`'in **yerine** (API anahtarlarını yalnızca `is_api_key_path` yollarında principal yapar; ikisi birlikte kurulursa org katmanı principal taşıyan istekleri reddeder). (4) `FromRef<AppState> for SessionService`, `.merge(authn_session::router::<AppState>())`, `openapi.rs`'e `authn_session::SessionApi`. (5) İş: `SessionService::purge_expired(limit)`; açılışta `SigningKeyRepository::rotate_if_due` (anahtar yoksa token basılamaz). (6) `AccountServiceDeps.exporters`'a `authn_session::SessionDataExporter` (`sessions` bölümü).
+- **Geriye uyumluluk:** Ekleme.
+- **Durum:** Açık — **authn-server** (bağlama), **mimar** (contracts §15.2 `SessionRevoker/SessionIssuer` satırı, §15.4 yuva 8 "`api_key_middleware` yerine `authn_session::authenticate`", §15.5 "Oturum / challenge temizliği → `SessionService::purge_expired`")
+
+### 2026-11-01 — Dalga A bağlama taleplerinin session tarafı (bilgi)
+- **Talep eden:** authn-session
+- **Etkilenen dosya / sahip:** yalnızca `crates/authn-session` / authn-session
+- **Gereksinim:** PWD-09, MFA-09, SES-10, SES-13, SES-15, SES-17
+- **Gerekçe:** Dalga A kayıtlarındaki "Açık — authn-session" maddelerinin bu aşamada kapananları.
+- **Önerilen değişiklik:** (uygulandı) `RevokeOptions::also_trusted_devices` aynı bağlantıda `MfaService::revoke_trusted_devices_in_tx` ile (password PWD-09 / mfa talepleri); "tümünü kapat" ve "diğerlerini kapat" güvenilir cihazları ve bekleyen e-posta değişikliğini (`AccountService::on_sessions_revoked_in_tx`) de iptal eder; SES-10 `OrgService::authenticate_api_key` doğrudan çağrılır (org talebi); SES-17 `check_membership` + `OrgPolicy` (org talebi); passkey step-up `AuthenticationTarget::StepUp`, `binding_token` web'de `__Host-authn_passkey` (`SameSite=Strict`) çerezinde, `target` istemciden değil oturum kaydından (webauthn talebi); step-up'ta şifre `verify_login_password` enum eşlemesiyle (password talebi). **Giriş akışları aşamasına kalan:** `LoginProtection` çağrıları, `allowed_factors` kontrolü (challenge API'si `ChallengeState::allows_factor` sağlar), `assess_login` / `MailboxProof` / `auto_join_verified_domains` (federe boru hattında `assess_login` ve `auto_join_verified_domains` uygulandı), `NotMeTokenIssuer` (RSK-04).
+- **Geriye uyumluluk:** —
+- **Durum:** Bilgi — sahiplerin kayıtlarında ilgili satırlar "authn-session tarafı uygulandı" olarak işaretlenebilir (mimar)
+
+### 2026-11-01 — `SessionRevoker` anlamı: impersonation oturumları ve bekleyen girişler (güvenlik incelemesi, bilgi)
+- **Talep eden:** authn-session (bağımsız güvenlik incelemesi)
+- **Etkilenen dosya / sahip:** `crates/authn-session/src/service/revoke.rs`, `src/store/sessions.rs`, `migrations/2000_session_core.sql` / authn-session; tüketiciler authn-password, authn-account, authn-org, authn-admin; contracts §4 `SessionRevoker` satırı / mimar
+- **Gereksinim:** ADM-04, PWD-09, RSK-04, SES-15, SES-22
+- **Gerekçe:** Askıya alınan / tüm oturumları iptal edilen bir adminin impersonation oturumları 60 dakikaya kadar yaşıyordu; eski şifreyle başlamış bekleyen bir giriş (ör. `change_password` zorunlu adımı) şifre sıfırlamasından sonra tamamlanabiliyordu.
+- **Önerilen değişiklik:** (uygulandı, yalnızca sahip olunan dosyalarda) (1) `revoke_all_for_user(user, …)` / `revoke_all_except(user, keep, …)` `user`'ın admin olarak başlattığı impersonation oturumlarını (`impersonator_user_id = user`) da iptal eder; kimlik doğrulama ayrıca impersonator'ın etkin platform admini olmasını ister (yetkisi alınan admin için iptal gerekmez). (2) Kullanıcı genelindeki iptaller (`revoke_all_for_user`, `revoke_all_except`, `revoke_everything`) kullanıcının açık `auth_challenges` kayıtlarını da kapatır — `RevocationReason::PasswordChanged` **hariç** (SES-22 zorunlu adımları bu nedenle bekleyen girişin içinden iptal eder; giriş akışı başka bir nedenle iptal yapan adımı challenge ortasında çalıştırmamalı). (3) Yeni kısmi indeks `sessions_impersonator_active_idx`. **authn-admin için:** adminin askıya alınması / ADM-03 iptali impersonation oturumlarını kendiliğinden bitirir; ayrıca çağrı gerekmez. **Mimar için:** contracts §4 `SessionRevoker` satırına bu iki anlam notu.
+- **Geriye uyumluluk:** Port imzası değişmedi; yalnızca daha fazla şey iptal edilir (güvenli yön).
+- **Durum:** Uygulandı (2026-11-01). Açık — **mimar:** contracts §4 notu
+
 ## authn-oidc-client
 
 ## authn-admin

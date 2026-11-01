@@ -137,7 +137,13 @@ key = "EmFt2e6K4mRNa00b7YSb9pmCX5Ak+/U7pL0JNQfO7wk="
 # magic_link_ttl = "15m"
 # email_code_ttl = "10m"
 # email_code_max_attempts = 5
-# introspection_per_client = { limit = 600, period = "1m" }
+# introspection_per_client = { limit = 600, period = "1m" }   # per API key (SES-10)
+# access_token_session_check = true    # bearer tokens: session still active? (false: revocation within access_token_ttl)
+# signing_key_cache_ttl = "30s"        # signer / verifier / JWKS cache per process (1s-5m)
+# touch_interval = "1m"                # min. interval between last-seen / idle-expiry writes (< every idle_timeout)
+# default_scopes = ["api"]             # `scope` claim of access tokens (SES-08)
+# step_up_per_user = { limit = 10, period = "15m" }   # POST /v1/reauth attempts (SES-13)
+# refresh_per_ip = { limit = 300, period = "1m" }     # POST /v1/token/refresh (SES-05)
 # web = { idle_timeout = "2h", absolute_timeout = "12h" }
 # remember_me = { idle_timeout = "14d", absolute_timeout = "30d" }
 # shared_device = { idle_timeout = "30m", absolute_timeout = "4h" }

@@ -44,9 +44,9 @@ zeroize.workspace = true
 subtle.workspace = true
 ipnet.workspace = true
 url.workspace = true
-woothee.workspace = true
 utoipa.workspace = true
 metrics.workspace = true
+data-encoding.workspace = true
 
 [dev-dependencies]
 authn-testkit.workspace = true
@@ -56,3 +56,4 @@ http.workspace = true
 http-body-util.workspace = true
 serde_json.workspace = true
 proptest.workspace = true
+futures.workspace = true
