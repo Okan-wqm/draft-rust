@@ -3,6 +3,8 @@
 Bu repo, B2C web, B2B SaaS ve mobil uygulamaların ortak kullanacağı, Rust ile yazılmış bir kimlik doğrulama sistemidir.
 Tam gereksinimler: `docs/spec/requirements.md`. Modül sahipliği ve arayüz sözleşmeleri: `docs/architecture/contracts.md`.
 
+> **Bu işi devralıyorsan önce `docs/HANDOFF.md`'yi, sonra `docs/handoff/remaining-work.md`'yi oku.** Projenin durumu, kalan işler, bilinen tuzaklar ve çalışma deseni orada.
+
 ## Değişmez kurallar
 
 - **Dil:** Kod, tanımlayıcılar, kod yorumları, commit mesajları ve API hata kodları İngilizce. Tüm Markdown dokümantasyonu Türkçe.
