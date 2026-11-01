@@ -137,12 +137,24 @@ async fn aud_02_audit_events_are_append_only(pool: PgPool) {
         assert!(matches!(err, StoreError::NotPermitted(_)), "{sql}: {err:?}");
     }
     // Retention purge escape hatch only removes rows older than the cutoff.
-    exec(
-        &pool,
-        "BEGIN; SET LOCAL authn.audit_purge_before = '2000-01-01T00:00:00Z'; DELETE FROM audit_events; COMMIT;",
-    )
-    .await
-    .unwrap_err();
+    // Run the rejected purge in an explicit transaction that is rolled back,
+    // so the pooled connection is never returned in an aborted-transaction
+    // state (a multi-statement simple query left it aborted, which made the
+    // next pool.begin() fail with 25P02 whenever the pool reused it).
+    let mut rejected = pool.begin().await.unwrap();
+    sqlx::query("SET LOCAL authn.audit_purge_before = '2000-01-01T00:00:00Z'")
+        .execute(&mut *rejected)
+        .await
+        .unwrap();
+    let err = sqlx::query("DELETE FROM audit_events")
+        .execute(&mut *rejected)
+        .await
+        .unwrap_err();
+    assert!(
+        err.as_database_error().is_some(),
+        "purge newer than the cutoff must be rejected by the trigger: {err:?}"
+    );
+    rejected.rollback().await.unwrap();
     let mut tx = pool.begin().await.unwrap();
     sqlx::query(
         "SELECT set_config('authn.audit_purge_before', (now() - interval '400 days')::text, true)",
