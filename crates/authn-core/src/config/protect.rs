@@ -449,6 +449,8 @@ fn is_host_entry(entry: &str) -> bool {
 }
 
 #[cfg(test)]
+// Tests mutate one field of a default config at a time on purpose.
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
 

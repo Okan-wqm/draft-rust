@@ -194,6 +194,9 @@ from_iter_instead_of_collect = "warn"
 
 [profile.dev]
 debug = "line-tables-only"
+# Incremental artefacts grew to several GB with parallel agents; full
+# rebuilds of changed crates are fast enough.
+incremental = false
 
 # Password hashing and signature primitives are painfully slow without
 # optimisation; tests hash real passwords with production parameters.

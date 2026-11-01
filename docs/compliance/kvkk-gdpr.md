@@ -77,6 +77,7 @@ Kaynak: `migrations/`. "Kişisel veri" sütunu doğrudan veya dolaylı (kullanı
 | `memberships` | kullanıcı kimliği, rol, davet eden | Üyelik | kaskad; `invited_by` NULL |
 | `invitations` | **davet edilen e-posta** (henüz kullanıcı olmayan kişi!), davet eden, kabul eden | ORG-05 | `invited_by` / `accepted_by` NULL; davet satırı organizasyonla birlikte silinir. Kabul edilmemiş davetlerin süresi dolunca temizlenmesi authn-org işidir |
 | `org_domains` | — (domain doğrulama) | ORG-06 | — |
+| `org_auto_join_exclusions` | kullanıcı kimliği, organizasyondan çıkarılma/ayrılma nedeni ve zamanı (domain ile otomatik katılımın kullanıcıyı geri eklemesini engeller) | ORG-06 | **kaskad** (kullanıcı veya organizasyon silinince) |
 | `org_policies` | güncelleyen kullanıcı kimliği | ORG-07 | NULL |
 | `service_accounts` | oluşturan kullanıcı kimliği | ORG-09 | NULL |
 | `api_keys` | sahibi kullanıcı (varsa), son kullanım **IP'si**; anahtarın yalnızca hash'i | ORG-08 | kullanıcıya ait anahtarlar kaskad; `created_by` NULL |
