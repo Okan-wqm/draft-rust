@@ -6,6 +6,15 @@
 //!
 //! Owned requirements: ACC-01 … ACC-13, DOC-07.
 //!
+//! Account pre-hijacking defence (ADR 0002,
+//! `docs/architecture/adr/0002-registration-pre-hijacking.md`): a
+//! registration never writes credentials; each registration's password
+//! waits in `pending_registrations`, bound to its own e-mailed link and code
+//! and to the registering client's handle ([`RegistrationReceipt`]), and is
+//! activated only by completing *that* registration. Mailbox proofs made by
+//! other modules ([`MailboxProof`]) and their session revocations
+//! ([`AccountAwareSessionRevoker`]) apply the account consequences.
+//!
 //! | Module | Requirements | What |
 //! |--------|--------------|------|
 //! | [`service`] | ACC-01 … ACC-11, ACC-13 | [`AccountService`] — every use case |
@@ -35,6 +44,7 @@ pub mod hooks;
 pub mod lifecycle;
 pub mod model;
 pub mod profile;
+mod registration_store;
 mod repo;
 pub mod routes;
 pub mod service;
@@ -55,7 +65,9 @@ pub use model::{
 };
 pub use routes::{AccountApi, router};
 pub use service::{
-    AccountService, AccountServiceDeps, AccountServiceSettings, VerificationProof, actions,
+    AccountAwareSessionRevoker, AccountService, AccountServiceDeps, AccountServiceSettings,
+    CredentialConfirmation, LinkConfirmation, MAX_PASSWORD_CONFIRMATIONS, MailboxProof,
+    REGISTRATION_COOKIE, RegistrationReceipt, VerificationProof, actions,
 };
 
 /// `one_time_tokens.purpose` values owned by this crate (contracts §5).

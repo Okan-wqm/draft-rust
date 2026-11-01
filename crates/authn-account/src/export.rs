@@ -4,8 +4,10 @@
 //! The `account` section contains everything stored in the tables owned by
 //! authn-account and in the base `users` / `password_credentials` rows:
 //! account record, password metadata (never the hash), profile, consents
-//! (with IP and user agent), deletion requests, address reservations and
-//! the pending account links/codes (purpose, target address, requesting IP,
+//! (with IP and user agent), deletion requests, address reservations,
+//! pending registrations (address, profile values, requesting IP and user
+//! agent, times — never the password hash, handle, link or code) and the
+//! pending account links/codes (purpose, target address, requesting IP,
 //! times — never the token hashes). Other modules contribute their own
 //! sections through the `DataExporter` port.
 
@@ -21,6 +23,7 @@ use sqlx::PgConnection;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
+use crate::registration_store::RegistrationRepository;
 use crate::repo::{
     ConsentRepository, DeletionRepository, ProfileRepository, ReservationRepository, SharedReads,
 };
@@ -84,6 +87,7 @@ impl DataExporter for AccountDataExporter {
         let deletions = DeletionRepository::for_user(&mut *conn, user).await?;
         let reservations = ReservationRepository::for_user(&mut *conn, user).await?;
         let pending = SharedReads::pending_account_tokens(&mut *conn, user, now).await?;
+        let registrations = RegistrationRepository::live_for_user(&mut *conn, user, now).await?;
         Ok(json!({
             "user": {
                 "id": record.id,
@@ -128,6 +132,16 @@ impl DataExporter for AccountDataExporter {
                 "email_normalized": r.email_normalized,
                 "reserved_until": ts(Some(r.reserved_until)),
                 "created_at": ts(Some(r.created_at)),
+            })).collect::<Vec<_>>(),
+            "pending_registrations": registrations.into_iter().map(|r| json!({
+                "email_normalized": r.email_normalized,
+                "display_name": r.display_name,
+                "locale": r.locale,
+                "time_zone": r.time_zone,
+                "requested_from_ip": r.created_ip.map(|ip| ip.to_string()),
+                "user_agent": r.user_agent,
+                "created_at": ts(Some(r.created_at)),
+                "expires_at": ts(Some(r.expires_at)),
             })).collect::<Vec<_>>(),
             "pending_requests": pending.into_iter().map(|t| json!({
                 "purpose": t.purpose,

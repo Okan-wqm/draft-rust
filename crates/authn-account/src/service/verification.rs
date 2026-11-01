@@ -1,11 +1,21 @@
 //! E-mail verification (ACC-04) and the verification part of ACC-05.
 //!
-//! * One issuance = a 256-bit **link** token (`email_verification`, default
-//!   24 h) and a **6-digit code** (`email_verification_code`, default
-//!   15 min, 5 attempts) sharing a `group_id`; using one revokes the other,
-//!   issuing new ones revokes the previous ones. Both are bound to the
-//!   address they were sent to (`target`): after an e-mail change an old
-//!   token can never verify the new address.
+//! **Registrations** (the normal case) are completed in `registration.rs`:
+//! their link and code live in `pending_registrations` and activate only
+//! the credentials of their own registration, only for a client that proves
+//! it submitted that registration (ADR 0002, account pre-hijacking).
+//!
+//! **Session-issued verification** (`POST /v1/me/email/verification`, for an
+//! unverified account that can sign in — `account.unverified_login =
+//! "limited"`): one issuance = a 256-bit **link** token
+//! (`email_verification`, default 24 h) and a **6-digit code**
+//! (`email_verification_code`, default 15 min, 5 attempts) sharing a
+//! `group_id`; using one revokes the other, issuing new ones revokes the
+//! previous ones. Both are bound to the address they were sent to
+//! (`target`). The code is accepted only from the signed-in user. The link
+//! verifies only when its opener is that signed-in user, knows the
+//! account's password, or sets a new password — an e-mailed link alone
+//! never activates credentials its clicker did not choose.
 //! * Links and codes are consumed atomically (single `UPDATE … RETURNING`
 //!   / row-locked attempt counter in `authn-store`): of concurrent uses
 //!   exactly one succeeds.
@@ -14,7 +24,7 @@
 //!   across codes (re-sending must not multiply guesses) and a per-IP limit.
 //! * Re-sending obeys `resend_cooldown` (60 s) and `max_sends_per_hour`
 //!   per address.
-//! * Unauthenticated code verification answers unknown addresses, wrong,
+//! * Unauthenticated code verification answers unknown handles, wrong,
 //!   expired and locked-out codes identically (`invalid_code`, no faster
 //!   than `code_failure_floor`) — no account enumeration (ACC-02).
 
@@ -26,47 +36,67 @@ use authn_core::http::RequestContext;
 use authn_core::id::UserId;
 use authn_core::ports::{
     Actor, DomainEvent, DomainEventKind, Notification, NotificationKind, RateLimitKey,
-    RateLimitPolicy, SecurityEventKind,
+    RateLimitPolicy, RevocationReason, RevokeOptions, SecurityEventKind,
 };
 use authn_core::secret::{ExposeSecret, SecretString};
 use authn_crypto::otp::OtpCode;
-use authn_crypto::token::OpaqueToken;
+use authn_crypto::password::StoredPasswordHash;
+use authn_crypto::token::{OpaqueToken, TokenHash};
 use authn_store::{
-    CodeVerification, OneTimeTokenRecord, OneTimeTokenRepository, TokenPurpose, TokenSubject,
-    UserRecord, UserRepository,
+    CodeVerification, NewPasswordHash, OneTimeTokenRecord, OneTimeTokenRepository, TokenPurpose,
+    TokenSubject, UserRecord, UserRepository,
 };
-use uuid::Uuid;
 
+use super::registration::{Activation, CredentialConfirmation, LinkConfirmation};
 use super::{AccountService, actions, parse_email, stored_email};
 use crate::lifecycle::{StatusChange, apply_transition, lock_user};
+use crate::registration_store::RegistrationRepository;
+use crate::repo::{ConsentRepository, lock_email};
 use crate::tx::AccountTx;
 
 /// Proof presented to verify an address without a session.
-#[derive(Clone)]
 pub enum VerificationProof {
-    /// Token of the e-mailed link.
+    /// Token of the e-mailed link, plus whatever the opener presents to
+    /// prove or set the credentials ([`LinkConfirmation`]).
     Link {
         /// Raw link token.
         token: SecretString,
+        /// Registration handle, signed-in user, chosen or new password.
+        confirmation: LinkConfirmation,
     },
-    /// The e-mailed 6-digit code together with the address (mobile).
+    /// The e-mailed 6-digit code, accepted only together with the
+    /// registration handle of the registering client.
     Code {
-        /// The address the code was sent to.
-        email: String,
         /// The code.
         code: SecretString,
+        /// Registration handle (request body or cookie).
+        registration: Option<SecretString>,
+        /// Optional address; when present it must be the registration's.
+        email: Option<String>,
     },
 }
 
 impl std::fmt::Debug for VerificationProof {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Link { .. } => f.write_str("VerificationProof::Link([REDACTED])"),
-            Self::Code { email, .. } => write!(
-                f,
-                "VerificationProof::Code({}, [REDACTED])",
-                authn_core::redact::mask_email(email)
-            ),
+            Self::Link { confirmation, .. } => f
+                .debug_struct("VerificationProof::Link")
+                .field("token", &authn_core::secret::REDACTED)
+                .field("confirmation", confirmation)
+                .finish(),
+            Self::Code {
+                email,
+                registration,
+                ..
+            } => f
+                .debug_struct("VerificationProof::Code")
+                .field("code", &authn_core::secret::REDACTED)
+                .field("registration", &registration.is_some())
+                .field(
+                    "email",
+                    &email.as_deref().map(authn_core::redact::mask_email),
+                )
+                .finish(),
         }
     }
 }
@@ -97,25 +127,39 @@ pub(super) fn target_matches(record: &OneTimeTokenRecord, user: &UserRecord) -> 
 }
 
 impl AccountService {
-    /// Verifies an address with a link token or e-mail + code (no session).
+    /// Verifies an address with an e-mailed link or a code (no session
+    /// required; see [`VerificationProof`]).
     pub async fn verify_email(
         &self,
         ctx: &RequestContext,
         proof: VerificationProof,
     ) -> Result<(), AuthError> {
         match proof {
-            VerificationProof::Link { token } => self.verify_email_link(ctx, &token).await,
-            VerificationProof::Code { email, code } => {
-                self.verify_email_code(ctx, &email, &code).await
+            VerificationProof::Link {
+                token,
+                confirmation,
+            } => self.verify_email_link(ctx, &token, &confirmation).await,
+            VerificationProof::Code {
+                code,
+                registration,
+                email,
+            } => {
+                self.verify_email_code(ctx, registration.as_ref(), email.as_deref(), &code)
+                    .await
             }
         }
     }
 
-    /// ACC-04: consumes a verification link and activates the account.
+    /// ACC-04: an e-mailed verification link. Registration links complete
+    /// their registration (see `registration.rs`); session-issued links
+    /// verify the account. In both cases the link proves mailbox control
+    /// and `confirmation` must prove — or set — the credentials that end up
+    /// active; otherwise `registration_confirmation_required`.
     pub async fn verify_email_link(
         &self,
         ctx: &RequestContext,
         token: &SecretString,
+        confirmation: &LinkConfirmation,
     ) -> Result<(), AuthError> {
         self.limit(
             &RateLimitKey::ip(actions::VERIFY_IP, ctx.client_ip),
@@ -123,41 +167,148 @@ impl AccountService {
         )
         .await?;
         let token = OpaqueToken::parse(token.expose_secret()).map_err(|_| invalid_token())?;
+        let hash = token.hash();
+        if let Some(registration) =
+            RegistrationRepository::find_by_link(self.pool(), &hash, self.now()).await?
+        {
+            return self
+                .verify_registration_link(ctx, registration, hash, confirmation)
+                .await;
+        }
+        self.verify_account_link(ctx, hash, confirmation).await
+    }
+
+    /// A session-issued verification link (`email_verification`).
+    async fn verify_account_link(
+        &self,
+        ctx: &RequestContext,
+        hash: TokenHash,
+        confirmation: &LinkConfirmation,
+    ) -> Result<(), AuthError> {
+        let Some(found) = OneTimeTokenRepository::find_active_link(
+            self.pool(),
+            TokenPurpose::EmailVerification,
+            &hash,
+            self.now(),
+        )
+        .await?
+        else {
+            return Err(invalid_token());
+        };
+        let user = match found.user_id {
+            Some(user) => UserRepository::find_by_id(self.pool(), user).await?,
+            None => None,
+        }
+        .filter(|u| u.email_verified_at.is_none())
+        .ok_or_else(invalid_token)?;
+        let (replacement, method) = if confirmation.signed_in_user == Some(user.id) {
+            (None, "link_signed_in")
+        } else {
+            match &confirmation.credentials {
+                Some(CredentialConfirmation::ChosenPassword(password)) => {
+                    let stored = UserRepository::find_password(self.pool(), user.id)
+                        .await?
+                        .map(|p| {
+                            StoredPasswordHash::new(
+                                &p.password_hash,
+                                &p.algorithm,
+                                p.pepper_version,
+                            )
+                        });
+                    // No password: equal-cost dummy verification, never valid.
+                    if !self
+                        .deps()
+                        .hasher
+                        .verify(password, stored.as_ref())
+                        .await?
+                        .is_valid()
+                    {
+                        return Err(AuthError::new(
+                            codes::account::REGISTRATION_PASSWORD_MISMATCH,
+                        ));
+                    }
+                    (None, "link_chosen_password")
+                }
+                Some(CredentialConfirmation::NewPassword {
+                    password,
+                    accepted_terms,
+                }) => {
+                    let email = stored_email(&user).ok_or_else(invalid_token)?;
+                    let activation = self
+                        .new_credentials(ctx, &email, password, accepted_terms)
+                        .await?;
+                    (Some(activation), "link_new_password")
+                }
+                None => {
+                    return Err(
+                        AuthError::new(codes::account::REGISTRATION_CONFIRMATION_REQUIRED)
+                            .with_details(
+                                serde_json::json!({ "methods": ["password", "new_password"] }),
+                            ),
+                    );
+                }
+            }
+        };
         let mut tx = self.begin().await?;
+        if let Some(address) = user.email_normalized.as_deref() {
+            lock_email(tx.conn(), address).await?;
+        }
         let consumed = OneTimeTokenRepository::consume_link(
             tx.conn(),
             TokenPurpose::EmailVerification,
-            &token.hash(),
+            &hash,
             self.now(),
         )
-        .await?;
-        let Some(user_id) = consumed.as_ref().and_then(|r| r.user_id) else {
-            return Err(invalid_token());
-        };
-        let user = lock_user(&mut tx, user_id)
+        .await?
+        .filter(|r| r.id == found.id)
+        .ok_or_else(invalid_token)?;
+        let user = lock_user(&mut tx, user.id)
             .await
             .map_err(|_| invalid_token())?;
-        if !consumed.as_ref().is_some_and(|r| target_matches(r, &user)) {
+        if !target_matches(&consumed, &user) || user.email_verified_at.is_some() {
             return Err(invalid_token());
         }
-        self.complete_verification(&mut tx, &user, Actor::Anonymous, ctx)
+        if let Some(Activation::Chosen { hash, consents }) = replacement {
+            let now = self.now();
+            UserRepository::set_password(
+                tx.conn(),
+                user.id,
+                &NewPasswordHash {
+                    password_hash: &hash.hash,
+                    algorithm: hash.algorithm.as_str(),
+                    pepper_version: hash.pepper_version,
+                },
+                false,
+                now,
+            )
+            .await?;
+            for version in consents {
+                ConsentRepository::record(
+                    tx.conn(),
+                    user.id,
+                    version,
+                    now,
+                    Some(ctx.client_ip),
+                    ctx.user_agent.as_deref(),
+                )
+                .await?;
+            }
+            // Whoever knew the previous password loses every session.
+            self.deps()
+                .sessions
+                .revoke_all_for_user(
+                    tx.conn(),
+                    user.id,
+                    RevocationReason::PasswordChanged,
+                    RevokeOptions {
+                        also_trusted_devices: true,
+                    },
+                )
+                .await?;
+        }
+        self.complete_verification(&mut tx, &user, Actor::Anonymous, ctx, method)
             .await?;
         tx.commit().await
-    }
-
-    /// ACC-04: e-mail + code without a session (mobile). Enumeration-safe.
-    pub async fn verify_email_code(
-        &self,
-        ctx: &RequestContext,
-        email: &str,
-        code: &SecretString,
-    ) -> Result<(), AuthError> {
-        let started = Instant::now();
-        let result = self.verify_email_code_inner(ctx, email, code).await;
-        if result.is_err() {
-            self.failure_floor(started).await;
-        }
-        result
     }
 
     /// Sleeps until `code_failure_floor` has passed since `started`.
@@ -165,49 +316,6 @@ impl AccountService {
         let floor = self.settings().code_failure_floor;
         if let Some(rest) = floor.checked_sub(started.elapsed()) {
             tokio::time::sleep(rest).await;
-        }
-    }
-
-    async fn verify_email_code_inner(
-        &self,
-        ctx: &RequestContext,
-        email: &str,
-        code: &SecretString,
-    ) -> Result<(), AuthError> {
-        let verification = &self.config().verification;
-        self.limit(
-            &RateLimitKey::ip(actions::VERIFY_IP, ctx.client_ip),
-            verification.verify_per_ip,
-        )
-        .await?;
-        let email = parse_email(email)?;
-        self.limit(
-            &RateLimitKey::account(actions::VERIFICATION_CODE, email.normalized()),
-            verification.code_attempts_per_email,
-        )
-        .await?;
-        let code = OtpCode::parse(code.expose_secret()).map_err(|_| invalid_code())?;
-        // Same queries for known and unknown addresses (the nil id never
-        // exists).
-        let user = UserRepository::find_by_email(self.pool(), &email)
-            .await?
-            .filter(|u| u.email_verified_at.is_none());
-        let lookup = user
-            .as_ref()
-            .map_or_else(|| UserId::from_uuid(Uuid::nil()), |u| u.id);
-        let outcome = self
-            .check_code(TokenPurpose::EmailVerificationCode, lookup, &code)
-            .await?;
-        match (outcome, user) {
-            (CodeVerification::Verified(record), Some(user)) => {
-                self.finish_code_verification(ctx, &record, user.id, Actor::Anonymous)
-                    .await
-            }
-            (outcome, user) => {
-                self.audit_failed_verification(ctx, user.map(|u| u.id), &outcome)
-                    .await;
-                Err(invalid_code())
-            }
         }
     }
 
@@ -284,20 +392,24 @@ impl AccountService {
         if !target_matches(record, &user) {
             return Err(invalid_code());
         }
-        self.complete_verification(&mut tx, &user, actor, ctx)
+        self.complete_verification(&mut tx, &user, actor, ctx, "code_signed_in")
             .await?;
         tx.commit().await
     }
 
     /// Marks the address verified and activates a `pending_verification`
     /// account (ACC-06 transition, audited). Other statuses are kept
-    /// (a suspended account stays suspended).
-    async fn complete_verification(
+    /// (a suspended account stays suspended). Every pending registration of
+    /// the account is deleted — their links, codes and handles can never
+    /// complete afterwards — and outstanding verification tokens are
+    /// revoked. `method` is audited.
+    pub(super) async fn complete_verification(
         &self,
         tx: &mut AccountTx,
         user: &UserRecord,
         actor: Actor,
         ctx: &RequestContext,
+        method: &'static str,
     ) -> Result<(), AuthError> {
         let now = self.now();
         UserRepository::mark_email_verified(tx.conn(), user.id, now).await?;
@@ -312,6 +424,7 @@ impl AccountService {
             )
             .await?;
         }
+        RegistrationRepository::delete_for_user(tx.conn(), user.id).await?;
         OneTimeTokenRepository::revoke_for_user(
             tx.conn(),
             user.id,
@@ -339,7 +452,8 @@ impl AccountService {
         tx.audit(
             self.event(SecurityEventKind::EmailVerified, ctx)
                 .with_actor(actor)
-                .with_subject(user.id),
+                .with_subject(user.id)
+                .with_meta("method", method),
         );
         metrics::counter!("authn_account_email_verifications_total").increment(1);
         Ok(())
@@ -369,11 +483,14 @@ impl AccountService {
 
     /// ACC-04: "resend the verification e-mail" without a session. Always
     /// `Ok(())` (`202`) for a syntactically valid address; the lookup runs
-    /// in the background.
+    /// in the background. `registration` (the caller's handle, if any)
+    /// selects which registration of the address gets a fresh link and
+    /// code; otherwise the newest one does.
     pub async fn resend_verification(
         &self,
         ctx: &RequestContext,
         email: &str,
+        registration: Option<&SecretString>,
     ) -> Result<(), AuthError> {
         self.limit(
             &RateLimitKey::ip(actions::VERIFICATION_RESEND_IP, ctx.client_ip),
@@ -383,8 +500,11 @@ impl AccountService {
         let email = parse_email(email)?;
         let service = self.clone();
         let ctx = ctx.clone();
+        let registration = registration.cloned();
         self.inner.jobs.spawn("resend_verification", async move {
-            service.process_resend(&ctx, &email).await
+            service
+                .process_resend(&ctx, &email, registration.as_ref())
+                .await
         })
     }
 
@@ -392,6 +512,7 @@ impl AccountService {
         &self,
         ctx: &RequestContext,
         email: &EmailAddress,
+        registration: Option<&SecretString>,
     ) -> Result<(), AuthError> {
         let Some(user) = UserRepository::find_by_email(self.pool(), email).await? else {
             return Ok(());
@@ -399,7 +520,24 @@ impl AccountService {
         if user.status != AccountStatus::PendingVerification || user.email_verified_at.is_some() {
             return Ok(());
         }
-        if !self.verification_send_allowed(email).await? {
+        let now = self.now();
+        if let Some(registration) = self
+            .registration_for_resend(user.id, registration, now)
+            .await?
+        {
+            if !self.verification_send_allowed(email).await? {
+                return Ok(());
+            }
+            return self.resend_registration(&registration).await;
+        }
+        // No registration: only an account that can sign in (and therefore
+        // has a password) gets a session-style link and code; a placeholder
+        // whose registrations all expired is simply purged.
+        if UserRepository::find_password(self.pool(), user.id)
+            .await?
+            .is_none()
+            || !self.verification_send_allowed(email).await?
+        {
             return Ok(());
         }
         self.send_verification_to(ctx, user.id).await

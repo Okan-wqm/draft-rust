@@ -9,18 +9,29 @@
 //! registered addresses (ACC-02); the expensive hash is computed on both
 //! paths.
 //!
+//! The synchronous part also generates the **registration handle** (256
+//! bits, independent of the address) that the caller returns to the
+//! registering client (response body and `__Host-authn_registration`
+//! cookie). It is the client's proof of "I submitted this registration"
+//! (ADR 0002).
+//!
 //! **Background part** (serialized per address with an advisory lock):
-//! * new address → user (`pending_verification`), profile, password,
-//!   consents, verification link + code, `user.created` event,
-//!   `account.registered` audit, verification e-mail;
-//! * registered and **never verified** → nobody has proven control of the
-//!   address yet, so the latest registrant wins: the password is replaced,
-//!   every session of the unverified account is revoked and a fresh
-//!   verification is sent to the address (defeats account pre-hijacking
-//!   with a squatted, unverified registration);
+//! * new address → a `pending_verification` placeholder account **without
+//!   credentials**, a `pending_registrations` row holding the submitted
+//!   password hash, profile and consents bound to its own link, code and
+//!   handle, `user.created` event, `account.registered` audit, verification
+//!   e-mail;
+//! * registered and **never verified** → another registration of the same
+//!   placeholder (throttled per address). Nothing that exists changes: no
+//!   credentials, profile or sessions are touched. Each registration
+//!   activates only its own credentials, and only through its own link or
+//!   code (see `registration.rs`) — so neither an attacker registering
+//!   *first* (squatting) nor *second* (overwriting) can end up with a
+//!   verified account holding a password the mailbox owner did not choose;
 //! * registered and verified (or reserved for a revert, ACC-07) → the
 //!   owner receives a "someone tried to register with your address"
-//!   e-mail (at most `account.registration_notice_per_email`).
+//!   e-mail with the sign-in and password-reset paths (at most
+//!   `account.registration_notice_per_email`); credentials never change.
 
 use authn_core::config::common::CaptchaPolicy;
 use authn_core::domain::{AccountStatus, EmailAddress, Locale};
@@ -29,19 +40,21 @@ use authn_core::http::RequestContext;
 use authn_core::id::{TermsVersionId, UserId};
 use authn_core::ports::{
     Actor, CaptchaContext, CaptchaProvider, CaptchaVerdict, DomainEvent, DomainEventKind,
-    Notification, NotificationKind, PasswordCheck, PasswordContext, RateLimitKey, RevocationReason,
-    RevokeOptions, SecurityEventKind,
+    Notification, NotificationKind, PasswordCheck, PasswordContext, RateLimitKey,
+    SecurityEventKind,
 };
+use authn_crypto::otp::OtpCode;
 use authn_crypto::password::PasswordHashRecord;
-use authn_store::{NewPasswordHash, NewUser, StoreError, TokenPurpose, UserRecord, UserRepository};
+use authn_crypto::token::{OpaqueToken, TokenHash};
+use authn_store::{NewUser, StoreError, TokenPurpose, UserRecord, UserRepository};
+use uuid::Uuid;
 
-use super::{AccountService, actions, parse_email};
+use super::registration::{MAX_LIVE_REGISTRATIONS, RegistrationReceipt};
+use super::{AccountService, actions, after, parse_email};
 use crate::model::{SignupInput, TermsAcceptance};
 use crate::profile::{DEFAULT_TIME_ZONE, normalize_display_name, validate_time_zone};
-use crate::repo::{
-    ConsentRepository, ProfileRepository, ProfileValues, ReservationRepository, TermsRepository,
-    lock_email,
-};
+use crate::registration_store::{NewRegistration, RegistrationRepository};
+use crate::repo::{ReservationRepository, TermsRepository, lock_email};
 use crate::tx::AccountTx;
 
 /// CAPTCHA action name bound into proof-of-work challenges.
@@ -55,6 +68,8 @@ const MAX_TERMS_ENTRIES: usize = 8;
 struct SignupWork {
     ctx: RequestContext,
     email: EmailAddress,
+    /// SHA-256 of the registration handle given to the registering client.
+    handle_hash: TokenHash,
     hash: PasswordHashRecord,
     display_name: Option<String>,
     locale: Locale,
@@ -79,10 +94,15 @@ impl NoticeReason {
 }
 
 impl AccountService {
-    /// Registers an account (see the module docs). Always answers `Ok(())`
-    /// (`202`) once the input is valid — whether or not the address is
-    /// already registered.
-    pub async fn signup(&self, ctx: &RequestContext, input: SignupInput) -> Result<(), AuthError> {
+    /// Registers an account (see the module docs). Always answers with a
+    /// fresh [`RegistrationReceipt`] (`202`) once the input is valid —
+    /// whether or not the address is already registered; the receipt is
+    /// random and reveals nothing about the address.
+    pub async fn signup(
+        &self,
+        ctx: &RequestContext,
+        input: SignupInput,
+    ) -> Result<RegistrationReceipt, AuthError> {
         let config = self.config();
         self.limit(
             &RateLimitKey::ip(actions::REGISTER, ctx.client_ip),
@@ -125,10 +145,13 @@ impl AccountService {
         }
         // Same cost for every address (ACC-02).
         let hash = self.deps().hasher.hash(&input.password).await?;
+        let handle = OpaqueToken::generate()?;
+        let receipt = RegistrationReceipt::new(&handle, self.config().unverified_purge_after);
 
         let work = SignupWork {
             ctx: ctx.clone(),
             email,
+            handle_hash: handle.hash(),
             hash,
             display_name,
             locale,
@@ -138,7 +161,8 @@ impl AccountService {
         let service = self.clone();
         self.inner
             .jobs
-            .spawn("signup", async move { service.process_signup(work).await })
+            .spawn("signup", async move { service.process_signup(work).await })?;
+        Ok(receipt)
     }
 
     /// ACC-13: CAPTCHA according to `account.registration_captcha`.
@@ -203,7 +227,7 @@ impl AccountService {
     /// ACC-11: the submitted acceptances must name current versions; with
     /// `account.require_terms_acceptance`, every current document must be
     /// accepted.
-    async fn signup_consents(
+    pub(super) async fn signup_consents(
         &self,
         accepted: &[TermsAcceptance],
     ) -> Result<Vec<TermsVersionId>, AuthError> {
@@ -270,7 +294,7 @@ impl AccountService {
                 if user.status == AccountStatus::PendingVerification
                     && user.email_verified_at.is_none() =>
             {
-                self.reregister_unverified(tx, &work, user).await
+                self.add_registration(tx, &work, user).await
             }
             (Some(user), _) => {
                 self.registration_notice(&mut tx, &work, user.id, NoticeReason::ExistingAccount)
@@ -285,6 +309,8 @@ impl AccountService {
         }
     }
 
+    /// First registration of an address: a placeholder account without
+    /// credentials plus the registration that holds them.
     async fn create_account(&self, mut tx: AccountTx, work: &SignupWork) -> Result<(), AuthError> {
         let now = self.now();
         let user_id = UserId::generate();
@@ -298,20 +324,7 @@ impl AccountService {
             },
         )
         .await?;
-        ProfileRepository::upsert(
-            tx.conn(),
-            user_id,
-            &ProfileValues {
-                display_name: work.display_name.as_deref(),
-                locale: work.locale,
-                time_zone: work.time_zone,
-            },
-            now,
-        )
-        .await?;
-        self.store_password(&mut tx, user_id, &work.hash).await?;
-        self.store_consents(&mut tx, user_id, work).await?;
-        self.send_verification(&mut tx, user_id, work).await?;
+        self.create_registration(&mut tx, user_id, work).await?;
         self.deps()
             .events
             .publish(
@@ -337,7 +350,12 @@ impl AccountService {
         Ok(())
     }
 
-    async fn reregister_unverified(
+    /// Registration of an address whose account was never verified: one
+    /// more registration of the placeholder, bound to its own secrets.
+    /// Nothing that exists changes — no credentials, profile, consents or
+    /// sessions — so a later registrant can neither overwrite an earlier
+    /// one nor inherit anything from it (ADR 0002).
+    async fn add_registration(
         &self,
         mut tx: AccountTx,
         work: &SignupWork,
@@ -355,6 +373,7 @@ impl AccountService {
                     &work.ctx,
                 )
                 .with_subject(user.id)
+                .with_meta("reason", "unverified_reregistration")
                 .failed("rate_limited"),
             );
             return tx.commit().await;
@@ -372,34 +391,7 @@ impl AccountService {
             .await?;
             return tx.commit().await;
         }
-        let now = self.now();
-        self.store_password(&mut tx, user.id, &work.hash).await?;
-        ProfileRepository::upsert(
-            tx.conn(),
-            user.id,
-            &ProfileValues {
-                display_name: work.display_name.as_deref(),
-                locale: work.locale,
-                time_zone: work.time_zone,
-            },
-            now,
-        )
-        .await?;
-        self.store_consents(&mut tx, user.id, work).await?;
-        // Whoever registered before never proved control of the address:
-        // their sessions end here.
-        self.deps()
-            .sessions
-            .revoke_all_for_user(
-                tx.conn(),
-                user.id,
-                RevocationReason::PasswordChanged,
-                RevokeOptions {
-                    also_trusted_devices: true,
-                },
-            )
-            .await?;
-        self.send_verification(&mut tx, user.id, work).await?;
+        self.create_registration(&mut tx, user.id, work).await?;
         tx.audit(
             self.event(
                 SecurityEventKind::AccountRegistrationAttemptExisting,
@@ -409,7 +401,7 @@ impl AccountService {
             .with_meta("reason", "unverified_reregistration"),
         );
         tx.commit().await?;
-        metrics::counter!("authn_account_registrations_total", "outcome" => "reregistered")
+        metrics::counter!("authn_account_registrations_total", "outcome" => "additional_registration")
             .increment(1);
         Ok(())
     }
@@ -488,67 +480,52 @@ impl AccountService {
         Ok(())
     }
 
-    async fn store_password(
+    /// Stores a registration of `user` (credentials, profile, consents,
+    /// link, code and the client handle), keeps at most
+    /// `MAX_LIVE_REGISTRATIONS` per account and enqueues the verification
+    /// e-mail; also starts the resend cooldown of the address.
+    async fn create_registration(
         &self,
         tx: &mut AccountTx,
         user: UserId,
-        hash: &PasswordHashRecord,
+        work: &SignupWork,
     ) -> Result<(), AuthError> {
-        UserRepository::set_password(
+        let now = self.now();
+        let verification = &self.config().verification;
+        let token = OpaqueToken::generate()?;
+        let code = OtpCode::generate()?;
+        let link_expires_at = after(now, verification.link_ttl)?;
+        let code_expires_at = after(now, verification.code_ttl)?;
+        let expires_at = after(now, self.config().unverified_purge_after)?;
+        RegistrationRepository::insert(
             tx.conn(),
-            user,
-            &NewPasswordHash {
-                password_hash: &hash.hash,
-                algorithm: hash.algorithm.as_str(),
-                pepper_version: hash.pepper_version,
+            &NewRegistration {
+                id: Uuid::now_v7(),
+                user_id: user,
+                email: &work.email,
+                handle_hash: &work.handle_hash,
+                link_hash: &token.hash(),
+                link_expires_at,
+                code_hash: &self
+                    .deps()
+                    .otp
+                    .hash(TokenPurpose::EmailVerificationCode.as_str(), &code),
+                code_expires_at,
+                password_hash: &work.hash.hash,
+                password_algorithm: work.hash.algorithm.as_str(),
+                pepper_version: work.hash.pepper_version,
+                display_name: work.display_name.as_deref(),
+                locale: work.locale,
+                time_zone: work.time_zone,
+                terms_version_ids: &work.consents,
+                created_ip: Some(work.ctx.client_ip),
+                user_agent: work.ctx.user_agent.as_deref(),
+                created_at: now,
+                expires_at,
             },
-            false,
-            self.now(),
         )
         .await?;
-        Ok(())
-    }
-
-    async fn store_consents(
-        &self,
-        tx: &mut AccountTx,
-        user: UserId,
-        work: &SignupWork,
-    ) -> Result<(), AuthError> {
-        for version in &work.consents {
-            ConsentRepository::record(
-                tx.conn(),
-                user,
-                *version,
-                self.now(),
-                Some(work.ctx.client_ip),
-                work.ctx.user_agent.as_deref(),
-            )
-            .await?;
-        }
-        Ok(())
-    }
-
-    /// Issues the verification link + code and enqueues the e-mail; also
-    /// starts the resend cooldown of the address.
-    async fn send_verification(
-        &self,
-        tx: &mut AccountTx,
-        user: UserId,
-        work: &SignupWork,
-    ) -> Result<(), AuthError> {
-        let secrets = self
-            .issue_link_and_code(
-                tx.conn(),
-                (
-                    TokenPurpose::EmailVerification,
-                    TokenPurpose::EmailVerificationCode,
-                ),
-                user,
-                &work.email,
-                Some(work.ctx.client_ip),
-            )
-            .await?;
+        RegistrationRepository::trim(tx.conn(), user, MAX_LIVE_REGISTRATIONS).await?;
         self.record_verification_send(&work.email).await?;
         let (recipient, locale) = self
             .unproven_recipient_at(tx.conn(), user, work.email.clone(), work.locale)
@@ -561,9 +538,9 @@ impl AccountService {
                     recipient,
                     locale,
                     kind: NotificationKind::EmailVerification {
-                        token: secrets.token.into_sensitive(),
-                        code: secrets.code.into_sensitive(),
-                        expires_at: secrets.link_expires_at,
+                        token: token.into_sensitive(),
+                        code: code.into_sensitive(),
+                        expires_at: link_expires_at.min(expires_at),
                     },
                 },
             )
@@ -573,7 +550,7 @@ impl AccountService {
 
 /// `password_policy_violation` with the violations and feedback (they only
 /// describe the submitted password).
-fn password_policy_error(check: &PasswordCheck) -> AuthError {
+pub(super) fn password_policy_error(check: &PasswordCheck) -> AuthError {
     AuthError::new(codes::password::PASSWORD_POLICY_VIOLATION).with_details(serde_json::json!({
         "score": check.score,
         "violations": check.violations,

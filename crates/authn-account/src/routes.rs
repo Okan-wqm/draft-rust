@@ -2,10 +2,10 @@
 //!
 //! | Method | Path | Auth | Requirement |
 //! |--------|------|------|-------------|
-//! | `POST` | `/v1/signup` | — | ACC-01, 02, 03, 12, 13 |
+//! | `POST` | `/v1/signup` | — (sets the registration handle cookie) | ACC-01, 02, 03, 12, 13 |
 //! | `POST` | `/v1/email/verification/resend` | — | ACC-04 |
-//! | `POST` | `/v1/email/verify` | — (link token or e-mail + code) | ACC-04 |
-//! | `POST` | `/v1/email/change/confirm` | — (link token) | ACC-07 |
+//! | `POST` | `/v1/email/verify` | — (link token + handle / password / new password, or code + handle) | ACC-04, ADR 0002 |
+//! | `POST` | `/v1/email/change/confirm` | session (link token) | ACC-07, ADR 0002 |
 //! | `POST` | `/v1/email/change/revert` | — (link token) | ACC-07 |
 //! | `POST` | `/v1/account/deletion/cancel` | — (link token) | ACC-09 |
 //! | `GET` | `/v1/terms` | — | ACC-11 |
@@ -25,6 +25,12 @@
 //! URLs must not consume them. Every body is read with [`SecretJson`]:
 //! parse errors never copy submitted values (passwords, tokens, codes,
 //! addresses, names) into logs.
+//!
+//! Registration handle (ADR 0002): `POST /v1/signup` answers with a random
+//! `registration` handle in the body and in the [`REGISTRATION_COOKIE`]
+//! (`HttpOnly; Secure; SameSite=Strict; Path=/`). `POST /v1/email/verify`
+//! and `POST /v1/email/verification/resend` read it from the body
+//! (`registration`, native clients) or from that cookie (browsers).
 
 use authn_core::domain::Principal;
 use authn_core::error::{AuthError, codes};
@@ -34,7 +40,7 @@ use axum::Router;
 use axum::extract::{FromRef, State};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
-use http::{HeaderValue, StatusCode, header};
+use http::{HeaderMap, HeaderValue, StatusCode, header};
 use serde::{Deserialize, Serialize};
 use utoipa::{OpenApi, ToSchema};
 
@@ -43,7 +49,10 @@ use crate::model::{
     ConsentView, DeletionView, LastOwnerDetails, ProfileUpdate, ProfileView, RevertOutcome,
     SignupInput, TermsAcceptance, TermsVersionView,
 };
-use crate::service::{AccountService, VerificationProof};
+use crate::service::{
+    AccountService, CredentialConfirmation, LinkConfirmation, REGISTRATION_COOKIE,
+    RegistrationReceipt, VerificationProof,
+};
 
 /// The module router. Requires [`AccountService`] from the state; the
 /// `/v1/me*` routes additionally require the session middleware to insert a
@@ -102,6 +111,7 @@ where
     ),
     components(schemas(
         SignupInput,
+        SignupResponse,
         TermsAcceptance,
         StatusResponse,
         EmailRequest,
@@ -141,6 +151,18 @@ impl StatusResponse {
     }
 }
 
+/// Answer of `POST /v1/signup` — identical in shape for every address.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct SignupResponse {
+    /// Always `accepted`.
+    pub status: String,
+    /// The registration handle (256 random bits): send it back as
+    /// `registration` with the e-mailed code (native clients). Browsers get
+    /// the same value in the `__Host-authn_registration` cookie. Keep it
+    /// secret; it is useless without the e-mailed link or code.
+    pub registration: String,
+}
+
 /// Body of `POST /v1/email/verification/resend`.
 #[derive(Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
@@ -148,22 +170,39 @@ pub struct EmailRequest {
     /// The address the verification was sent to.
     #[schema(format = Email)]
     pub email: String,
+    /// The registration handle (native clients; browsers send the cookie).
+    #[schema(value_type = Option<String>)]
+    pub registration: Option<SecretString>,
 }
 
-/// Body of `POST /v1/email/verify`: either `token` (link) or `email` +
-/// `code`.
+/// Body of `POST /v1/email/verify`: either the link `token` (plus, when the
+/// link is opened outside the registering browser, `password` or
+/// `new_password`), or the `code` with the registration handle.
 #[derive(Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct VerifyEmailRequest {
     /// Token from the verification link.
     #[schema(value_type = Option<String>)]
     pub token: Option<SecretString>,
-    /// Address (code flow).
-    #[schema(format = Email)]
-    pub email: Option<String>,
-    /// Six-digit code (code flow).
+    /// Six-digit code (code flow, together with `registration`).
     #[schema(value_type = Option<String>)]
     pub code: Option<SecretString>,
+    /// Registration handle (native clients; browsers send the cookie).
+    #[schema(value_type = Option<String>)]
+    pub registration: Option<SecretString>,
+    /// Address (code flow, optional; must be the registration's).
+    #[schema(format = Email)]
+    pub email: Option<String>,
+    /// Link flow on another device: the password chosen at registration.
+    #[schema(value_type = Option<String>, format = Password)]
+    pub password: Option<SecretString>,
+    /// Link flow by the mailbox owner who did not (or no longer can)
+    /// confirm the registration's password: a new password.
+    #[schema(value_type = Option<String>, format = Password)]
+    pub new_password: Option<SecretString>,
+    /// With `new_password`: accepted current terms versions (ACC-11).
+    #[serde(default)]
+    pub accepted_terms: Vec<TermsAcceptance>,
 }
 
 /// Body carrying a link token.
@@ -219,14 +258,16 @@ pub struct ConsentListResponse {
 
 /// Registers an account (ACC-01). The answer is identical whether or not
 /// the address is already registered (ACC-02); the verification (or a
-/// "someone tried to register" notice) arrives by e-mail.
+/// "someone tried to register" notice) arrives by e-mail. The answer carries
+/// a fresh registration handle (body and cookie) that binds the e-mailed
+/// link and code to this client (ADR 0002).
 #[utoipa::path(
     post,
     path = "/v1/signup",
     tag = "account",
     request_body = SignupInput,
     responses(
-        (status = 202, description = "Accepted; check the mailbox", body = StatusResponse),
+        (status = 202, description = "Accepted; check the mailbox. Sets the `__Host-authn_registration` cookie.", body = SignupResponse),
         (status = 400, description = "Malformed body", body = authn_core::error::ErrorEnvelope),
         (status = 403, description = "`captcha_required` / `captcha_failed` (challenge in `details`)", body = authn_core::error::ErrorEnvelope),
         (status = 409, description = "`terms_version_not_current`", body = authn_core::error::ErrorEnvelope),
@@ -239,9 +280,54 @@ pub async fn signup(
     State(svc): State<AccountService>,
     ctx: RequestContext,
     SecretJson(body): SecretJson<SignupInput>,
-) -> Result<(StatusCode, Json<StatusResponse>), AuthError> {
-    svc.signup(&ctx, body).await?;
-    Ok((StatusCode::ACCEPTED, StatusResponse::new("accepted")))
+) -> Result<Response, AuthError> {
+    let receipt = svc.signup(&ctx, body).await?;
+    let cookie = registration_cookie(&receipt)?;
+    let mut response = (
+        StatusCode::ACCEPTED,
+        Json(SignupResponse {
+            status: "accepted".to_owned(),
+            registration: receipt.handle().expose().to_owned(),
+        }),
+    )
+        .into_response();
+    let headers = response.headers_mut();
+    headers.insert(header::SET_COOKIE, cookie);
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(response)
+}
+
+/// `Set-Cookie` value of the registration handle.
+fn registration_cookie(receipt: &RegistrationReceipt) -> Result<HeaderValue, AuthError> {
+    HeaderValue::from_str(&format!(
+        "{REGISTRATION_COOKIE}={}; Path=/; Max-Age={}; Secure; HttpOnly; SameSite=Strict",
+        receipt.handle().expose(),
+        receipt.max_age().as_secs()
+    ))
+    .map_err(|_| AuthError::internal("registration cookie is not a valid header value"))
+}
+
+/// The registration handle of the request: the body field when present,
+/// otherwise the [`REGISTRATION_COOKIE`] (only well-formed values).
+fn registration_handle(body: Option<SecretString>, headers: &HeaderMap) -> Option<SecretString> {
+    body.or_else(|| {
+        headers
+            .get_all(header::COOKIE)
+            .iter()
+            .filter_map(|value| value.to_str().ok())
+            .flat_map(|cookies| cookies.split(';').take(64))
+            .filter_map(|pair| pair.trim().split_once('='))
+            .find(|(name, value)| *name == REGISTRATION_COOKIE && is_handle_shaped(value))
+            .map(|(_, value)| SecretString::from(value.to_owned()))
+    })
+}
+
+/// 43 URL-safe base64 characters (256 bits, no padding).
+fn is_handle_shaped(value: &str) -> bool {
+    value.len() == 43
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 /// Re-sends the verification e-mail (ACC-04). Same answer for every
@@ -260,43 +346,97 @@ pub async fn signup(
 pub async fn resend_verification(
     State(svc): State<AccountService>,
     ctx: RequestContext,
+    headers: HeaderMap,
     SecretJson(body): SecretJson<EmailRequest>,
 ) -> Result<(StatusCode, Json<StatusResponse>), AuthError> {
-    svc.resend_verification(&ctx, &body.email).await?;
+    let handle = registration_handle(body.registration, &headers);
+    svc.resend_verification(&ctx, &body.email, handle.as_ref())
+        .await?;
     Ok((StatusCode::ACCEPTED, StatusResponse::new("accepted")))
 }
 
-/// Verifies an address with the link token or the e-mail + code (ACC-04).
+/// Verifies an address (ACC-04) with the e-mailed link or code. A link
+/// completes a registration only for the client that submitted it (cookie
+/// or `registration`), or with the password chosen in it (`password`), or
+/// with a new password chosen now (`new_password`); a code only together
+/// with the registration handle (ADR 0002).
 #[utoipa::path(
     post,
     path = "/v1/email/verify",
     tag = "account",
     request_body = VerifyEmailRequest,
     responses(
-        (status = 200, description = "Verified", body = StatusResponse),
-        (status = 400, description = "`invalid_or_expired_token` / `invalid_code` (unknown addresses answer the same)", body = authn_core::error::ErrorEnvelope),
+        (status = 200, description = "Verified; the account is active", body = StatusResponse),
+        (status = 400, description = "`invalid_or_expired_token` / `invalid_code` (unknown handles and addresses answer the same)", body = authn_core::error::ErrorEnvelope),
+        (status = 403, description = "`registration_confirmation_required` (offer `password` or `new_password`) / `registration_password_mismatch`", body = authn_core::error::ErrorEnvelope),
+        (status = 409, description = "`terms_version_not_current`", body = authn_core::error::ErrorEnvelope),
+        (status = 422, description = "`validation_failed`, `password_policy_violation`, `terms_acceptance_required`", body = authn_core::error::ErrorEnvelope),
         (status = 429, description = "Rate limited", body = authn_core::error::ErrorEnvelope),
     )
 )]
 pub async fn verify_email(
     State(svc): State<AccountService>,
+    principal: Option<Principal>,
     ctx: RequestContext,
+    headers: HeaderMap,
     SecretJson(body): SecretJson<VerifyEmailRequest>,
 ) -> Result<Json<StatusResponse>, AuthError> {
-    let proof = match (body.token, body.email, body.code) {
-        (Some(token), None, None) => VerificationProof::Link { token },
-        (None, Some(email), Some(code)) => VerificationProof::Code { email, code },
-        _ => {
-            return Err(AuthError::new(codes::common::VALIDATION_FAILED)
-                .with_context("expected either token or email + code"));
+    let malformed = || {
+        AuthError::new(codes::common::VALIDATION_FAILED)
+            .with_context("expected token (+ password | new_password) or code (+ registration)")
+    };
+    let registration = registration_handle(body.registration, &headers);
+    let proof = match (body.token, body.code) {
+        (Some(token), None) => {
+            if body.email.is_some() {
+                return Err(malformed());
+            }
+            let credentials = match (body.password, body.new_password) {
+                (Some(password), None) if body.accepted_terms.is_empty() => {
+                    Some(CredentialConfirmation::ChosenPassword(password))
+                }
+                (None, Some(password)) => Some(CredentialConfirmation::NewPassword {
+                    password,
+                    accepted_terms: body.accepted_terms,
+                }),
+                (None, None) if body.accepted_terms.is_empty() => None,
+                _ => return Err(malformed()),
+            };
+            VerificationProof::Link {
+                token,
+                confirmation: LinkConfirmation {
+                    registration,
+                    // A session of the account holder (not an API key, not
+                    // impersonation).
+                    signed_in_user: principal
+                        .as_ref()
+                        .filter(|p| !p.is_impersonated() && p.session_id().is_some())
+                        .and_then(Principal::user_id),
+                    credentials,
+                },
+            }
         }
+        (None, Some(code))
+            if body.password.is_none()
+                && body.new_password.is_none()
+                && body.accepted_terms.is_empty() =>
+        {
+            VerificationProof::Code {
+                code,
+                registration,
+                email: body.email,
+            }
+        }
+        _ => return Err(malformed()),
     };
     svc.verify_email(&ctx, proof).await?;
     Ok(StatusResponse::new("verified"))
 }
 
 /// Confirms an e-mail change with the link sent to the new address
-/// (ACC-07).
+/// (ACC-07). The account holder must be signed in (any session of theirs):
+/// the link alone would let whoever clicks it attach their mailbox to the
+/// requester's account (ADR 0002).
 #[utoipa::path(
     post,
     path = "/v1/email/change/confirm",
@@ -304,16 +444,20 @@ pub async fn verify_email(
     request_body = TokenRequest,
     responses(
         (status = 200, description = "Address changed", body = StatusResponse),
-        (status = 400, description = "`invalid_or_expired_token`", body = authn_core::error::ErrorEnvelope),
+        (status = 400, description = "`invalid_or_expired_token` (also another user's link)", body = authn_core::error::ErrorEnvelope),
+        (status = 401, description = "`unauthenticated`: sign in as the account holder first", body = authn_core::error::ErrorEnvelope),
+        (status = 403, description = "Impersonation or API key", body = authn_core::error::ErrorEnvelope),
         (status = 429, description = "Rate limited", body = authn_core::error::ErrorEnvelope),
     )
 )]
 pub async fn confirm_email_change(
     State(svc): State<AccountService>,
+    principal: Option<Principal>,
     ctx: RequestContext,
     SecretJson(body): SecretJson<TokenRequest>,
 ) -> Result<Json<StatusResponse>, AuthError> {
-    svc.confirm_email_change_link(&ctx, &body.token).await?;
+    svc.confirm_email_change_link(principal.as_ref(), &ctx, &body.token)
+        .await?;
     Ok(StatusResponse::new("email_changed"))
 }
 

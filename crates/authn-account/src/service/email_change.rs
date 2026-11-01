@@ -8,7 +8,9 @@
 //!    requester; the address owner gets a "someone tried to use your
 //!    address" notice. The requester therefore cannot learn whether an
 //!    address is registered (ACC-02 applies to signed-in attackers too).
-//! 2. **Confirm** (link without a session, or code with the session): the
+//! 2. **Confirm** (link or code, both by the signed-in account holder — a
+//!    link alone would let whoever clicks an unsolicited e-mail attach
+//!    their mailbox to someone else's account, ADR 0002): the
 //!    address is replaced and marked verified, the old address is
 //!    **reserved** for the revert period (nobody else can register it and
 //!    block the revert), every token delivered to an address of the user
@@ -203,13 +205,23 @@ impl AccountService {
             .await
     }
 
-    /// ACC-07 step 2 with the link sent to the new address (no session:
-    /// the link may be opened on another device).
+    /// ACC-07 step 2 with the link sent to the new address. The link proves
+    /// control of the new mailbox; the **signed-in account holder** must
+    /// open it (any of their sessions, also on another device after signing
+    /// in). Otherwise anybody who clicks an unsolicited "confirm your
+    /// address" e-mail would attach their mailbox to the requester's
+    /// account and credentials — a pre-hijacked, verified account (ADR
+    /// 0002). Without a principal: `unauthenticated` before the token is
+    /// even looked at; another user's link: `invalid_or_expired_token`
+    /// (not consumed).
     pub async fn confirm_email_change_link(
         &self,
+        principal: Option<&Principal>,
         ctx: &RequestContext,
         token: &SecretString,
     ) -> Result<(), AuthError> {
+        let principal = principal.ok_or_else(|| AuthError::new(codes::common::UNAUTHENTICATED))?;
+        let user_id = Self::self_service_user(principal)?;
         self.limit(
             &RateLimitKey::ip(actions::LINK_ACTION_IP, ctx.client_ip),
             self.config().link_actions_per_ip,
@@ -226,7 +238,7 @@ impl AccountService {
             self.now(),
         )
         .await?
-        else {
+        .filter(|found| found.user_id == Some(user_id)) else {
             return Err(invalid_token());
         };
         let mut tx = self.begin().await?;
@@ -244,8 +256,15 @@ impl AccountService {
         if record.id != found.id {
             return Err(invalid_token());
         }
-        self.apply_email_change(tx, ctx, &record, locked, Actor::Anonymous, invalid_token)
-            .await
+        self.apply_email_change(
+            tx,
+            ctx,
+            &record,
+            locked,
+            Actor::User(user_id),
+            invalid_token,
+        )
+        .await
     }
 
     /// ACC-07 step 2 with the code, by the signed-in user.

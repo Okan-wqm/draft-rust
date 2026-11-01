@@ -34,6 +34,7 @@ Kaynak: `migrations/`. "Kişisel veri" sütunu doğrudan veya dolaylı (kullanı
 | `consents` | kabul edilen belge sürümü, kabul zamanı, **IP adresi**, **user-agent** | ACC-11 ispat yükü | kaskad |
 | `account_deletions` | kullanıcı kimliği (UUID), talep/plan/tamamlanma zamanları, önceki durum | Silme sürecinin yürütülmesi ve **silmenin ispatı** | `users` silindiğinde kalır; içinde e-posta, ad, IP **yoktur** — yalnızca artık hiçbir kayda bağlanamayan rastgele UUID. Bkz. §3 |
 | `email_reservations` | e-posta (küçük harfli), kullanıcı kimliği, rezervasyon bitişi | ACC-07: e-posta değişikliğinden sonra eski adresin geri alma süresince başkasınca alınmasını önlemek | kaskad; süresi dolunca temizlik işiyle silinir |
+| `pending_registrations` | kayıt olunan e-posta (küçük harfli), kayıtta gönderilen **şifre hash'i** (Argon2id + pepper), görünen ad, dil, saat dilimi, kabul edilen şart sürümleri, talep eden **IP adresi** ve **user-agent**; link/kod/istemci tutamacının yalnızca hash'i | ACC-01/04: her kaydın kimlik bilgileri kendi doğrulamasına bağlı bekler; yalnızca o kayıt tamamlanınca hesaba yazılır (ön-ele geçirme savunması, ADR 0002) | kaskad; kayıt tamamlanınca hesabın tüm bekleyen kayıtları, süresi dolunca (`account.unverified_purge_after`) temizlik işiyle silinir |
 | `one_time_tokens` | kullanıcı kimliği, hedef e-posta (e-posta değişikliğinde), talep eden **IP**; token/kodun yalnızca hash'i | Doğrulama, sıfırlama, magic link, iptal linkleri | kaskad; süresi dolanlar temizlik işiyle silinir (OPS-06) |
 | `identities` | sosyal/federe sağlayıcı kimliği (`subject`), sağlayıcının verdiği e-posta ve ad, (yapılandırılırsa) zarf şifreli sağlayıcı token'ları | Sosyal giriş (SOC-*) | kaskad |
 | `oauth_states` | kullanıcı kimliği (bağlama akışında), dönüş adresi; state/nonce hash'leri | OIDC akışı (10 dk) | kaskad; süresi dolunca temizlenir |
@@ -111,7 +112,8 @@ Varsayılanlar konfigürasyonla değiştirilebilir (ARC-07); işletmeci kendi po
 
 | Veri | Süre (varsayılan) | Ayar |
 |------|-------------------|------|
-| Doğrulanmamış hesap | 7 gün sonra tamamen silinir (ACC-05) | `account.unverified_purge_after` |
+| Doğrulanmamış hesap | 7 gün sonra tamamen silinir (ACC-05); aynı adrese daha sonra yapılmış ve süresi dolmamış bir kayıt varsa o kaydın süresi sonunda | `account.unverified_purge_after` |
+| Bekleyen kayıt (şifre hash'i, profil, IP, user-agent) | tamamlanınca hemen (hesabın bütün bekleyen kayıtları), aksi halde 7 gün | `account.unverified_purge_after` |
 | Silme talebi sonrası hesap | 30 gün bekleme, sonra kalıcı silme (ACC-09) | `account.deletion_grace_period` |
 | E-posta doğrulama linki / kodu | 24 saat / 15 dakika | `account.verification.*` |
 | E-posta değişikliği geri alma linki ve eski adres rezervasyonu | 7 gün | `account.email_change_revert_ttl` |

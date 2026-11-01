@@ -156,6 +156,28 @@ pub const EMAIL_CHANGE_REVERT_CONFLICT: ErrorCode = ErrorCode::new(
     "Önceki e-posta adresi artık geri yüklenemiyor. Lütfen destek ekibiyle iletişime geçin.",
 );
 
+/// A registration's verification link was opened by a client that holds
+/// neither the registration handle nor the password chosen in that
+/// registration (account pre-hijacking defence, ACC-04; ADR 0002). Only a
+/// holder of the 256-bit e-mailed link ever sees it: the page asks for the
+/// password chosen at registration, or lets the mailbox owner set a new one.
+pub const REGISTRATION_CONFIRMATION_REQUIRED: ErrorCode = ErrorCode::new(
+    "registration_confirmation_required",
+    StatusCode::FORBIDDEN,
+    "To finish, enter the password you chose when registering, or set a new password.",
+    "Tamamlamak için kayıt olurken seçtiğiniz şifreyi girin veya yeni bir şifre belirleyin.",
+);
+
+/// The password entered on a verification link page is not the one chosen
+/// in that registration (ACC-04; ADR 0002). Only reachable with a valid
+/// e-mailed link; the number of answers per registration is limited.
+pub const REGISTRATION_PASSWORD_MISMATCH: ErrorCode = ErrorCode::new(
+    "registration_password_mismatch",
+    StatusCode::FORBIDDEN,
+    "This is not the password chosen for this registration. If you did not register, set a new password instead.",
+    "Bu, bu kayıt için seçilen şifre değil. Kaydı siz yapmadıysanız bunun yerine yeni bir şifre belirleyin.",
+);
+
 /// Every code declared in this file (registry, uniqueness test, catalogue).
 pub const ALL: &[ErrorCode] = &[
     INVALID_EMAIL,
@@ -174,4 +196,6 @@ pub const ALL: &[ErrorCode] = &[
     TERMS_ACCEPTANCE_REQUIRED,
     TERMS_VERSION_NOT_CURRENT,
     EMAIL_CHANGE_REVERT_CONFLICT,
+    REGISTRATION_CONFIRMATION_REQUIRED,
+    REGISTRATION_PASSWORD_MISMATCH,
 ];

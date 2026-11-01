@@ -4,7 +4,8 @@
 //! |--------|-------------|--------|
 //! | [`AccountService::signup`] | ACC-01, 02, 12, 13 | `POST /v1/signup` |
 //! | [`AccountService::resend_verification`] / [`AccountService::resend_own_verification`] | ACC-04 | `POST /v1/email/verification/resend`, `POST /v1/me/email/verification` |
-//! | [`AccountService::verify_email_link`] / [`AccountService::verify_email_code`] / [`AccountService::verify_own_email_code`] | ACC-04 | `POST /v1/email/verify`, `POST /v1/me/email/verify` |
+//! | [`AccountService::verify_email_link`] / [`AccountService::verify_email_code`] / [`AccountService::verify_own_email_code`] | ACC-04 (ADR 0002) | `POST /v1/email/verify`, `POST /v1/me/email/verify` |
+//! | [`AccountService::confirm_mailbox_control_in_tx`], [`AccountService::revoke_pending_email_changes_in_tx`], [`AccountAwareSessionRevoker`] | ACC-04, ACC-05, ACC-07 | authn-server / wave B wiring |
 //! | [`AccountService::assess_login`] | ACC-05, 06, 11 | authn-session (login, SES-01/SES-22) |
 //! | [`AccountService::change_status`] / [`AccountService::change_status_in_tx`] | ACC-06 | authn-admin (suspend, unlock…) |
 //! | [`AccountService::request_email_change`], `confirm_*`, [`AccountService::revert_email_change`] | ACC-07 | `/v1/me/email*`, `/v1/email/change/*` |
@@ -26,6 +27,8 @@ mod export;
 mod login;
 mod maintenance;
 mod profile;
+mod registration;
+mod revocation;
 mod signup;
 mod verification;
 
@@ -60,6 +63,11 @@ use crate::hooks::OrganizationOwnership;
 use crate::repo::ProfileRepository;
 use crate::tx::AccountTx;
 
+pub use self::registration::{
+    CredentialConfirmation, LinkConfirmation, MAX_PASSWORD_CONFIRMATIONS, REGISTRATION_COOKIE,
+    RegistrationReceipt,
+};
+pub use self::revocation::{AccountAwareSessionRevoker, MailboxProof};
 pub use self::verification::VerificationProof;
 
 /// Rate-limit action names (`RateLimitKey::action`).

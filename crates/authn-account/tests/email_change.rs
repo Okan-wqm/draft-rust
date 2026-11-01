@@ -153,7 +153,7 @@ async fn acc_07_link_confirmation_changes_address_and_notifies_old_one(pool: PgP
     );
     TestRequest::post("/v1/email/change/confirm")
         .json(&json!({ "token": token }))
-        .send(&h.app())
+        .send(&h.app_as(&h.fresh(user)))
         .await
         .assert_status(StatusCode::OK);
     let record = h.user_by_id(user).await.unwrap();
@@ -179,7 +179,7 @@ async fn acc_07_link_confirmation_changes_address_and_notifies_old_one(pool: PgP
     // Single use.
     TestRequest::post("/v1/email/change/confirm")
         .json(&json!({ "token": token }))
-        .send(&h.app())
+        .send(&h.app_as(&h.fresh(user)))
         .await
         .assert_error(StatusCode::BAD_REQUEST, "invalid_or_expired_token");
 }
@@ -248,7 +248,7 @@ async fn acc_07_revert_restores_address_revokes_sessions_and_forces_reset(pool: 
     request(&h, user, "attacker@evil.example").await;
     let (token, _) = change_secrets(&h, "attacker@evil.example");
     h.service
-        .confirm_email_change_link(&h.ctx(), &secret(&token))
+        .confirm_email_change_link(Some(&h.fresh(user)), &h.ctx(), &secret(&token))
         .await
         .unwrap();
     // … requests a password reset to the new address and schedules deletion.
@@ -309,7 +309,7 @@ async fn acc_07_old_address_is_reserved_during_the_revert_period(pool: PgPool) {
     request(&h, user, "moved@example.com").await;
     let (token, _) = change_secrets(&h, "moved@example.com");
     h.service
-        .confirm_email_change_link(&h.ctx(), &secret(&token))
+        .confirm_email_change_link(Some(&h.fresh(user)), &h.ctx(), &secret(&token))
         .await
         .unwrap();
     let revert = revert_token(&h, "keep@example.com");
@@ -351,7 +351,7 @@ async fn acc_07_reservations_expire_with_the_revert_link(pool: PgPool) {
     request(&h, user, "b@example.com").await;
     let (token, _) = change_secrets(&h, "b@example.com");
     h.service
-        .confirm_email_change_link(&h.ctx(), &secret(&token))
+        .confirm_email_change_link(Some(&h.fresh(user)), &h.ctx(), &secret(&token))
         .await
         .unwrap();
     let revert = revert_token(&h, "a@example.com");
@@ -381,7 +381,7 @@ async fn acc_07_revert_invalidates_other_revert_links(pool: PgPool) {
         request(&h, user, to).await;
         let (token, _) = change_secrets(&h, to);
         h.service
-            .confirm_email_change_link(&h.ctx(), &secret(&token))
+            .confirm_email_change_link(Some(&h.fresh(user)), &h.ctx(), &secret(&token))
             .await
             .unwrap();
         revert_token(&h, from);
@@ -415,13 +415,13 @@ async fn acc_07_verification_link_for_new_address_is_bound_to_it(pool: PgPool) {
     // A newer request revokes the older link.
     assert!(
         h.service
-            .confirm_email_change_link(&h.ctx(), &secret(&first))
+            .confirm_email_change_link(Some(&h.fresh(user)), &h.ctx(), &secret(&first))
             .await
             .is_err()
     );
     let (second, _) = change_secrets(&h, "z@example.com");
     h.service
-        .confirm_email_change_link(&h.ctx(), &secret(&second))
+        .confirm_email_change_link(Some(&h.fresh(user)), &h.ctx(), &secret(&second))
         .await
         .unwrap();
     assert_eq!(
@@ -441,9 +441,10 @@ async fn acc_07_concurrent_confirmations_apply_once(pool: PgPool) {
         let service = h.service.clone();
         let ctx = h.ctx();
         let token = token.clone();
+        let principal = h.fresh(user);
         handles.push(tokio::spawn(async move {
             service
-                .confirm_email_change_link(&ctx, &secret(&token))
+                .confirm_email_change_link(Some(&principal), &ctx, &secret(&token))
                 .await
         }));
     }
@@ -462,7 +463,7 @@ async fn change(h: &Harness, user: UserId, to: &str) {
     request(h, user, to).await;
     let (token, _) = change_secrets(h, to);
     h.service
-        .confirm_email_change_link(&h.ctx(), &secret(&token))
+        .confirm_email_change_link(Some(&h.fresh(user)), &h.ctx(), &secret(&token))
         .await
         .unwrap();
 }
@@ -562,7 +563,7 @@ async fn acc_07_request_for_taken_address_ends_the_previous_pending_change(pool:
     request(&h, user, "taken@example.com").await;
     TestRequest::post("/v1/email/change/confirm")
         .json(&json!({ "token": link }))
-        .send(&h.app())
+        .send(&h.app_as(&h.fresh(user)))
         .await
         .assert_error(StatusCode::BAD_REQUEST, "invalid_or_expired_token");
     TestRequest::post("/v1/me/email/confirm")

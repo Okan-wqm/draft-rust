@@ -4,7 +4,7 @@
 //!
 //! | Job | Requirement |
 //! |-----|-------------|
-//! | [`AccountService::purge_unverified_accounts`] | ACC-05 (default after 7 days) |
+//! | [`AccountService::purge_unverified_accounts`] | ACC-05 (registrations and never-verified accounts, default after 7 days) |
 //! | [`AccountService::purge_due_deletions`] | ACC-09 (end of grace period) |
 //! | [`AccountService::release_expired_locks`] | ACC-06 (`locked` → `active`) |
 //! | [`AccountService::purge_expired_reservations`] | ACC-07 (address reservations) |
@@ -16,14 +16,21 @@ use authn_store::UserRepository;
 
 use super::AccountService;
 use crate::lifecycle::{StatusChange, apply_transition};
+use crate::registration_store::RegistrationRepository;
 use crate::repo::{ReservationRepository, SharedReads};
 
 impl AccountService {
-    /// ACC-05: deletes accounts that never verified their address within
-    /// `account.unverified_purge_after`. Returns the number deleted.
-    /// Accounts that are the only owner of an organization are kept (and
-    /// logged) — an organization must never lose its last owner.
+    /// ACC-05: deletes expired registrations (at most `max`), then accounts
+    /// that never verified their address within
+    /// `account.unverified_purge_after` and have no live registration left.
+    /// Returns the number of accounts deleted. Accounts that are the only
+    /// owner of an organization are kept (and logged) — an organization must
+    /// never lose its last owner.
     pub async fn purge_unverified_accounts(&self, max: u32) -> Result<u64, AuthError> {
+        {
+            let mut conn = self.pool().acquire().await?;
+            RegistrationRepository::delete_expired(&mut conn, self.now(), max).await?;
+        }
         let mut purged = 0;
         let mut skip = Vec::new();
         let ttl = time::Duration::try_from(self.config().unverified_purge_after)
@@ -35,7 +42,8 @@ impl AccountService {
             };
             let mut tx = self.begin().await?;
             let Some(user_id) =
-                SharedReads::claim_expired_unverified(tx.conn(), created_before, &skip).await?
+                SharedReads::claim_expired_unverified(tx.conn(), created_before, now, &skip)
+                    .await?
             else {
                 break;
             };

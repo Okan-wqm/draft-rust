@@ -6,13 +6,10 @@ mod common;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use authn_account::DisposableDomains;
+use authn_account::{DisposableDomains, REGISTRATION_COOKIE};
 use authn_core::config::common::CaptchaPolicy;
 use authn_core::domain::AccountStatus;
-use authn_core::ports::{
-    CaptchaVerdict, DomainEventKind, RateLimitPolicy, RevocationReason, SecurityEventKind,
-};
-use authn_testkit::fakes::RevocationCall;
+use authn_core::ports::{CaptchaVerdict, DomainEventKind, RateLimitPolicy, SecurityEventKind};
 use authn_testkit::http::TestRequest;
 use authn_testkit::timing::TimingReport;
 use common::{Harness, Options, PASSWORD, PASSWORD_2};
@@ -38,10 +35,26 @@ async fn acc_01_signup_creates_pending_account_with_hashed_password(pool: PgPool
         .send(&h.app())
         .await;
     res.assert_status(StatusCode::ACCEPTED);
-    assert_eq!(
-        res.json::<serde_json::Value>(),
-        json!({ "status": "accepted" })
-    );
+    let answer = res.json::<serde_json::Value>();
+    assert_eq!(answer["status"], "accepted");
+    let handle = answer["registration"].as_str().unwrap().to_owned();
+    assert_eq!(handle.len(), 43, "256-bit handle");
+    // The same handle in a host-only, script-inaccessible, same-site cookie.
+    let cookies = res.set_cookies();
+    assert_eq!(cookies.len(), 1);
+    let cookie = &cookies[0];
+    assert!(cookie.starts_with(&format!("{REGISTRATION_COOKIE}={handle};")));
+    for attribute in [
+        "Path=/",
+        "Secure",
+        "HttpOnly",
+        "SameSite=Strict",
+        "Max-Age=604800",
+    ] {
+        assert!(cookie.contains(attribute), "{cookie}");
+    }
+    assert!(!cookie.contains("Domain"), "{cookie}");
+    assert_eq!(res.header("cache-control"), Some("no-store"));
     h.drain().await;
 
     let user = h.user("alice@example.com").await.expect("user created");
@@ -49,19 +62,33 @@ async fn acc_01_signup_creates_pending_account_with_hashed_password(pool: PgPool
     assert_eq!(user.email.as_deref(), Some("Alice@example.com"));
     assert_eq!(user.email_normalized.as_deref(), Some("alice@example.com"));
     assert!(user.email_verified_at.is_none());
-    // Argon2id hash, never the password.
-    let stored = authn_store::UserRepository::find_password(&h.pool, user.id)
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(stored.password_hash.expose().starts_with("$argon2id$"));
-    assert!(!stored.password_hash.expose().contains(PASSWORD));
-    assert!(h.password_matches(user.id, PASSWORD).await);
-
-    let profile = h.service.profile_of(user.id).await.unwrap().unwrap();
-    assert_eq!(profile.display_name.as_deref(), Some("Alice Smith"));
-    assert_eq!(profile.locale, authn_core::domain::Locale::Tr);
-    assert_eq!(profile.time_zone, "Europe/Istanbul");
+    // No credential and no profile before the address is proven (ADR 0002):
+    // the registration holds them (Argon2id hash, never the password).
+    assert!(
+        authn_store::UserRepository::find_password(&h.pool, user.id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let before = h.service.profile_of(user.id).await.unwrap().unwrap();
+    assert_eq!(before.display_name, None, "not applied before verification");
+    let (hash, handle_hash): (String, Vec<u8>) = sqlx::query_as(
+        "SELECT password_hash, handle_hash FROM pending_registrations WHERE user_id = $1",
+    )
+    .bind(user.id)
+    .fetch_one(&h.pool)
+    .await
+    .unwrap();
+    assert!(hash.starts_with("$argon2id$"));
+    assert!(!hash.contains(PASSWORD));
+    assert_eq!(
+        handle_hash,
+        authn_crypto::token::OpaqueToken::parse(&handle)
+            .unwrap()
+            .hash()
+            .as_bytes()
+            .to_vec()
+    );
 
     let mails = h.mails("email_verification", "alice@example.com");
     assert_eq!(mails.len(), 1);
@@ -75,6 +102,25 @@ async fn acc_01_signup_creates_pending_account_with_hashed_password(pool: PgPool
     let audited = h.audit.events.of_kind(SecurityEventKind::AccountRegistered);
     assert_eq!(audited.len(), 1);
     assert_eq!(audited[0].subject_user, Some(user.id));
+
+    // The registering browser (cookie) opens the link: the submitted
+    // password and profile become the account's.
+    let (token, _) = h.verification("alice@example.com");
+    TestRequest::post("/v1/email/verify")
+        .json(&json!({ "token": token }))
+        .cookie(REGISTRATION_COOKIE, &handle)
+        .send(&h.app())
+        .await
+        .assert_status(StatusCode::OK);
+    assert!(h.password_matches(user.id, PASSWORD).await);
+    let profile = h.service.profile_of(user.id).await.unwrap().unwrap();
+    assert_eq!(profile.display_name.as_deref(), Some("Alice Smith"));
+    assert_eq!(profile.locale, authn_core::domain::Locale::Tr);
+    assert_eq!(profile.time_zone, "Europe/Istanbul");
+    assert_eq!(
+        h.user("alice@example.com").await.unwrap().status,
+        AccountStatus::Active
+    );
 }
 
 #[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
@@ -160,7 +206,21 @@ async fn acc_02_existing_address_gets_identical_status_and_body(pool: PgPool) {
         .send(&h.app())
         .await;
     assert_eq!(new.status, existing.status);
-    assert_eq!(new.body, existing.body);
+    // Same shape; the handle is fresh random data either way.
+    let shape = |r: &authn_testkit::http::TestResponse| {
+        let mut body = r.json::<serde_json::Value>();
+        let handle = body["registration"].take();
+        assert_eq!(handle.as_str().map(str::len), Some(43));
+        let cookies = r.set_cookies();
+        assert_eq!(cookies.len(), 1);
+        let cookie = cookies[0].replace(handle.as_str().unwrap(), "<handle>");
+        (body, cookie)
+    };
+    assert_eq!(shape(&new), shape(&existing));
+    assert_ne!(
+        new.json::<serde_json::Value>()["registration"],
+        existing.json::<serde_json::Value>()["registration"]
+    );
     let headers = |r: &authn_testkit::http::TestResponse| {
         let mut names: Vec<String> = r
             .headers
@@ -273,46 +333,6 @@ async fn acc_02_registration_notices_are_throttled_per_address(pool: PgPool) {
         .events
         .of_kind(SecurityEventKind::AccountRegistrationAttemptExisting);
     assert_eq!(attempts.len(), 5, "every attempt is audited");
-}
-
-#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
-async fn acc_02_unverified_reregistration_replaces_squatted_password(pool: PgPool) {
-    // Pre-hijacking: an attacker registers the victim's address first.
-    let h = Harness::new(pool).await;
-    h.signup("victim@example.com").await;
-    let squatted = h.user("victim@example.com").await.unwrap();
-    let (old_token, _) = h.verification("victim@example.com");
-
-    // The real owner registers later with their own password.
-    h.service
-        .signup(
-            &h.ctx(),
-            Harness::signup_input("victim@example.com", PASSWORD_2),
-        )
-        .await
-        .unwrap();
-    h.drain().await;
-    let user = h.user("victim@example.com").await.unwrap();
-    assert_eq!(user.id, squatted.id);
-    assert!(h.password_matches(user.id, PASSWORD_2).await);
-    assert!(!h.password_matches(user.id, PASSWORD).await);
-    assert!(h.ports.session_revoker.calls().iter().any(|c| matches!(
-        c,
-        RevocationCall::AllForUser(u, RevocationReason::PasswordChanged, opts)
-            if *u == user.id && opts.also_trusted_devices
-    )));
-    // The squatter's verification link no longer works; the new one does.
-    let err = h
-        .service
-        .verify_email_link(&h.ctx(), &common::secret(&old_token))
-        .await
-        .unwrap_err();
-    assert_eq!(err.code().code(), "invalid_or_expired_token");
-    let (new_token, _) = h.verification("victim@example.com");
-    h.service
-        .verify_email_link(&h.ctx(), &common::secret(&new_token))
-        .await
-        .unwrap();
 }
 
 #[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
@@ -531,7 +551,7 @@ async fn acc_11_signup_records_terms_acceptance_when_required(pool: PgPool) {
         .send(&h.app())
         .await
         .assert_error(StatusCode::CONFLICT, "terms_version_not_current");
-    TestRequest::post("/v1/signup")
+    let res = TestRequest::post("/v1/signup")
         .json(&json!({ "email": "t@example.com", "password": PASSWORD,
             "accepted_terms": [
                 { "document": "terms_of_service", "version": "2026-01" },
@@ -539,10 +559,18 @@ async fn acc_11_signup_records_terms_acceptance_when_required(pool: PgPool) {
             ] }))
         .header("user-agent", "Mozilla/5.0 test")
         .send(&h.app())
-        .await
-        .assert_status(StatusCode::ACCEPTED);
+        .await;
+    res.assert_status(StatusCode::ACCEPTED);
+    let handle = res.json::<serde_json::Value>()["registration"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     h.drain().await;
     let user = h.user("t@example.com").await.unwrap();
+    // Recorded when the registration completes (with the time, IP and user
+    // agent of the registration request).
+    let (token, _) = h.verification("t@example.com");
+    h.verify_link(&token, Some(&handle), None).await.unwrap();
     let rows: Vec<(Option<std::net::IpAddr>, Option<String>)> =
         sqlx::query_as("SELECT ip, user_agent FROM consents WHERE user_id = $1")
             .bind(user.id)

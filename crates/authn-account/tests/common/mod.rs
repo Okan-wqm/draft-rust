@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use authn_account::{
-    AccountService, AccountServiceDeps, AccountServiceSettings, OrganizationOwnership, SignupInput,
-    router,
+    AccountService, AccountServiceDeps, AccountServiceSettings, CredentialConfirmation,
+    LinkConfirmation, OrganizationOwnership, SignupInput, router,
 };
 use authn_core::config::common::CaptchaPolicy;
 use authn_core::domain::{
@@ -231,13 +231,21 @@ impl Harness {
         .unwrap()
     }
 
-    /// Registers through the service and waits for the background job.
-    pub async fn signup(&self, email: &str) {
-        self.service
-            .signup(&self.ctx(), Self::signup_input(email, PASSWORD))
+    /// Registers through the service, waits for the background job and
+    /// returns the registration handle the client received.
+    pub async fn signup(&self, email: &str) -> String {
+        self.signup_with(email, PASSWORD).await
+    }
+
+    /// [`Self::signup`] with a chosen password.
+    pub async fn signup_with(&self, email: &str, password: &str) -> String {
+        let receipt = self
+            .service
+            .signup(&self.ctx(), Self::signup_input(email, password))
             .await
             .unwrap();
         self.drain().await;
+        receipt.handle().expose().to_owned()
     }
 
     pub async fn drain(&self) {
@@ -279,15 +287,81 @@ impl Harness {
         }
     }
 
-    /// Registers and verifies (link) an account; returns its id.
+    /// Registers and verifies (link opened by the registering client) an
+    /// account; returns its id.
     pub async fn active_user(&self, email: &str) -> UserId {
-        self.signup(email).await;
+        let handle = self.signup(email).await;
         let (token, _) = self.verification(email);
-        self.service
-            .verify_email_link(&self.ctx(), &secret(&token))
-            .await
-            .unwrap();
+        self.verify_link(&token, Some(&handle), None).await.unwrap();
         self.user(email).await.unwrap().id
+    }
+
+    /// Opens a verification link with the given handle / credentials.
+    pub async fn verify_link(
+        &self,
+        token: &str,
+        handle: Option<&str>,
+        credentials: Option<CredentialConfirmation>,
+    ) -> Result<(), AuthError> {
+        self.service
+            .verify_email_link(
+                &self.ctx(),
+                &secret(token),
+                &LinkConfirmation {
+                    registration: handle.map(secret),
+                    signed_in_user: None,
+                    credentials,
+                },
+            )
+            .await
+    }
+
+    /// Submits a verification code with the given handle.
+    pub async fn verify_code(&self, handle: Option<&str>, code: &str) -> Result<(), AuthError> {
+        self.service
+            .verify_email_code(
+                &self.ctx(),
+                handle.map(secret).as_ref(),
+                None,
+                &secret(code),
+            )
+            .await
+    }
+
+    /// An unverified account that already has a password — as written by
+    /// older code, imports or other modules, and the only kind that can
+    /// sign in with `account.unverified_login = "limited"`. Registrations
+    /// never create such accounts any more (ADR 0002).
+    pub async fn unverified_with_password(&self, email: &str, password: &str) -> UserId {
+        let now = self.ports.clock.now();
+        let id = UserId::generate();
+        let hash = self.crypto.passwords.hash(&secret(password)).await.unwrap();
+        let mut conn = self.pool.acquire().await.unwrap();
+        UserRepository::create(
+            &mut conn,
+            &authn_store::NewUser {
+                id,
+                email: EmailAddress::parse(email).unwrap(),
+                status: authn_core::domain::AccountStatus::PendingVerification,
+                created_at: now,
+            },
+        )
+        .await
+        .unwrap();
+        UserRepository::set_password(
+            &mut conn,
+            id,
+            &authn_store::NewPasswordHash {
+                password_hash: &hash.hash,
+                algorithm: hash.algorithm.as_str(),
+                pepper_version: hash.pepper_version,
+            },
+            false,
+            now,
+        )
+        .await
+        .unwrap();
+        id
     }
 
     /// Whether `password` verifies against the stored hash.
@@ -323,4 +397,28 @@ impl Harness {
 
 pub fn secret(value: &str) -> SecretString {
     SecretString::from(value.to_owned())
+}
+
+/// The "password you chose" confirmation.
+pub fn chosen(password: &str) -> CredentialConfirmation {
+    CredentialConfirmation::ChosenPassword(secret(password))
+}
+
+/// A new password chosen on the link page.
+pub fn new_password(password: &str) -> CredentialConfirmation {
+    CredentialConfirmation::NewPassword {
+        password: secret(password),
+        accepted_terms: Vec::new(),
+    }
+}
+
+/// Number of live registrations of a user.
+pub async fn registrations(pool: &PgPool, user: UserId) -> i64 {
+    let (n,): (i64,) =
+        sqlx::query_as("SELECT count(*) FROM pending_registrations WHERE user_id = $1")
+            .bind(user)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    n
 }

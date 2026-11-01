@@ -89,15 +89,18 @@ key = "EmFt2e6K4mRNa00b7YSb9pmCX5Ak+/U7pL0JNQfO7wk="
 # code_attempts_per_email = { limit = 10, period = "1h" }   # code submissions per address
 
 [account]                              # ACC-*
-# unverified_login = "block"           # block | limited (login with the verify_email required action)
-# unverified_purge_after = "7d"        # never-verified accounts are deleted after this
+# unverified_login = "block"           # block | limited (login with the verify_email required action;
+#                                      # registrations hold no credential until verified, ADR 0002)
+# unverified_purge_after = "7d"        # registration lifetime (and handle cookie Max-Age); never-verified
+#                                      # accounts without a live registration are deleted after this
 # email_change_revert_ttl = "7d"       # revert link + reservation of the previous address
 # deletion_grace_period = "30d"
 # disposable_domains_file = "/etc/authn/disposable-domains.txt"   # one domain per line, '#' comments
 # registration_captcha = "risk_based"  # always | risk_based | never
 # registration_per_ip = { limit = 10, period = "1h" }
 # registration_captcha_free_per_ip = { limit = 3, period = "1h" }   # risk_based: CAPTCHA after this
-# registration_notice_per_email = { limit = 3, period = "1d" }      # "someone tried to register" mails
+# registration_notice_per_email = { limit = 3, period = "1d" }      # "someone tried to register" mails and
+#                                                                   # further registrations of an unverified address
 # email_change_per_user = { limit = 5, period = "1d" }
 # link_actions_per_ip = { limit = 30, period = "1h" }               # confirm / revert / cancel links
 # display_name_max_chars = 64          # at most 128
@@ -114,7 +117,7 @@ key = "EmFt2e6K4mRNa00b7YSb9pmCX5Ak+/U7pL0JNQfO7wk="
 [account.verification]                 # ACC-04
 # link_ttl = "24h"
 # code_ttl = "15m"
-# code_max_attempts = 5
+# code_max_attempts = 5                # per code; per registration over its whole life (resends keep the count)
 # resend_cooldown = "60s"
 # max_sends_per_hour = 5
 # code_attempts_per_email = { limit = 10, period = "1h" }   # across re-sent codes

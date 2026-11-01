@@ -493,19 +493,25 @@ pub(crate) struct PendingTokenRecord {
 
 impl SharedReads {
     /// Claims one never-verified account created before `created_before`
-    /// (ACC-05 purge; `FOR UPDATE SKIP LOCKED`, multi-instance safe),
-    /// skipping the ids in `skip`.
+    /// that has no live registration left (ACC-05 purge; `FOR UPDATE SKIP
+    /// LOCKED`, multi-instance safe), skipping the ids in `skip`. A later
+    /// registration of the same address keeps the account until that
+    /// registration expires, so purging never ends a registration early.
     pub(crate) async fn claim_expired_unverified(
         conn: &mut PgConnection,
         created_before: OffsetDateTime,
+        now: OffsetDateTime,
         skip: &[uuid::Uuid],
     ) -> Result<Option<UserId>, StoreError> {
         let row: Option<(UserId,)> = sqlx::query_as(
-            "SELECT id FROM users WHERE status = 'pending_verification' \
-             AND email_verified_at IS NULL AND created_at < $1 AND NOT (id = ANY($2)) \
-             ORDER BY created_at, id LIMIT 1 FOR UPDATE SKIP LOCKED",
+            "SELECT u.id FROM users u WHERE u.status = 'pending_verification' \
+             AND u.email_verified_at IS NULL AND u.created_at < $1 AND NOT (u.id = ANY($3)) \
+             AND NOT EXISTS (SELECT 1 FROM pending_registrations r \
+               WHERE r.user_id = u.id AND r.expires_at > $2) \
+             ORDER BY u.created_at, u.id LIMIT 1 FOR UPDATE OF u SKIP LOCKED",
         )
         .bind(created_before)
+        .bind(now)
         .bind(skip)
         .fetch_optional(conn)
         .await?;
