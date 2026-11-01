@@ -1,5 +1,5 @@
-//! `[password]` — password policy, breach check, reset (owner:
-//! authn-password). PWD-01 … PWD-08.
+//! `[password]` — password policy, breach check, change and reset (owner:
+//! authn-password). PWD-01 … PWD-09.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -58,6 +58,12 @@ pub struct PasswordResetConfig {
     pub per_email: RateLimitPolicy,
     /// Requests per IP. Default 20 per hour.
     pub per_ip: RateLimitPolicy,
+    /// Reset completions (link or code) per IP. Default 30 per hour.
+    pub verify_per_ip: RateLimitPolicy,
+    /// Reset-code submissions per e-mail address, applied whether or not the
+    /// account exists (PWD-08 attempt limit on top of `code_max_attempts`).
+    /// Default 10 per hour.
+    pub code_attempts_per_email: RateLimitPolicy,
 }
 
 impl Default for PasswordResetConfig {
@@ -69,6 +75,8 @@ impl Default for PasswordResetConfig {
             code_max_attempts: 5,
             per_email: RateLimitPolicy::new(3, hours(1)),
             per_ip: RateLimitPolicy::new(20, hours(1)),
+            verify_per_ip: RateLimitPolicy::new(30, hours(1)),
+            code_attempts_per_email: RateLimitPolicy::new(10, hours(1)),
         }
     }
 }
@@ -94,6 +102,10 @@ pub struct PasswordConfig {
     /// Rate limit of the live strength-check endpoint per IP (PWD-05).
     /// Default 30 per minute.
     pub check_endpoint_per_ip: RateLimitPolicy,
+    /// Password-change attempts that verify the *current* password, per
+    /// user (PWD-06; slows down guessing with a stolen session). Default 5
+    /// per 15 minutes.
+    pub change_attempts_per_user: RateLimitPolicy,
 }
 
 impl Default for PasswordConfig {
@@ -106,6 +118,7 @@ impl Default for PasswordConfig {
             breach_check: BreachCheckConfig::default(),
             reset: PasswordResetConfig::default(),
             check_endpoint_per_ip: RateLimitPolicy::new(30, mins(1)),
+            change_attempts_per_user: RateLimitPolicy::new(5, mins(15)),
         }
     }
 }
@@ -163,6 +176,22 @@ impl PasswordConfig {
         );
         validate_policy(p, &self.reset.per_email, "password.reset.per_email");
         validate_policy(p, &self.reset.per_ip, "password.reset.per_ip");
+        validate_policy(p, &self.reset.verify_per_ip, "password.reset.verify_per_ip");
+        validate_policy(
+            p,
+            &self.reset.code_attempts_per_email,
+            "password.reset.code_attempts_per_email",
+        );
+        validate_policy(
+            p,
+            &self.change_attempts_per_user,
+            "password.change_attempts_per_user",
+        );
+        p.require(
+            self.service_name.chars().count() <= 128,
+            "password.service_name",
+            "must be at most 128 characters",
+        );
         validate_policy(
             p,
             &self.check_endpoint_per_ip,
@@ -178,4 +207,65 @@ pub(crate) fn validate_policy(p: &mut ConfigProblems, policy: &RateLimitPolicy, 
         key,
         "limit must be >= 1 and period > 0",
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn problems(config: &PasswordConfig) -> Vec<String> {
+        let mut p = ConfigProblems::default();
+        config.validate(&mut p);
+        p.problems().to_vec()
+    }
+
+    #[test]
+    fn pwd_01_defaults_follow_the_specification() {
+        let c = PasswordConfig::default();
+        assert_eq!(
+            (c.min_length, c.max_length, c.min_strength_score),
+            (12, 128, 3)
+        );
+        assert!(c.breach_check.enabled && c.breach_check.fail_open);
+        assert_eq!(c.reset.token_ttl, mins(30));
+        assert_eq!(c.reset.code_max_attempts, 5);
+        assert_eq!(
+            c.change_attempts_per_user,
+            RateLimitPolicy::new(5, mins(15))
+        );
+        assert!(problems(&c).is_empty(), "{:?}", problems(&c));
+    }
+
+    #[test]
+    fn pwd_01_invalid_values_are_reported_by_key() {
+        let mut c = PasswordConfig {
+            min_length: 4,
+            max_length: 32,
+            min_strength_score: 5,
+            ..PasswordConfig::default()
+        };
+        c.breach_check.hibp_range_url = "http://api.pwnedpasswords.com/range/".to_owned();
+        c.reset.verify_per_ip = RateLimitPolicy::new(0, mins(1));
+        c.reset.code_attempts_per_email = RateLimitPolicy::new(1, Duration::ZERO);
+        c.change_attempts_per_user = RateLimitPolicy::new(0, mins(1));
+        let found = problems(&c).join("\n");
+        for key in [
+            "password.min_length",
+            "password.max_length",
+            "password.min_strength_score",
+            "password.breach_check.hibp_range_url",
+            "password.reset.verify_per_ip",
+            "password.reset.code_attempts_per_email",
+            "password.change_attempts_per_user",
+        ] {
+            assert!(found.contains(key), "{key} missing in {found}");
+        }
+    }
+
+    #[test]
+    fn pwd_03_local_hibp_url_is_allowed_for_tests() {
+        let mut c = PasswordConfig::default();
+        c.breach_check.hibp_range_url = "http://127.0.0.1:9999/range/".to_owned();
+        assert!(problems(&c).is_empty());
+    }
 }
