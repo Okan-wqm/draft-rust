@@ -1,0 +1,96 @@
+//! JSON body extractor for requests that carry tokens.
+//!
+//! `authn_core::http::Json` logs the parser message of a rejected body at
+//! debug level; serde messages can quote the offending value. Invitation and
+//! ownership-transfer tokens must never reach a log line, so these bodies
+//! are read with [`SecretJson`], whose rejections only record the error
+//! category and position.
+
+use authn_core::error::{AuthError, codes};
+use axum::body::Bytes;
+use axum::extract::{FromRequest, Request};
+use http::header::CONTENT_TYPE;
+use serde::de::DeserializeOwned;
+use serde_json::error::Category;
+
+/// Body extractor whose rejections never echo body content. Mapping:
+/// non-JSON `Content-Type` (or a body without one) → `unsupported_media_type`;
+/// an empty body is read as `{}` (optional bodies); unreadable
+/// or too large body → the matching status; syntax error → `bad_request`;
+/// wrong types, missing or unknown fields → `validation_failed`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SecretJson<T>(pub T);
+
+impl<T, S> FromRequest<S> for SecretJson<T>
+where
+    T: DeserializeOwned,
+    S: Send + Sync,
+{
+    type Rejection = AuthError;
+
+    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
+        let has_type = req.headers().contains_key(CONTENT_TYPE);
+        let has_json_type = is_json_content_type(req.headers().get(CONTENT_TYPE));
+        let body = Bytes::from_request(req, state).await.map_err(|rejection| {
+            AuthError::new(codes::common::for_status(rejection.status()))
+                .with_context("request body could not be read")
+        })?;
+        let body: &[u8] = if body.is_empty() {
+            if has_type && !has_json_type {
+                return Err(AuthError::new(codes::common::UNSUPPORTED_MEDIA_TYPE));
+            }
+            b"{}"
+        } else if has_json_type {
+            &body
+        } else {
+            return Err(AuthError::new(codes::common::UNSUPPORTED_MEDIA_TYPE));
+        };
+        serde_json::from_slice::<T>(body).map(Self).map_err(|err| {
+            let code = match err.classify() {
+                Category::Data => codes::common::VALIDATION_FAILED,
+                Category::Syntax | Category::Eof | Category::Io => codes::common::BAD_REQUEST,
+            };
+            AuthError::new(code).with_context(format!(
+                "json body rejected ({:?} error at line {} column {})",
+                err.classify(),
+                err.line(),
+                err.column()
+            ))
+        })
+    }
+}
+
+/// `application/json` or `application/<subtype>+json`, parameters allowed.
+fn is_json_content_type(value: Option<&http::HeaderValue>) -> bool {
+    let Some(value) = value.and_then(|v| v.to_str().ok()) else {
+        return false;
+    };
+    let essence = value.split(';').next().unwrap_or_default().trim();
+    let Some((kind, subtype)) = essence.split_once('/') else {
+        return false;
+    };
+    kind.eq_ignore_ascii_case("application")
+        && (subtype.eq_ignore_ascii_case("json")
+            || (subtype.len() > 5
+                && subtype
+                    .get(subtype.len() - 5..)
+                    .is_some_and(|s| s.eq_ignore_ascii_case("+json"))))
+}
+
+#[cfg(test)]
+mod tests {
+    use http::HeaderValue;
+
+    use super::*;
+
+    #[test]
+    fn org_05_content_type_detection() {
+        let ok = |v: &str| is_json_content_type(Some(&HeaderValue::from_str(v).unwrap()));
+        assert!(ok("application/json"));
+        assert!(ok("application/json; charset=utf-8"));
+        assert!(ok("application/merge-patch+json"));
+        assert!(!ok("text/plain"));
+        assert!(!ok("application/+json"));
+        assert!(!is_json_content_type(None));
+    }
+}

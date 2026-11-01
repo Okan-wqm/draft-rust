@@ -25,14 +25,15 @@ time.workspace = true
 uuid.workspace = true
 sqlx.workspace = true
 tokio.workspace = true
-secrecy.workspace = true
 subtle.workspace = true
 crc32fast.workspace = true
 ipnet.workspace = true
 hickory-resolver.workspace = true
 utoipa.workspace = true
 metrics.workspace = true
-url.workspace = true
+unicode-normalization.workspace = true
+zeroize.workspace = true
+http.workspace = true
 
 [dev-dependencies]
 authn-testkit.workspace = true

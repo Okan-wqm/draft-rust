@@ -373,6 +373,15 @@ Kayıt şablonu:
 - **Geriye uyumluluk:** Etkisi yok.
 - **Durum:** Uygulandı (2026-11-01)
 
+### 2026-11-01 — Güvenlik incelemesi: API anahtarları yalnızca organizasyon yollarında, `org_auto_join_exclusions` tablosu, yeni `[org]` alanı (bilgi)
+- **Talep eden:** authn-org
+- **Etkilenen dosya / sahip:** `crates/authn-org/src/middleware.rs`, `migrations/1501_org_auto_join_exclusions.sql`, `crates/authn-core/src/config/org.rs`, `config/example.toml` `[org]` yorumları / authn-org; bilgi: authn-server, authn-session, authn-account, authn-webauthn, authn-audit; contracts §5 tablo listesi / mimar
+- **Gereksinim:** ORG-02, ORG-04, ORG-05, ORG-06, ORG-08, SES-10
+- **Gerekçe:** Güvenlik incelemesi: (1) `api_key_middleware` kişisel API anahtarını her yolda kullanıcının `Principal`'ına çeviriyordu; kapsam ve kimlik bilgisi türü denetlemeyen `/v1/me/…` okuma uç noktaları (ör. `GET /v1/me/profile`, `GET /v1/me/passkeys`, `GET /v1/me/security-events`) organizasyona bağlı, dar kapsamlı bir anahtarla çağrılabiliyordu. (2) Domain otomatik katılımı çıkarılan / ayrılan üyeyi bir sonraki girişte yeniden ekliyordu. (3) Davet başına bekleme süresi iptal + yeniden davetle aşılabiliyordu.
+- **Önerilen değişiklik:** (uygulandı, yalnızca authn-org dosyalarında) (1) Ara katman anahtarı yalnızca `/v1/orgs/{org_id}` ve `/v1/orgs/{org_id}/…` yollarında doğrular (`authn_org::middleware::is_api_key_path`); diğer yollarda istek dokunulmadan geçer. **authn-server:** ara katman tam (`/v1/...`) yolu görmeli. **authn-session (SES-10):** API anahtarıyla istemci doğrulaması yapan uç noktalar `OrgService::authenticate_api_key`'i doğrudan çağırmalı (ara katmana güvenmemeli). **authn-account / authn-webauthn / authn-audit (öneri, derinlemesine savunma):** `/v1/me/…` okuyucuları da `principal.session_id().is_none()` olan (API anahtarı) principal'ları reddetmeli (authn-mfa zaten reddediyor). (2) Yeni tablo `org_auto_join_exclusions (org_id, user_id, reason ∈ {removed, left}, created_at)`, sahibi authn-org, `users`/`organizations` silinince kaskad; contracts §5 org tablo listesine eklenmeli. Dışa aktarma bölümü `organizations` artık `auto_join_exclusions` içerir. (3) `[org] invitation_sends_per_recipient` (varsayılan 5 / 1 gün; organizasyon + alıcı adresi başına davet e-postası).
+- **Geriye uyumluluk:** Varsayılanlı yeni alan; eklemeli migration. Davranış değişikliği: API anahtarı `/v1/orgs/{org_id}` dışındaki yollarda artık `Principal` üretmez (ör. `POST /v1/orgs`, `GET /v1/org-permissions` API anahtarıyla `401`).
+- **Durum:** Uygulandı (2026-11-01)
+
 ## authn-protect
 
 ### 2026-11-01 — Cihaz kimliği hash'i için `KeyPurpose::RateLimitKey` paylaşımı

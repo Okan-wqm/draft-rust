@@ -222,6 +222,7 @@ allowed_origins = ["http://localhost:8080"]  # exact match; rp_id or its subdoma
 # invitation_ttl = "7d"                # ORG-05, 1h-30d
 # invitation_sends_per_org = { limit = 50, period = "1h" }      # invitation e-mails (new + resend) per organization
 # invitation_resend_cooldown = "1m"    # minimum gap between two sends of one invitation
+# invitation_sends_per_recipient = { limit = 5, period = "1d" } # invitation e-mails per organization and recipient address (revoke / re-invite cycles)
 # creates_per_user = { limit = 10, period = "1d" }              # organizations a user may create (ORG-01)
 # token_attempts_per_user = { limit = 30, period = "1h" }       # invitation preview/accept + ownership-transfer accept per user
 # domain_verification_label = "_authn-verification"             # ORG-06: TXT record name is <label>.<domain>
