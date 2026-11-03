@@ -21,9 +21,15 @@ pub enum ServerError {
     /// The database schema does not match this binary.
     #[error("database schema is not up to date ({0}); run `rust-authentication migrate`")]
     SchemaOutdated(String),
-    /// The subcommand exists but is not implemented in this build yet.
-    #[error("`{0}` is not implemented yet in this build")]
-    NotImplemented(&'static str),
+    /// A service could not be built or an operation failed.
+    #[error("{0}")]
+    Startup(authn_core::error::AuthError),
+    /// An integrity check failed (audit chain).
+    #[error("integrity check failed: {0}")]
+    Integrity(String),
+    /// Invalid command input (never echoes secrets).
+    #[error("invalid input: {0}")]
+    Input(String),
     /// Telemetry could not be initialised.
     #[error("telemetry initialisation failed: {0}")]
     Telemetry(String),
@@ -35,9 +41,9 @@ impl ServerError {
     pub fn exit_code(&self) -> ExitCode {
         match self {
             Self::Config(_) => ExitCode::from(78),
-            Self::NotImplemented(_) => ExitCode::from(2),
-            Self::Store(_) | Self::SchemaOutdated(_) => ExitCode::from(69),
-            Self::Io(_) | Self::Telemetry(_) => ExitCode::from(1),
+            Self::Store(_) | Self::SchemaOutdated(_) | Self::Startup(_) => ExitCode::from(69),
+            Self::Input(_) => ExitCode::from(65),
+            Self::Io(_) | Self::Telemetry(_) | Self::Integrity(_) => ExitCode::from(1),
         }
     }
 }

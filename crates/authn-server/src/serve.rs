@@ -9,8 +9,12 @@ use authn_core::ports::{Clock, SystemClock};
 use tokio::net::TcpListener;
 use tokio::sync::Notify;
 
+use tokio_util::sync::CancellationToken;
+
 use crate::app::build_router;
 use crate::error::ServerError;
+use crate::jobs;
+use crate::services::{Ports, Services};
 use crate::state::AppState;
 
 /// Runs the server until SIGINT / SIGTERM, then drains in-flight requests
@@ -36,8 +40,24 @@ pub async fn serve(config: AppConfig) -> Result<(), ServerError> {
     }
 
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
-    let state = AppState::new(config.clone(), pool, clock);
-    let router = build_router(state);
+    let ports = Ports::from_config(&config, clock).map_err(ServerError::Startup)?;
+    let services = Services::build(config.clone(), pool, ports)
+        .await
+        .map_err(ServerError::Startup)?;
+    // CRY-10: a signing key must exist before the first token is issued.
+    jobs::rotate_signing_keys(&services)
+        .await
+        .map_err(ServerError::Startup)?;
+    services
+        .accounts
+        .sync_terms_versions()
+        .await
+        .map_err(ServerError::Startup)?;
+    let shutdown_jobs = CancellationToken::new();
+    let mut background =
+        jobs::spawn(services.clone(), shutdown_jobs.clone()).map_err(ServerError::Startup)?;
+    let state = AppState::new(services.clone());
+    let router = build_router(state).map_err(ServerError::Startup)?;
 
     let listener = TcpListener::bind(config.server.bind_addr).await?;
     tracing::info!(addr = %config.server.bind_addr, "listening");
@@ -61,6 +81,12 @@ pub async fn serve(config: AppConfig) -> Result<(), ServerError> {
             tracing::warn!(grace_secs = grace.as_secs(), "grace period elapsed; aborting in-flight requests");
         }
     }
+    // OPS-07: stop the jobs, finish queued work.
+    shutdown_jobs.cancel();
+    while background.join_next().await.is_some() {}
+    services.passwords.drain_background_jobs().await;
+    services.accounts.drain_background_jobs().await;
+    services.sessions.drain_background_jobs().await;
     tracing::info!("server stopped");
     Ok(())
 }

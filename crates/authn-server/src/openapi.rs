@@ -1,9 +1,9 @@
-//! OpenAPI document (ARC-09, OPS-09). Module crates export their own
-//! `utoipa::OpenApi` structs; the server agent nests them here.
+//! OpenAPI document (ARC-09, OPS-09): the server's own paths plus every
+//! module's `utoipa::OpenApi` document.
 
 use utoipa::OpenApi;
 
-/// The server's OpenAPI document.
+/// The server's own paths.
 #[derive(OpenApi)]
 #[openapi(
     info(title = "rust-authentication", description = "Authentication API"),
@@ -21,8 +21,24 @@ use utoipa::OpenApi;
 )]
 pub struct ApiDoc;
 
+/// The merged document.
+#[must_use]
+pub fn openapi() -> utoipa::openapi::OpenApi {
+    let mut doc = ApiDoc::openapi();
+    doc.merge(authn_session::SessionApi::openapi());
+    doc.merge(authn_session::LoginApi::openapi());
+    doc.merge(authn_password::PasswordApi::openapi());
+    doc.merge(authn_account::AccountApi::openapi());
+    doc.merge(authn_mfa::MfaApi::openapi());
+    doc.merge(authn_webauthn::WebauthnApi::openapi());
+    doc.merge(authn_org::OrgApi::openapi());
+    doc.merge(authn_protect::ProtectApi::openapi());
+    doc.merge(authn_audit::AuditApi::openapi());
+    doc
+}
+
 /// The document as JSON value.
 #[must_use]
 pub fn document() -> serde_json::Value {
-    serde_json::to_value(ApiDoc::openapi()).unwrap_or(serde_json::Value::Null)
+    serde_json::to_value(openapi()).unwrap_or(serde_json::Value::Null)
 }
