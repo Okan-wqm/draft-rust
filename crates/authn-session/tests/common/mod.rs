@@ -4,6 +4,8 @@
 //! the authentication middleware.
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+pub mod browser;
+
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -74,6 +76,7 @@ pub struct Harness {
     pub mfa: MfaService,
     pub orgs: OrgService,
     pub accounts: AccountService,
+    pub webauthn: WebauthnService,
     pub revoker: PgSessionRevoker,
     pub app: Router,
 }
@@ -183,6 +186,39 @@ impl Harness {
             },
             OrgServiceSettings::from_app_config(&config),
         );
+        let protect_hasher = authn_protect::KeyHasher::new(&crypto.keys).unwrap();
+        let captcha = authn_protect::CaptchaService::new(
+            ports.captcha.clone(),
+            ports.rate_limiter.clone(),
+            ports.audit.clone(),
+            ports.clock.clone(),
+            &config.protect.captcha,
+        );
+        let risk_store = authn_protect::risk::RiskStore::new(pool.clone(), protect_hasher.clone());
+        let protection = authn_protect::LoginProtection::new(
+            pool.clone(),
+            ports.clock.clone(),
+            ports.rate_limiter.clone(),
+            ports.audit.clone(),
+            captcha,
+            risk_store,
+            &config.protect,
+        );
+        let evaluator = authn_protect::DefaultRiskEvaluator::new(
+            pool.clone(),
+            protect_hasher,
+            ports.rate_limiter.clone(),
+            &config.protect.risk,
+            None,
+        )
+        .unwrap();
+        let risk_alerts = authn_protect::RiskAlerts::new(
+            evaluator,
+            ports.notifier.clone(),
+            ports.audit.clone(),
+            ports.rate_limiter.clone(),
+            ports.clock.clone(),
+        );
         let service = SessionService::new(
             SessionServiceDeps {
                 pool: pool.clone(),
@@ -195,9 +231,13 @@ impl Harness {
                 notifier: ports.notifier.clone(),
                 passwords,
                 mfa: mfa.clone(),
-                webauthn,
+                webauthn: webauthn.clone(),
                 orgs: orgs.clone(),
                 accounts: accounts.clone(),
+                protection,
+                risk: ports.risk.clone(),
+                risk_alerts,
+                otp: crypto.otp.clone(),
             },
             SessionSettings::from_app_config(&config),
         )
@@ -226,6 +266,7 @@ impl Harness {
             mfa,
             orgs,
             accounts,
+            webauthn,
             revoker,
             app,
         }

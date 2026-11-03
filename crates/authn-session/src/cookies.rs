@@ -73,13 +73,14 @@ pub fn read_cookie(headers: &HeaderMap, name: &str) -> CookieValue {
 }
 
 /// Whether `value` may be written into a cookie unquoted (base64url /
-/// device-id alphabet only).
+/// device-id alphabet plus `.` — the separator of signed tokens such as
+/// the trusted-device token, MFA-09; all are RFC 6265 cookie-octets).
 fn is_cookie_safe(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 512
         && value
             .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.')
 }
 
 fn build(name: &str, value: &str, same_site: &str, max_age: Option<Duration>) -> HeaderValue {
@@ -135,6 +136,35 @@ pub fn passkey_binding_cookie(token: &str, max_age: Duration) -> HeaderValue {
 #[must_use]
 pub fn challenge_cookie(token: &str, max_age: Duration) -> HeaderValue {
     build(CHALLENGE_COOKIE, token, "Strict", Some(max_age))
+}
+
+/// `Set-Cookie` for a trusted-device token (MFA-09, `SameSite=Strict`).
+#[must_use]
+pub fn trusted_device_cookie(token: &str, max_age: Duration) -> HeaderValue {
+    build(
+        authn_mfa::TRUSTED_DEVICE_COOKIE,
+        token,
+        "Strict",
+        Some(max_age),
+    )
+}
+
+/// `Set-Cookie` binding a magic-link request to this browser (SES-18,
+/// `SameSite=Lax`: the link arrives by a top-level navigation).
+#[must_use]
+pub fn magic_link_binding_cookie(token: &str, max_age: Duration) -> HeaderValue {
+    build(
+        crate::login::MAGIC_LINK_BINDING_COOKIE,
+        token,
+        "Lax",
+        Some(max_age),
+    )
+}
+
+/// `Set-Cookie` deleting the magic-link binding cookie.
+#[must_use]
+pub fn clear_magic_link_binding_cookie() -> HeaderValue {
+    build_clear(crate::login::MAGIC_LINK_BINDING_COOKIE, "Lax")
 }
 
 /// `Set-Cookie` deleting the challenge cookie.

@@ -66,6 +66,7 @@ where
         .route("/v1/token/refresh", post(refresh))
         .route("/v1/token/introspect", post(introspect))
         .route("/.well-known/jwks.json", get(jwks))
+        .merge(crate::login::routes::router())
 }
 
 /// OpenAPI document of the session endpoints.

@@ -82,6 +82,26 @@ pub const IMPERSONATION_NOT_ALLOWED: ErrorCode = ErrorCode::new(
     "Bu hesabın yerine geçilemez.",
 );
 
+/// A magic link (SES-18) was opened on another device than the one that
+/// requested it: the user must confirm the sign-in explicitly on this
+/// device (protects against link-preview bots and login CSRF).
+pub const MAGIC_LINK_CONFIRMATION_REQUIRED: ErrorCode = ErrorCode::new(
+    "magic_link_confirmation_required",
+    StatusCode::CONFLICT,
+    "This sign-in link was requested on another device. Confirm to sign in on this device.",
+    "Bu giriş bağlantısı başka bir cihazda istendi. Bu cihazda giriş yapmak için onaylayın.",
+);
+
+/// The challenge step is not possible yet: an earlier required step (the
+/// second factor) is outstanding, or the step is not part of this
+/// challenge (SES-22).
+pub const CHALLENGE_STEP_NOT_ALLOWED: ErrorCode = ErrorCode::new(
+    "challenge_step_not_allowed",
+    StatusCode::FORBIDDEN,
+    "This step is not available for this sign-in.",
+    "Bu adım bu giriş için kullanılamaz.",
+);
+
 /// Every code declared in this file (registry, uniqueness test, catalogue).
 pub const ALL: &[ErrorCode] = &[
     INVALID_CREDENTIALS,
@@ -92,4 +112,6 @@ pub const ALL: &[ErrorCode] = &[
     CHALLENGE_INVALID,
     LOGIN_METHOD_NOT_ALLOWED,
     IMPERSONATION_NOT_ALLOWED,
+    MAGIC_LINK_CONFIRMATION_REQUIRED,
+    CHALLENGE_STEP_NOT_ALLOWED,
 ];

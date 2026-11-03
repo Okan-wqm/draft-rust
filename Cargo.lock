@@ -666,6 +666,7 @@ dependencies = [
  "axum",
  "clap",
  "figment",
+ "futures",
  "http",
  "http-body-util",
  "metrics",
@@ -684,9 +685,12 @@ dependencies = [
  "tower-http 0.7.1",
  "tracing",
  "tracing-subscriber",
+ "url",
  "utoipa",
  "utoipa-axum",
  "uuid",
+ "webauthn-authenticator-rs",
+ "webauthn-rs-proto",
  "wiremock",
 ]
 
@@ -730,6 +734,8 @@ dependencies = [
  "url",
  "utoipa",
  "uuid",
+ "webauthn-authenticator-rs",
+ "webauthn-rs-proto",
  "zeroize",
 ]
 

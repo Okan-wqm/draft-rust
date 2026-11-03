@@ -21,9 +21,8 @@
 //! 4. no outstanding step → session ([`SessionService::establish`]) +
 //!    `login.succeeded`; otherwise a challenge + `login.challenge_issued`.
 //!
-//! The login flows (password, passkey, magic link, e-mail code) extend this
-//! pipeline with risk evaluation (RSK-03) and trusted devices (MFA-09) —
-//! see the crate README.
+//! The pipeline itself lives in [`crate::login::pipeline`]; it adds risk
+//! evaluation (RSK-03, RSK-04) and trusted devices (MFA-09).
 
 use async_trait::async_trait;
 use authn_core::domain::{AccountStatus, EmailAddress};
@@ -33,11 +32,11 @@ use authn_core::http::RequestContext;
 use authn_core::id::SessionId;
 use authn_core::ports::{
     Actor, ImpersonationRequest, IssuedSession, LoginOutcome, Notification, NotificationKind,
-    PendingChallenge, PrimaryAuthentication, Recipient, RequiredAction, SecurityEvent,
-    SecurityEventKind, SessionIssuer,
+    PendingChallenge, PrimaryAuthentication, Recipient, SecurityEvent, SecurityEventKind,
+    SessionIssuer,
 };
 use authn_crypto::token::OpaqueToken;
-use authn_mfa::{MfaRequirement, OrgMfaPolicy};
+use authn_mfa::OrgMfaPolicy;
 use authn_org::OrgPolicy;
 use authn_store::UserRepository;
 use axum::http::StatusCode;
@@ -45,12 +44,12 @@ use axum::http::header::SET_COOKIE;
 use axum::response::{IntoResponse, Response};
 use sqlx::PgConnection;
 
-use super::challenge::{ChallengeKind, NewChallenge};
-use super::establish::{ClientChannel, EstablishSession, normalize_amr};
+use super::establish::ClientChannel;
 use super::org_switch::has_passkey;
 use super::{SessionService, after, remaining};
 use crate::cookies;
 use crate::csrf::LoginCsrfVerified;
+use crate::login::pipeline::{LoginSignals, PipelineOutcome};
 use crate::metrics;
 use crate::model::{DeviceInfo, EstablishedSession, IssuedCredentials, SessionRecord};
 use crate::response::{ChallengeBody, CredentialsBody};
@@ -117,151 +116,33 @@ pub(crate) async fn strictest_membership_policy(
 }
 
 impl SessionService {
-    /// The post-primary login pipeline (see the module docs). `client`
-    /// must carry the login-CSRF proof for web logins.
+    /// The post-primary login pipeline (see the module docs and
+    /// [`crate::login::pipeline`]). `client` must carry the login-CSRF proof
+    /// for web logins. Risk evaluation (RSK-03) and the new-device alert
+    /// (RSK-04) apply to every caller, including federated logins.
     pub async fn complete_login(
         &self,
         ctx: &RequestContext,
         auth: PrimaryAuthentication,
         client: ClientChannel,
     ) -> Result<LoginOutcome, AuthError> {
-        if client.kind() != auth.client {
-            return Err(AuthError::internal(
-                "client channel does not match the login",
-            ));
-        }
-        let now = self.now();
-        let mut tx = self.begin().await?;
-        let user = UserRepository::lock_for_update(&mut tx, auth.user_id)
-            .await?
-            .ok_or_else(|| AuthError::new(codes::session::INVALID_CREDENTIALS))?;
-        let mut required_actions = match self.deps().accounts.assess_login(&user).await? {
-            authn_account::LoginAssessment::Allowed {
-                required_actions, ..
-            } => required_actions,
-            authn_account::LoginAssessment::Denied(reason) => return Err(reason.into_error(now)),
-        };
-        let org = match auth.requested_org {
-            Some(org) => Some(
-                self.verify_login_org(&mut tx, ctx, user.id, org, auth.method)
-                    .await?,
-            ),
-            None => None,
-        };
-        let mfa_policy = match &org {
-            Some(org) => Some(org_mfa_policy(org.policy())),
-            None => strictest_membership_policy(&mut tx, user.id).await?,
-        };
-        let phishing_resistant = user.is_platform_admin
-            || mfa_policy
-                .as_ref()
-                .is_some_and(|p| p.phishing_resistant_required);
-        let mut amr = normalize_amr(&primary_amr(auth.method, &auth.amr))?;
-        let primary_is_mfa =
-            amr.contains(&AuthMethodRef::Mfa) && (!phishing_resistant || has_passkey(&amr));
-        let provider_mfa =
-            auth.provider_asserted_mfa && self.settings().trust_provider_mfa && !phishing_resistant;
-        let requirement = self
-            .deps()
-            .mfa
-            .evaluate_for_user(user.id, mfa_policy, false)
+        let outcome = self
+            .run_login_pipeline(ctx, auth, client, &LoginSignals::default())
             .await?;
-        let mut allowed_factors = Vec::new();
-        match requirement {
-            MfaRequirement::NotRequired => {}
-            _ if primary_is_mfa => {}
-            _ if provider_mfa => {
-                amr.push(AuthMethodRef::Mfa);
+        Ok(match outcome {
+            PipelineOutcome::Established(established) => {
+                LoginOutcome::Authenticated(established.to_issued_session())
             }
-            MfaRequirement::Required { allowed_factors: f } => {
-                allowed_factors = f;
-                required_actions.insert(0, RequiredAction::VerifyMfa);
+            PipelineOutcome::Challenge(issued) => {
+                LoginOutcome::ChallengeRequired(PendingChallenge {
+                    challenge_id: issued.challenge.id,
+                    challenge_token: issued.token,
+                    expires_at: issued.challenge.expires_at,
+                    allowed_factors: issued.challenge.allowed_factors,
+                    required_actions: issued.challenge.required_actions,
+                })
             }
-            MfaRequirement::EnrollmentRequired { allowed_factors: f } => {
-                if f.is_empty() {
-                    return Err(AuthError::new(codes::org::ORG_POLICY_MFA_REQUIRED)
-                        .with_context("no permitted factor can be enrolled"));
-                }
-                allowed_factors = f;
-                required_actions.insert(0, RequiredAction::EnrollMfa);
-            }
-        }
-
-        if required_actions.is_empty() {
-            let established = self
-                .establish(
-                    &mut tx,
-                    ctx,
-                    EstablishSession {
-                        user_id: user.id,
-                        method: auth.method,
-                        amr,
-                        acr: None,
-                        auth_time: now,
-                        client,
-                        remember_me: auth.remember_me,
-                        shared_device: auth.shared_device,
-                        org,
-                        device: DeviceInfo::from_context(ctx),
-                    },
-                )
-                .await?;
-            UserRepository::record_login(&mut tx, user.id, now).await?;
-            let event = self.login_succeeded_event(ctx, &established, auth.method);
-            self.deps().audit.record_in_tx(&mut tx, event).await?;
-            authn_store::commit(tx).await?;
-            if let Err(err) = self.deps().orgs.auto_join_verified_domains(user.id).await {
-                tracing::warn!(error = %err, "domain auto-join after login failed");
-            }
-            return Ok(LoginOutcome::Authenticated(established.to_issued_session()));
-        }
-
-        let issued = self
-            .create_challenge(
-                &mut tx,
-                ctx,
-                NewChallenge {
-                    kind: ChallengeKind::Login,
-                    user_id: user.id,
-                    client_kind: auth.client,
-                    primary_method: Some(auth.method),
-                    amr,
-                    first_factor_at: Some(now),
-                    allowed_factors,
-                    required_actions,
-                    remember_me: auth.remember_me,
-                    shared_device: auth.shared_device,
-                    requested_org: auth.requested_org,
-                    risk_level: None,
-                    session_id: None,
-                    metadata: serde_json::Map::new(),
-                },
-            )
-            .await?;
-        let event = SecurityEvent::new(SecurityEventKind::LoginChallengeIssued, now)
-            .with_context(ctx)
-            .with_actor(Actor::User(user.id))
-            .with_subject(user.id)
-            .with_resource("auth_challenge", issued.challenge.id)
-            .with_meta("method", auth.method.as_str())
-            .with_meta(
-                "required_actions",
-                issued
-                    .challenge
-                    .required_actions
-                    .iter()
-                    .map(|a| a.as_str())
-                    .collect::<Vec<_>>(),
-            );
-        self.deps().audit.record_in_tx(&mut tx, event).await?;
-        authn_store::commit(tx).await?;
-        Ok(LoginOutcome::ChallengeRequired(PendingChallenge {
-            challenge_id: issued.challenge.id,
-            challenge_token: issued.token,
-            expires_at: issued.challenge.expires_at,
-            allowed_factors: issued.challenge.allowed_factors,
-            required_actions: issued.challenge.required_actions,
-        }))
+        })
     }
 
     /// The `login.succeeded` event of an established session (record it in

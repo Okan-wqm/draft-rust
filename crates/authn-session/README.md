@@ -1,6 +1,6 @@
 # authn-session
 
-Oturum çekirdeği: CSRF korumalı web oturumları, rotasyonlu ve yeniden kullanım tespitli native access/refresh token'lar, JWKS, introspection, step-up, aktif organizasyon değiştirme, impersonation oturumları ve kimlik doğrulama ara katmanı. Giriş akışları (`src/login/**`: şifre, MFA challenge'ı, magic link, e-posta kodu, passkey girişi, zorunlu adımlar) **bir sonraki aşamada** bu belgede tanımlanan API'nin üzerine yazılır.
+Oturum çekirdeği (CSRF korumalı web oturumları, rotasyonlu ve yeniden kullanım tespitli native access/refresh token'lar, JWKS, introspection, step-up, aktif organizasyon değiştirme, impersonation oturumları, kimlik doğrulama ara katmanı) ve giriş akışları (`src/login/**`: şifre, MFA challenge'ı, zorunlu adımlar, magic link, e-posta kodu, passkey girişi, risk değerlendirmesi, güvenilir cihaz, "bu ben değilim").
 
 ## Sahip olunan gereksinimler ve durum
 
@@ -21,7 +21,14 @@ Oturum çekirdeği: CSRF korumalı web oturumları, rotasyonlu ve yeniden kullan
 | SES-15 | Uygulandı (`SessionRevoker` + `SessionIssuer` portları) | `service/revoke.rs`, `service/issuer.rs` |
 | SES-16 | Uygulandı | `GET /v1/me` |
 | SES-17 | Uygulandı | `service/org_switch.rs`, `POST /v1/session/org` |
-| SES-01, SES-02, SES-18 … SES-22 | **Sonraki aşama** (giriş akışları ajanı) | `src/login/**` — aşağıdaki API ile |
+| SES-01 | Uygulandı | `login/password.rs`, `POST /v1/login/password` |
+| SES-02 | Uygulandı | `login/challenge.rs`, `POST /v1/login/challenge/{verify,send-code,passkey/options}` |
+| SES-18 | Uygulandı | `login/passwordless.rs`, `POST /v1/login/magic-link[/verify]` |
+| SES-19 | Uygulandı | `login/passwordless.rs`, `POST /v1/login/email-code[/verify]` |
+| SES-20, SES-21 | Uygulandı | `login/passkey.rs`, `POST /v1/login/passkey[/options]`; tüm yöntemlerde `login/pipeline.rs` |
+| SES-22 | Uygulandı | `login/challenge.rs`, `POST /v1/login/challenge/step` |
+| RSK-03, RSK-04 | Uygulandı (session tarafı) | `login/pipeline.rs` (risk tepkisi, yeni cihaz bildirimi), `login/not_me.rs` (`NotMeTokenIssuer`, `POST /v1/login/not-me`) |
+| MFA-09 | Uygulandı (session tarafı) | `login/pipeline.rs` (token kontrolü), `login/challenge.rs` (`trust_device`) |
 | DOC-05 | Sonraki aşama | `docs/integration/` |
 
 ## Bağımlılık kuralı
@@ -54,6 +61,51 @@ Giriş uç noktaları (SES-01/02/18–22) yalnızca şu yapı taşlarını kulla
 5. **Boru hattı:** `complete_login(&ctx, PrimaryAuthentication, ClientChannel)` birincil doğrulamadan sonraki ortak karar noktasıdır (hesap durumu → organizasyon → MFA → zorunlu adımlar → oturum veya challenge). `PrimaryAuthentication.amr` içindeki `mfa` / `hwk` / `swk` yalnızca `LoginMethod::Passkey` için dikkate alınır; diğer yöntemlerde atılır (sağlayıcı MFA'sı yalnızca `provider_asserted_mfa` + `oidc_client.trust_provider_mfa` ile, SOC-09). Giriş ajanı bunu **risk değerlendirmesi (RSK-03, `RiskEvaluator` + `authn_protect::risk::decide` + `RiskAlerts`) ve güvenilir cihaz (MFA-09, `MfaService::is_trusted_device`)** ile genişletir; şifre girişinde `LoginProtection::check_attempt` / `record_success` / `record_failure` ve `verify_login_password` sonucunun enum ile eşlenmesi (`MustChangePassword` ⇒ `RequiredAction::ChangePassword`) contracts §15.7'dedir.
 6. **Toplu iptal ve bekleyen girişler:** kullanıcı genelindeki her iptal (`revoke_all_for_user` / `revoke_all_except` / `revoke_everything`) kullanıcının açık challenge'larını da kapatır — **`password_changed` hariç**: SES-22 zorunlu adımları (şifre değiştirme, e-posta doğrulama) iptali tamamladıkları girişin *içinden* bu nedenle yapar. Giriş ajanı başka bir nedenle iptal tetikleyen bir adımı challenge'ın ortasında çalıştırmamalıdır.
 7. **NotMeTokenIssuer (RSK-04):** `authn_protect::risk::NotMeTokenIssuer` uygulaması ve `not_me` linkinin tüketimi giriş ajanına kalır (`one_time_tokens` amaçları `magic_link`, `login_code`, `not_me`).
+
+## Giriş akışları (`src/login/`)
+
+**Ortak boru hattı** (`login/pipeline.rs`, `complete_login` ve `SessionIssuer` de bunu kullanır): hesap durumu (yalnızca doğru birincil kimlik bilgisinden sonra açıklanır) → istenen organizasyon (üyelik, IP, izinli yöntem) → MFA gereksinimi (MFA-08) → **risk** (RSK-03: `high` ⇒ engel + kullanıcıya bildirim, `medium` ⇒ kayıtlı faktör ya da e-postayla gönderilen onay kodu) → **güvenilir cihaz** (MFA-09; yalnızca politika kaynaklı MFA'yı karşılar, riskin istediğini asla) → oturum ya da challenge. Oturumdan sonra: cihaz/ağ kaydı, yeni cihazda bildirim + "bu ben değilim" linki (RSK-04, cihaz kimliği oturuma yeni atansa bile), doğrulanmış domain'lere otomatik katılım.
+
+**Challenge adım sırası** (`login/challenge.rs`): `verify_mfa` (kanıt türü `allowed_factors`'ta değilse doğrulamadan **önce** reddedilir) → `enroll_mfa` → `change_password` / `accept_terms` / `verify_email`. Kayıtlı bir faktörü olan kullanıcı yeni faktör kaydetmeden önce mevcut faktörünü doğrular; riskli girişte ve "şifre değiştirmeye zorlanmış" hesapta (PWD-12, RSK-04) e-posta onayı şifre değişikliğinden önce gelir — şifre tek başına ne faktör kaydettirir ne de şifreyi değiştirir.
+
+**İstemci türü:** tarayıcı varsayılan (login CSRF zorunlu, challenge token'ı `__Host-authn_challenge` çerezinde); native `X-Authn-Client: native` gönderir, token'lar gövdede, challenge token'ı `X-Authn-Challenge` başlığında.
+
+| Metot ve yol | Gereksinim |
+|--------------|-----------|
+| `POST /v1/login/password` | SES-01 |
+| `POST /v1/login/passkey/options`, `POST /v1/login/passkey` | SES-20, SES-21 |
+| `POST /v1/login/magic-link`, `POST /v1/login/magic-link/verify` | SES-18 (GET ile tüketilmez; başka cihazda `confirm_other_device` gerekir → `409 magic_link_confirmation_required`) |
+| `POST /v1/login/email-code`, `POST /v1/login/email-code/verify` | SES-19 (her hata tek tip `invalid_code`, en az 50 ms) |
+| `POST /v1/login/challenge/verify` | SES-02 (`totp`, `recovery_code`, `email`, `sms`, `passkey`, `email_confirmation`; `trust_device`) |
+| `POST /v1/login/challenge/send-code` | SES-02, RSK-03 |
+| `POST /v1/login/challenge/passkey/options` | SES-02 |
+| `POST /v1/login/challenge/step` | SES-22 (`change_password`, `accept_terms`, `enroll_totp`/`enroll_email`/`enroll_sms`, `confirm_enrollment`) |
+| `POST /v1/login/not-me` | RSK-04 (token gövdede; tüm oturumlar + güvenilir cihazlar + bekleyen girişler kapanır, şifre değişikliği zorunlu, sıfırlama e-postası) |
+
+Yeni bağımlılıklar (`SessionServiceDeps`): `protection: LoginProtection`, `risk: Arc<dyn RiskEvaluator>`, `risk_alerts: RiskAlerts`, `otp: OtpHasher`. Kapanışta `drain_background_jobs()` (şifresiz isteklerin arka plan işi). Yeni hata kodları: `magic_link_confirmation_required` (409), `challenge_step_not_allowed` (403).
+
+### Giriş akışları — bağımsız güvenlik incelemesi
+
+| Önem | Bulgu | Düzeltme | Test |
+|------|-------|----------|------|
+| yüksek | "Bu ben değilim" yalnızca `must_change_password` koyuyordu; eski şifreyi bilen saldırgan yeniden girip `change_password` adımını eski şifreyle tamamlayarak tam oturum alabiliyordu | Şifre değişikliğine zorlanmış girişte (bekleyen ikinci faktör yoksa) önce e-postayla onay | `login::rsk_04_not_me_locks_out_whoever_knows_the_old_password` |
+| yüksek | Kayıtlı faktörü organizasyonca izinli olmayan kullanıcıda (`EnrollmentRequired`) yalnızca şifreyle saldırganın kendi faktörü kaydedilebiliyordu | Önce mevcut faktör doğrulanır, sonra kayıt (`enroll_factors` metadata) | `login::ses_22_policy_enrollment_needs_an_existing_factor_first` |
+| orta | Orta riskte MFA kaydı beklerken e-posta onayı atlanıyordu | Önce e-posta onayı, sonra kayıt | `login::rsk_03_medium_risk_enrollment_needs_the_email_confirmation_first` |
+| orta | SES-19: yanlış kodun yanıt süresi hesabın varlığını sızdırıyordu (~%80 fark) | Bilinmeyen challenge'da aynı iş + 50 ms alt sınır | `login::ses_19_wrong_code_takes_as_long_for_unknown_addresses` |
+| orta | Girişten sonra doğrulanmış domain'e otomatik katılım düşmüştü | `after_login` | `login::org_06_login_auto_joins_verified_domain_organizations` |
+| orta | Cihaz çerezi olmayan (yeni) tarayıcıdan girişte yeni cihaz bildirimi gitmiyordu | Oturuma atanan cihaz kimliği risk kaydına verilir | `login::rsk_04_browser_without_device_cookie_is_a_new_device` |
+| orta | Güvenilir cihaz çerezi hiç yazılmıyordu (imzalı token'daki `.` çerez alfabesinde yoktu) — MFA-09 çalışmıyordu | Çerez alfabesine `.` (RFC 6265) | `login::mfa_09_trusted_device_skips_the_second_factor` |
+
+### Giriş akışları — kabul edilen riskler / bilinen sınırlamalar
+
+- [orta, açık] **Bağlantı havuzu:** boru hattı kullanıcı satırını kilitleyen transaction'ı tutarken diğer servisler (hesap değerlendirmesi, MFA politikası, risk) havuzdan ikinci bir bağlantı alır (çekirdeğin önceki `complete_login`'i ve step-up'ta da aynı kalıp). Havuz tükenirse eşzamanlı girişler birbirini `acquire_timeout` (30 sn) dolana kadar bekletebilir (500). Testlerde paralel yük altında gözlendi. Okumaların transaction dışına taşınması genel güvenlik denetimi (DoS) aşamasına bırakıldı; o zamana dek `database.max_connections` beklenen eşzamanlı giriş sayısının en az iki katı olmalı.
+- [düşük] Passkey girişi organizasyonun `allowed_mfa_factors` listesini ve kayıt adımını atlar (passkey tek başına MFA sayılır, SES-21; giriş yöntemleri ayrıca kısıtlanabilir).
+- [düşük] Phishing'e dayanıklı MFA isteyen organizasyonda yalnızca TOTP'si olan kullanıcı girişte webauthn kaydı adımında takılır (challenge passkey kaydı sunmaz; atlatma yok, kullanıcı passkey'ini oturum açıkken başka bir yoldan kaydetmelidir).
+- [düşük] `verify_email` adımı (doğrulanmamış hesap) ADR 0002 gereği doğrulanmamış şifreyi siler; aynı challenge'da bekleyen `change_password` sonra `password_not_set` ile başarısız olur (kullanılabilirlik).
+- [düşük] Federe girişte (`SessionIssuer`) güvenilir cihaz token'ı taşınmaz: sosyal girişte MFA-09 atlaması yoktur (güvenli taraf).
+- [düşük] Şifresiz arka plan iş kuyruğu 1024 ile sınırlı; dağıtık selde fazlası sessizce düşer (hesap varlığı sızmaz, e-postalar gecikebilir).
+- [info] `magic_link_confirmation_required`, 256 bit bir token'ın geçerli olduğunu gösterir (tahmin edilemez).
+- [info] `POST /v1/login/not-me` CSRF/oran sınırı olmadan yalnızca 256 bit tek kullanımlık token'la yetkilendirilir.
 
 ## Uç noktalar
 
@@ -194,6 +246,8 @@ let sessions = SessionService::new(SessionServiceDeps { pool, clock, keys: crypt
 | `tests/org_switch.rs` | SES-17 rotasyon, yabancı/askıdaki üyelik `404`, MFA politikası → TOTP step-up, IP izin listesi, izinli giriş yöntemi, ömür üst sınırı, native token rotasyonu ve eski token'ın reddi, `VerifiedOrg`'un kullanıcıya bağlılığı, oturum kontrolü kapalıyken giriş yöntemi kontrolü |
 | `tests/step_up.rs` | SES-13 şifre, yanlış şifre (tek tip + audit), TOTP (+ tekrar oynatma), oran sınırı, admin/katı organizasyon için passkey zorunluluğu (kişisel bağlamda ve gevşek organizasyonda da: tüm üyeliklerin en katı politikası), native, passkey seremonisi |
 | `tests/introspection.rs` | SES-10 istemci doğrulaması, aktif token, iptal/süresi dolmuş/yabancı/kişisel/refresh → `active:false`, oran sınırı, API anahtarlarının yalnızca organizasyon yollarında principal olması |
+| `tests/login.rs` | Giriş akışları HTTP üzerinden: SES-01 (tek tip hata, zamanlama — CAPTCHA öncesi ve sonrası, durum yalnızca doğru şifreden sonra, login CSRF, CAPTCHA tırmanması, eşzamanlı denemeler, bütçe iadesi), SES-02 (TOTP, kurtarma kodu, izinsiz faktör doğrulanmadan reddi, tek kullanım, deneme sınırı, istemci/cihaz bağlama, askıya alma), MFA-09, SES-22, RSK-03/04 (yüksek risk engeli, e-posta onayı, federe girişte risk, yeni cihaz + "bu ben değilim"), SES-18 (aynı/başka cihaz, GET ile tüketilmeme, tek kullanım, süre, pre-hijacking, oran sınırı), SES-19, SES-21, denetim regresyonları |
+| `tests/passkey_login.rs` | Yazılımsal authenticator ile passkey girişi (web/native), passkey = MFA ve phishing'e dayanıklı politika, binding token, ikinci faktör olarak passkey |
 | `tests/issuer.rs` | SES-16 `/v1/me`; SES-15 `SessionIssuer` (federe giriş: oturum/challenge, passkey UV = MFA, sahte `mfa`/`hwk` iddiası, askıya alınmış hesap, organizasyon yöntem politikası), impersonation (salt-okunur zorlama, audit, bildirim, süre sınırı, uygunsuz hedefler, `act` claim'i, step-up yasağı, admin iptal/yetki kaybı/askıya alma ile bitiş, kullanıcının diğer oturumlarını kapatamama) |
 
 ## Komutlar
