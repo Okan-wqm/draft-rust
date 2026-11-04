@@ -5,7 +5,52 @@
 //! and append every new constant to [`ALL`]. Never rename or repurpose a
 //! released code. Conventions: `docs/architecture/contracts.md`.
 
+use http::StatusCode;
+
 use crate::error::ErrorCode;
 
+/// A platform admin's session was not established with phishing-resistant
+/// MFA (a passkey with user verification, `amr` `hwk`/`swk` + `mfa`;
+/// ADM-01). The admin must sign in again with a passkey.
+pub const PHISHING_RESISTANT_MFA_REQUIRED: ErrorCode = ErrorCode::new(
+    "admin_phishing_resistant_mfa_required",
+    StatusCode::FORBIDDEN,
+    "Sign in with a passkey to use the admin console.",
+    "Yönetim konsolunu kullanmak için passkey ile giriş yapın.",
+);
+
+/// The mandatory justification of an admin action is missing, too long or
+/// contains control / invisible formatting characters (ADM-03, ADM-08).
+pub const REASON_REQUIRED: ErrorCode = ErrorCode::new(
+    "admin_reason_required",
+    StatusCode::UNPROCESSABLE_ENTITY,
+    "A justification of 1 to 1000 printable characters is required for this action.",
+    "Bu işlem için 1 ile 1000 arasında yazdırılabilir karakterden oluşan bir gerekçe gereklidir.",
+);
+
+/// The action may not be applied to this account through the admin API:
+/// the caller's own account, or a takeover-enabling action on another
+/// platform admin or a break-glass account (ADM-03, ADM-04, ADM-05).
+pub const TARGET_NOT_ALLOWED: ErrorCode = ErrorCode::new(
+    "admin_target_not_allowed",
+    StatusCode::FORBIDDEN,
+    "This action is not allowed on this account.",
+    "Bu işlem bu hesap üzerinde yapılamaz.",
+);
+
+/// An emergency operation (ADM-06) was not confirmed by repeating its name
+/// in the `confirm` field.
+pub const CONFIRMATION_REQUIRED: ErrorCode = ErrorCode::new(
+    "admin_confirmation_required",
+    StatusCode::UNPROCESSABLE_ENTITY,
+    "Confirm the emergency operation by repeating its name in the confirm field.",
+    "Acil durum işlemini, adını onay alanına yazarak onaylayın.",
+);
+
 /// Every code declared in this file (registry, uniqueness test, catalogue).
-pub const ALL: &[ErrorCode] = &[];
+pub const ALL: &[ErrorCode] = &[
+    PHISHING_RESISTANT_MFA_REQUIRED,
+    REASON_REQUIRED,
+    TARGET_NOT_ALLOWED,
+    CONFIRMATION_REQUIRED,
+];

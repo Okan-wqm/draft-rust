@@ -89,6 +89,7 @@ Kaynak: `migrations/`. "Kişisel veri" sütunu doğrudan veya dolaylı (kullanı
 |-------|--------------|------|-------|
 | `audit_subjects` | kullanıcı kimliği ↔ **takma ad** eşlemesi | AUD-05: zinciri bozmadan takma adlaştırma | kaskad + `AuditSink::pseudonymize_subject` (ACC-09) |
 | `audit_events` | yalnızca takma adlar, olay türü, sonuç, istek kimliği, organizasyon; **e-posta / IP / ad içermez** | Güvenlik olayları (AUD-01), hash zinciri (AUD-02) | Ekleme-yalnızca; saklama süresi sonunda silinir. Hesap silindikten sonra takma ad hiçbir kişiye bağlanamaz (anonim hale gelir) |
+| `admin_action_reasons` | admin işleminin serbest metin gerekçesi (kişisel veri içerebilir), işlemi yapan admin ve hedef kullanıcı kimlikleri, işlem kodu, zaman | Platform personeli işlemlerinin hesap verebilirliği (ADM-08) | hedef kullanıcı silinince kaskad; admin silinince NULL; ilgili `audit_events` satırı saklama süresiyle silinince kaskad |
 | `audit_event_pii` | **IP**, **user-agent** (olaya ve takma ada bağlı) | Güvenlik incelemesi | Takma ad eşlemesi silinince kaskad |
 | `audit_chain_head`, `audit_chain_checkpoints` | — | Zincir yönetimi | — |
 | `outbox` | bildirim alıcısı (e-posta, telefon), şablon parametreleri; token/kodlar **zarf şifreli** `sealed_payload`'da ve teslimden sonra silinir | Asenkron e-posta/SMS/webhook (AUD-06, NTF-03) | Teslim edilenler varsayılan 7 gün, ölü mektuplar 30 gün sonra silinir (`[audit.outbox]`). Kullanıcıya FK yoktur: silme anında kuyrukta bekleyen bildirim teslim edilir ve süre sonunda silinir |
