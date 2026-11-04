@@ -2052,3 +2052,45 @@ async fn rsk_04_browser_without_device_cookie_is_a_new_device(pool: PgPool) {
     assert_eq!(status_of(&r), "authenticated", "{}", r.text());
     assert_eq!(count_kind(&h, "new_device_login"), 1);
 }
+
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn ses_01_concurrent_logins_never_starve_the_connection_pool(pool: PgPool) {
+    // The test pool has 5 connections. A login that held its transaction
+    // while waiting for a second connection (account, MFA, risk, signing
+    // key) deadlocked here until the 30 s acquire timeout (500).
+    let h = Harness::new(pool).await;
+    let alice = h.user("alice@example.com").await;
+    let secret = h.enroll_totp(alice).await;
+    let started = std::time::Instant::now();
+    let logins = (0..12).map(|i| {
+        let body = password_body("alice@example.com", PASSWORD);
+        let request = if i % 2 == 0 {
+            native("/v1/login/password", &body)
+        } else {
+            Browser::new(&h).post("/v1/login/password", &body)
+        };
+        h.send(request)
+    });
+    let responses = futures::future::join_all(logins).await;
+    for r in &responses {
+        assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+    }
+    // Every challenge completes concurrently as well.
+    let completions = responses.iter().filter_map(|r| {
+        let token = r.json::<Value>()["challenge_token"].as_str()?.to_owned();
+        Some(h.send(native_challenge(
+            "/v1/login/challenge/verify",
+            &json!({"method": "recovery_code", "code": "unused-code"}),
+            &token,
+        )))
+    });
+    for r in futures::future::join_all(completions).await {
+        assert!(!r.status.is_server_error(), "{}", r.text());
+    }
+    let _ = secret;
+    assert!(
+        started.elapsed() < Duration::from_secs(20),
+        "logins stalled for {:?}",
+        started.elapsed()
+    );
+}

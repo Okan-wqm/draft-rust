@@ -21,12 +21,14 @@
 //! and a new-device notification with a "this wasn't me" link is queued
 //! (RSK-04, [`SessionService::after_login`]).
 
-use authn_core::domain::{AuthMethodRef, EmailAddress, FactorKind, LoginMethod};
+use authn_core::domain::{
+    AccountStatus, AuthMethodRef, ClientKind, EmailAddress, FactorKind, LoginMethod,
+};
 use authn_core::error::{AuthError, codes};
 use authn_core::http::RequestContext;
 use authn_core::id::UserId;
 use authn_core::ports::{
-    Actor, PrimaryAuthentication, Recipient, RequiredAction, RiskAssessment, RiskInput,
+    Actor, PrimaryAuthentication, Recipient, RequiredAction, RiskAssessment, RiskInput, RiskLevel,
     SecurityEvent, SecurityEventKind,
 };
 use authn_core::secret::SensitiveString;
@@ -71,6 +73,32 @@ impl std::fmt::Debug for LoginSignals {
             .field("extra_required_actions", &self.extra_required_actions)
             .field("require_mailbox_proof", &self.require_mailbox_proof)
             .finish()
+    }
+}
+
+/// The decision of [`SessionService::plan_login`], applied by
+/// [`SessionService::finish_login_in`].
+#[derive(Debug)]
+pub(crate) struct LoginPlan {
+    /// The account as the decision saw it.
+    user: UserRecord,
+    org: Option<crate::service::VerifiedOrg>,
+    amr: Vec<AuthMethodRef>,
+    required_actions: Vec<RequiredAction>,
+    allowed_factors: Vec<FactorKind>,
+    metadata: serde_json::Map<String, serde_json::Value>,
+    risk_level: RiskLevel,
+}
+
+impl LoginPlan {
+    /// Whether the locked account is still what the decision was based on
+    /// (a suspension, lock, verification or admin change in between
+    /// invalidates it).
+    fn still_matches(&self, locked: &UserRecord) -> bool {
+        locked.status == self.user.status
+            && locked.is_platform_admin == self.user.is_platform_admin
+            && locked.locked_until == self.user.locked_until
+            && locked.email_verified_at.is_some() == self.user.email_verified_at.is_some()
     }
 }
 
@@ -131,48 +159,72 @@ impl SessionService {
         client: ClientChannel,
         signals: &LoginSignals,
     ) -> Result<PipelineOutcome, AuthError> {
+        let plan = self.plan_login(ctx, &auth, client, signals, false).await?;
+        self.warm_credentials(client.kind()).await?;
         let tx = self.begin().await?;
-        self.run_login_pipeline_in(tx, ctx, auth, client, signals)
-            .await
+        self.finish_login_in(tx, ctx, auth, client, plan).await
     }
 
-    /// [`Self::run_login_pipeline`] in a transaction that already holds the
-    /// proof of the primary authentication (a consumed magic link or login
-    /// challenge, a mailbox confirmation): the proof commits only together
-    /// with the session or challenge it produced.
-    pub(crate) async fn run_login_pipeline_in(
+    /// Loads the signing key before a transaction issues native tokens, so
+    /// the transaction never waits for a second pool connection.
+    pub(crate) async fn warm_credentials(&self, client: ClientKind) -> Result<(), AuthError> {
+        if client == ClientKind::Native {
+            self.key_cache().signer().await?;
+        }
+        Ok(())
+    }
+
+    /// The decision part of the pipeline. Runs **without** holding a
+    /// connection across the calls into other services (account, MFA,
+    /// risk): a login never holds one pooled connection while waiting for
+    /// another, so concurrent logins cannot exhaust the pool and stall each
+    /// other (OPS, DoS). `mailbox_proven`: the primary authentication is a
+    /// mailbox proof that verifies an unverified address in the finishing
+    /// transaction (magic link, e-mail code).
+    pub(crate) async fn plan_login(
         &self,
-        mut tx: authn_store::PgTx,
         ctx: &RequestContext,
-        auth: PrimaryAuthentication,
+        auth: &PrimaryAuthentication,
         client: ClientChannel,
         signals: &LoginSignals,
-    ) -> Result<PipelineOutcome, AuthError> {
+        mailbox_proven: bool,
+    ) -> Result<LoginPlan, AuthError> {
         if client.kind() != auth.client {
             return Err(AuthError::internal(
                 "client channel does not match the login",
             ));
         }
         let now = self.now();
-        let user = UserRepository::lock_for_update(&mut tx, auth.user_id)
+        let mut user = UserRepository::find_by_id(self.pool(), auth.user_id)
             .await?
             .ok_or_else(|| AuthError::new(codes::session::INVALID_CREDENTIALS))?;
+        if mailbox_proven && user.email_verified_at.is_none() {
+            // As the account will be once the proof commits (ADR 0002).
+            user.email_verified_at = Some(now);
+            if user.status == AccountStatus::PendingVerification {
+                user.status = AccountStatus::Active;
+            }
+        }
         let mut required_actions = match self.deps().accounts.assess_login(&user).await? {
             authn_account::LoginAssessment::Allowed {
                 required_actions, ..
             } => required_actions,
             authn_account::LoginAssessment::Denied(reason) => return Err(reason.into_error(now)),
         };
-        let org = match auth.requested_org {
-            Some(org) => Some(
-                self.verify_login_org(&mut tx, ctx, user.id, org, auth.method)
-                    .await?,
-            ),
-            None => None,
-        };
-        let mfa_policy = match &org {
-            Some(org) => Some(org_mfa_policy(org.policy())),
-            None => strictest_membership_policy(&mut tx, user.id).await?,
+        let (org, mfa_policy) = {
+            let mut conn = self.pool().acquire().await?;
+            let org = match auth.requested_org {
+                Some(org) => Some(
+                    self.verify_login_org(&mut conn, ctx, user.id, org, auth.method)
+                        .await?,
+                ),
+                None => None,
+            };
+            let mfa_policy = match &org {
+                Some(org) => Some(org_mfa_policy(org.policy())),
+                None => strictest_membership_policy(&mut conn, user.id).await?,
+            };
+            (org, mfa_policy)
         };
         let trusted_devices_allowed = mfa_policy
             .as_ref()
@@ -236,7 +288,6 @@ impl SessionService {
             reaction = RiskResponse::Allow;
         }
         if reaction == RiskResponse::Block {
-            drop(tx);
             crate::metrics::login("blocked");
             return Err(self
                 .block_risky_login(ctx, &user, &risk_input, &assessment)
@@ -318,6 +369,47 @@ impl SessionService {
                 required_actions.push(*action);
             }
         }
+        Ok(LoginPlan {
+            user,
+            org,
+            amr,
+            required_actions,
+            allowed_factors,
+            metadata,
+            risk_level: assessment.level,
+        })
+    }
+
+    /// The writing part of the pipeline, in `tx` only (which may already
+    /// hold the proof of the primary authentication: a consumed magic link
+    /// or login challenge, a mailbox confirmation — they commit together
+    /// with the session or challenge). The user row is locked and must
+    /// still be in the state the plan was made for.
+    pub(crate) async fn finish_login_in(
+        &self,
+        mut tx: authn_store::PgTx,
+        ctx: &RequestContext,
+        auth: PrimaryAuthentication,
+        client: ClientChannel,
+        plan: LoginPlan,
+    ) -> Result<PipelineOutcome, AuthError> {
+        let now = self.now();
+        let user = UserRepository::lock_for_update(&mut tx, auth.user_id)
+            .await?
+            .ok_or_else(|| AuthError::new(codes::session::INVALID_CREDENTIALS))?;
+        if !plan.still_matches(&user) {
+            return Err(AuthError::new(codes::common::CONFLICT)
+                .with_context("the account changed during the sign-in"));
+        }
+        let LoginPlan {
+            org,
+            amr,
+            required_actions,
+            allowed_factors,
+            metadata,
+            risk_level,
+            ..
+        } = plan;
 
         if required_actions.is_empty() {
             let established = self
@@ -368,7 +460,7 @@ impl SessionService {
                     remember_me: auth.remember_me,
                     shared_device: auth.shared_device,
                     requested_org: auth.requested_org,
-                    risk_level: Some(assessment.level),
+                    risk_level: Some(risk_level),
                     session_id: None,
                     metadata,
                 },
@@ -380,7 +472,7 @@ impl SessionService {
             .with_subject(user.id)
             .with_resource("auth_challenge", issued.challenge.id)
             .with_meta("method", auth.method.as_str())
-            .with_meta("risk", assessment.level.as_str())
+            .with_meta("risk", risk_level.as_str())
             .with_meta(
                 "required_actions",
                 issued

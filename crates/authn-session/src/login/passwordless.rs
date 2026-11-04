@@ -251,6 +251,11 @@ impl SessionService {
         else {
             return Ok(());
         };
+        // Read before the transaction: never wait for a second connection
+        // while holding one.
+        let Some((recipient, locale)) = recipient_of(self, &user).await? else {
+            return Ok(());
+        };
         let now = self.now();
         let expires_at = after(now, self.settings().session.magic_link_ttl);
         let mut tx = self.begin().await?;
@@ -278,9 +283,6 @@ impl SessionService {
             true,
         )
         .await?;
-        let Some((recipient, locale)) = recipient_of(self, &user).await? else {
-            return Ok(());
-        };
         self.deps()
             .notifier
             .notify_in_tx(
@@ -311,9 +313,10 @@ impl SessionService {
         let token = OpaqueToken::parse(verify.token.expose_secret())
             .map_err(|_| AuthError::new(codes::common::INVALID_OR_EXPIRED_TOKEN))?;
         let now = self.now();
-        let mut tx = self.begin().await?;
+        // Read the link without a transaction; it is consumed below, in
+        // the transaction that creates the session.
         let record = OneTimeTokenRepository::find_active_link(
-            &mut *tx,
+            self.pool(),
             TokenPurpose::MagicLink,
             &token.hash(),
             now,
@@ -336,28 +339,9 @@ impl SessionService {
                 codes::session::MAGIC_LINK_CONFIRMATION_REQUIRED,
             ));
         }
-        let record = OneTimeTokenRepository::consume_link(
-            &mut tx,
-            TokenPurpose::MagicLink,
-            &token.hash(),
-            now,
-        )
-        .await?
-        .ok_or_else(|| AuthError::new(codes::common::INVALID_OR_EXPIRED_TOKEN))?;
         let user = record
             .user_id
             .ok_or_else(|| AuthError::new(codes::common::INVALID_OR_EXPIRED_TOKEN))?;
-        // ADR 0002: the mailbox owner proved control; an unverified
-        // account is verified and its unproven credentials dropped.
-        self.deps()
-            .accounts
-            .confirm_mailbox_control_in_tx(
-                &mut tx,
-                Some(ctx),
-                user,
-                authn_account::MailboxProof::Passwordless,
-            )
-            .await?;
         let flag = |name: &str| {
             same_device
                 && record
@@ -371,24 +355,45 @@ impl SessionService {
             .get("org_id")
             .and_then(|v| serde_json::from_value::<OrgId>(v.clone()).ok());
         let kind = client.kind();
-        self.run_login_pipeline_in(
-            tx,
-            ctx,
-            PrimaryAuthentication {
-                user_id: user,
-                method: LoginMethod::MagicLink,
-                amr: vec![AuthMethodRef::Email],
-                client: kind,
-                remember_me: flag("remember_me") && kind == ClientKind::Web,
-                // On a confirmed other device the session is short-lived.
-                shared_device: flag("shared_device") || !same_device,
-                requested_org,
-                provider_asserted_mfa: false,
-            },
-            client,
-            &LoginSignals::default(),
+        let auth = PrimaryAuthentication {
+            user_id: user,
+            method: LoginMethod::MagicLink,
+            amr: vec![AuthMethodRef::Email],
+            client: kind,
+            remember_me: flag("remember_me") && kind == ClientKind::Web,
+            // On a confirmed other device the session is short-lived.
+            shared_device: flag("shared_device") || !same_device,
+            requested_org,
+            provider_asserted_mfa: false,
+        };
+        let plan = self
+            .plan_login(ctx, &auth, client, &LoginSignals::default(), true)
+            .await?;
+        self.warm_credentials(kind).await?;
+        let mut tx = self.begin().await?;
+        let consumed = OneTimeTokenRepository::consume_link(
+            &mut tx,
+            TokenPurpose::MagicLink,
+            &token.hash(),
+            self.now(),
         )
-        .await
+        .await?
+        .ok_or_else(|| AuthError::new(codes::common::INVALID_OR_EXPIRED_TOKEN))?;
+        if consumed.user_id != Some(user) {
+            return Err(AuthError::new(codes::common::INVALID_OR_EXPIRED_TOKEN));
+        }
+        // ADR 0002: the mailbox owner proved control; an unverified
+        // account is verified and its unproven credentials dropped.
+        self.deps()
+            .accounts
+            .confirm_mailbox_control_in_tx(
+                &mut tx,
+                Some(ctx),
+                user,
+                authn_account::MailboxProof::Passwordless,
+            )
+            .await?;
+        self.finish_login_in(tx, ctx, auth, client, plan).await
     }
 
     /// SES-19: requests an e-mail login code. Answers the same for every
@@ -441,6 +446,9 @@ impl SessionService {
         else {
             return Ok(());
         };
+        let Some((recipient, locale)) = recipient_of(self, &user).await? else {
+            return Ok(());
+        };
         let mut tx = self.begin().await?;
         let IssuedChallenge { challenge, .. } = self
             .create_challenge_with(
@@ -468,7 +476,8 @@ impl SessionService {
             .await?;
         self.issue_challenge_code(
             &mut tx,
-            &user,
+            user.id,
+            (recipient, locale),
             challenge.id,
             challenge.expires_at,
             Some(ctx.client_ip),
@@ -488,20 +497,27 @@ impl SessionService {
         client: ClientChannel,
     ) -> Result<PipelineOutcome, AuthError> {
         let started = tokio::time::Instant::now();
-        let mut tx = self.begin().await?;
-        let state = match self
-            .open_challenge(
-                &mut tx,
-                ctx,
-                challenge_token,
-                ChallengeKind::Passwordless,
-                client.kind(),
-            )
-            .await
-        {
-            Ok(state) => Some(state),
-            Err(err) if err.status().is_server_error() => return Err(err),
-            Err(_) => None,
+        // Read (and immediately release) the challenge: the code check and
+        // the failure count must not run while a connection is held.
+        let state = {
+            let mut tx = self.begin().await?;
+            let opened = self
+                .open_challenge(
+                    &mut tx,
+                    ctx,
+                    challenge_token,
+                    ChallengeKind::Passwordless,
+                    client.kind(),
+                )
+                .await;
+            if let Err(err) = tx.rollback().await {
+                tracing::warn!(error = %err, "releasing a login-code challenge failed");
+            }
+            match opened {
+                Ok(state) => Some(state),
+                Err(err) if err.status().is_server_error() => return Err(err),
+                Err(_) => None,
+            }
         };
         // Unknown, burnt or foreign challenges (including the tokens handed
         // out for addresses without an account) do the same work as a wrong
@@ -520,10 +536,6 @@ impl SessionService {
         let state = match (state, checked) {
             (Some(state), Ok(())) => state,
             (_, checked) => {
-                // Release the row lock before counting the failure.
-                if let Err(err) = tx.rollback().await {
-                    tracing::warn!(error = %err, "rolling back a login-code attempt failed");
-                }
                 if let Err(count_err) = self.record_challenge_failure(challenge).await {
                     tracing::warn!(error = %count_err, "counting a login-code failure failed");
                 }
@@ -537,33 +549,50 @@ impl SessionService {
                 });
             }
         };
-        self.consume_challenge(&mut tx, state.id).await?;
+        let kind = client.kind();
+        let auth = PrimaryAuthentication {
+            user_id: state.user_id,
+            method: LoginMethod::EmailCode,
+            amr: vec![AuthMethodRef::Email, AuthMethodRef::Otp],
+            client: kind,
+            remember_me: state.remember_me && kind == ClientKind::Web,
+            shared_device: state.shared_device,
+            requested_org: state.requested_org,
+            provider_asserted_mfa: false,
+        };
+        let plan = self
+            .plan_login(ctx, &auth, client, &LoginSignals::default(), true)
+            .await?;
+        self.warm_credentials(kind).await?;
+        let mut tx = self.begin().await?;
+        // The code is consumed; the challenge must still be open (a
+        // concurrent revocation closes it).
+        let reopened = self
+            .open_challenge(
+                &mut tx,
+                ctx,
+                challenge_token,
+                ChallengeKind::Passwordless,
+                kind,
+            )
+            .await
+            .map_err(|e| {
+                if e.status().is_server_error() {
+                    e
+                } else {
+                    invalid_code()
+                }
+            })?;
+        self.consume_challenge(&mut tx, reopened.id).await?;
         self.deps()
             .accounts
             .confirm_mailbox_control_in_tx(
                 &mut tx,
                 Some(ctx),
-                state.user_id,
+                reopened.user_id,
                 authn_account::MailboxProof::Passwordless,
             )
             .await?;
-        let kind = client.kind();
-        self.run_login_pipeline_in(
-            tx,
-            ctx,
-            PrimaryAuthentication {
-                user_id: state.user_id,
-                method: LoginMethod::EmailCode,
-                amr: vec![AuthMethodRef::Email, AuthMethodRef::Otp],
-                client: kind,
-                remember_me: state.remember_me && kind == ClientKind::Web,
-                shared_device: state.shared_device,
-                requested_org: state.requested_org,
-                provider_asserted_mfa: false,
-            },
-            client,
-            &LoginSignals::default(),
-        )
-        .await
+        self.finish_login_in(tx, ctx, auth, client, plan).await
     }
 }

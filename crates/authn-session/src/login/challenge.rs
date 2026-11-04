@@ -343,6 +343,42 @@ impl SessionService {
         Ok((tx, state))
     }
 
+    /// Reads the login challenge of `token` and releases it at once: the
+    /// verification of a proof (other services, other connections) never
+    /// runs while this request holds a pooled connection (no pool
+    /// starvation under concurrent logins). The writing phase re-opens it
+    /// with [`Self::open_login`] and checks it did not move on meanwhile.
+    async fn peek_login(
+        &self,
+        ctx: &RequestContext,
+        token: &str,
+        client: ClientKind,
+    ) -> Result<ChallengeState, AuthError> {
+        let (tx, state) = self.open_login(ctx, token, client).await?;
+        if let Err(err) = tx.rollback().await {
+            tracing::warn!(error = %err, "releasing a login challenge failed");
+        }
+        Ok(state)
+    }
+
+    /// Re-opens (row lock) a challenge read by [`Self::peek_login`]; fails
+    /// with `challenge_invalid` when a concurrent request completed a step
+    /// in between.
+    async fn reopen_login(
+        &self,
+        ctx: &RequestContext,
+        token: &str,
+        client: ClientKind,
+        peeked: &ChallengeState,
+    ) -> Result<(PgTx, ChallengeState), AuthError> {
+        let (tx, state) = self.open_login(ctx, token, client).await?;
+        if state.id != peeked.id || state.required_actions != peeked.required_actions {
+            return Err(AuthError::new(codes::session::CHALLENGE_INVALID)
+                .with_context("the challenge changed concurrently"));
+        }
+        Ok((tx, state))
+    }
+
     /// Counts a failed attempt after the caller released the lock; returns
     /// the error to send (`challenge_invalid` once the challenge burnt).
     async fn challenge_failed(&self, state: &ChallengeState, err: AuthError) -> AuthError {
@@ -363,7 +399,8 @@ impl SessionService {
         client: ClientChannel,
         binding_cookie: Option<SensitiveString>,
     ) -> Result<ChallengeOutcome, AuthError> {
-        let (mut tx, mut state) = self.open_login(ctx, token, client.kind()).await?;
+        let peeked = self.peek_login(ctx, token, client.kind()).await?;
+        let state = &peeked;
         let label = submission.label();
         let kind = submission.kind();
         let email_confirmation = matches!(submission, FactorSubmission::EmailConfirmation { .. });
@@ -371,11 +408,10 @@ impl SessionService {
             // contracts §15.7: the kind must be allowed *before* anything is
             // verified; risk confirmations and enrolled e-mail factors are
             // not interchangeable.
-            if !state.allows_factor(kind) || email_confirmation != is_email_confirmation(&state) {
-                drop(tx);
+            if !state.allows_factor(kind) || email_confirmation != is_email_confirmation(state) {
                 crate::metrics::login_factor(label, "not_allowed");
                 return Err(self
-                    .challenge_failed(&state, step_not_allowed("factor not allowed"))
+                    .challenge_failed(state, step_not_allowed("factor not allowed"))
                     .await);
             }
             RequiredAction::VerifyMfa
@@ -383,26 +419,28 @@ impl SessionService {
             && state
                 .required_actions
                 .contains(&RequiredAction::VerifyEmail)
-            && !factor_pending(&state)
+            && !factor_pending(state)
         {
             RequiredAction::VerifyEmail
         } else {
-            drop(tx);
             return Err(step_not_allowed("no factor step outstanding"));
         };
         let trust_device = submission.trust_device();
         let proven = match self
-            .check_factor(ctx, &state, submission, binding_cookie)
+            .check_factor(ctx, state, submission, binding_cookie)
             .await
         {
             Ok(amr) => amr,
             Err(err) => {
-                drop(tx);
                 crate::metrics::login_factor(label, "failed");
-                return Err(self.challenge_failed(&state, err).await);
+                return Err(self.challenge_failed(state, err).await);
             }
         };
         crate::metrics::login_factor(label, "succeeded");
+        self.warm_credentials(client.kind()).await?;
+        let (mut tx, mut state) = self
+            .reopen_login(ctx, token, client.kind(), &peeked)
+            .await?;
         state.required_actions.retain(|a| *a != completes);
         if completes == RequiredAction::VerifyMfa {
             if email_confirmation {
@@ -583,11 +621,13 @@ impl SessionService {
 
     /// Creates and mails a `login_code` bound to the user and `challenge`
     /// in the caller's transaction (earlier codes of the challenge are
-    /// revoked). Returns the masked destination.
+    /// revoked). The recipient is looked up by the caller **before** the
+    /// transaction. Returns the masked destination.
     pub(crate) async fn issue_challenge_code(
         &self,
         conn: &mut sqlx::PgConnection,
-        user: &authn_store::UserRecord,
+        user: authn_core::id::UserId,
+        (recipient, locale): (authn_core::ports::Recipient, authn_core::domain::Locale),
         challenge: authn_core::id::ChallengeId,
         challenge_expires_at: time::OffsetDateTime,
         ip: Option<std::net::IpAddr>,
@@ -606,7 +646,7 @@ impl SessionService {
                 id: OneTimeTokenId::generate(),
                 purpose: TokenPurpose::LoginCode,
                 token_hash: hash,
-                subject: TokenSubject::user_and_challenge(user.id, challenge),
+                subject: TokenSubject::user_and_challenge(user, challenge),
                 group_id: None,
                 target: None,
                 max_attempts: settings.email_code_max_attempts,
@@ -618,9 +658,6 @@ impl SessionService {
             true,
         )
         .await?;
-        let (recipient, locale) = recipient_of(self, user)
-            .await?
-            .ok_or_else(|| AuthError::new(codes::common::INVALID_CODE))?;
         let destination = authn_core::redact::mask_email(recipient.email.as_str());
         self.deps()
             .notifier
@@ -649,7 +686,7 @@ impl SessionService {
         channel: SendCodeChannel,
         client: ClientKind,
     ) -> Result<serde_json::Value, AuthError> {
-        let (mut tx, state) = self.open_login(ctx, token, client).await?;
+        let state = self.peek_login(ctx, token, client).await?;
         match channel {
             SendCodeChannel::Email | SendCodeChannel::Sms { .. } => {
                 let (kind, otp) = match channel {
@@ -664,7 +701,6 @@ impl SessionService {
                 {
                     return Err(step_not_allowed("channel not allowed"));
                 }
-                drop(tx);
                 let delivery = self
                     .deps()
                     .mfa
@@ -691,13 +727,18 @@ impl SessionService {
                     )
                     .await?
                     .into_result()?;
-                let user = UserRepository::find_by_id(&mut *tx, state.user_id)
+                let user = UserRepository::find_by_id(self.pool(), state.user_id)
                     .await?
                     .ok_or_else(|| AuthError::new(codes::session::CHALLENGE_INVALID))?;
+                let (recipient, locale) = recipient_of(self, &user)
+                    .await?
+                    .ok_or_else(|| AuthError::new(codes::session::CHALLENGE_INVALID))?;
+                let (mut tx, state) = self.reopen_login(ctx, token, client, &state).await?;
                 let destination = self
                     .issue_challenge_code(
                         &mut tx,
-                        &user,
+                        user.id,
+                        (recipient, locale),
                         state.id,
                         state.expires_at,
                         Some(ctx.client_ip),
@@ -720,13 +761,12 @@ impl SessionService {
         token: &str,
         client: ClientKind,
     ) -> Result<super::PasskeyLoginStart, AuthError> {
-        let (tx, state) = self.open_login(ctx, token, client).await?;
+        let state = self.peek_login(ctx, token, client).await?;
         if !state.required_actions.contains(&RequiredAction::VerifyMfa)
             || !state.allows_factor(FactorKind::Webauthn)
         {
             return Err(step_not_allowed("passkey not allowed"));
         }
-        drop(tx);
         let start = self
             .deps()
             .webauthn
@@ -766,7 +806,8 @@ impl SessionService {
         step: ChallengeStep,
         client: ClientChannel,
     ) -> Result<ChallengeOutcome, AuthError> {
-        let (tx, mut state) = self.open_login(ctx, token, client.kind()).await?;
+        let peeked = self.peek_login(ctx, token, client.kind()).await?;
+        let mut state = peeked.clone();
         if state.required_actions.contains(&RequiredAction::VerifyMfa) {
             return Err(step_not_allowed("verify the second factor first"));
         }
@@ -890,7 +931,6 @@ impl SessionService {
                 {
                     Ok(c) => c,
                     Err(err) => {
-                        drop(tx);
                         return Err(self.challenge_failed(&state, map_factor_error(err)).await);
                     }
                 };
@@ -909,6 +949,12 @@ impl SessionService {
                 }));
             }
         }
+        // The step's side effects ran without a held connection; write the
+        // progress under the row lock of an unchanged challenge.
+        self.warm_credentials(client.kind()).await?;
+        let (tx, _) = self
+            .reopen_login(ctx, token, client.kind(), &peeked)
+            .await?;
         self.advance(tx, ctx, state, client, data).await
     }
 
@@ -958,10 +1004,9 @@ impl SessionService {
         let user = UserRepository::lock_for_update(&mut tx, state.user_id)
             .await?
             .ok_or_else(|| AuthError::new(codes::session::CHALLENGE_INVALID))?;
-        // The account may have changed since the primary authentication.
-        if let authn_account::LoginAssessment::Denied(reason) =
-            self.deps().accounts.assess_login(&user).await?
-        {
+        // The account may have changed since the primary authentication
+        // (decided from the locked row: no second connection).
+        if let Some(reason) = status_denial(&user, now) {
             return Err(reason.into_error(now));
         }
         let org = match state.requested_org {
@@ -1031,5 +1076,27 @@ impl SessionService {
             trusted_device,
             data,
         })
+    }
+}
+
+/// Why the account state forbids finishing a login (the status part of
+/// `AccountService::assess_login`, read from the locked row).
+fn status_denial(
+    user: &authn_store::UserRecord,
+    now: time::OffsetDateTime,
+) -> Option<authn_account::DenialReason> {
+    use authn_core::domain::AccountStatus;
+    match user.status {
+        AccountStatus::Deleted | AccountStatus::Disabled => {
+            Some(authn_account::DenialReason::Disabled)
+        }
+        AccountStatus::Suspended => Some(authn_account::DenialReason::Suspended),
+        AccountStatus::Locked => match user.locked_until {
+            Some(until) if until > now => Some(authn_account::DenialReason::Locked { until }),
+            _ => None,
+        },
+        AccountStatus::Active
+        | AccountStatus::PendingVerification
+        | AccountStatus::PendingDeletion => None,
     }
 }
