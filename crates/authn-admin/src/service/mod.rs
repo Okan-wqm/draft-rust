@@ -29,6 +29,7 @@ use authn_mfa::MfaService;
 use authn_password::PasswordService;
 use authn_protect::LoginProtection;
 use authn_store::{UserRecord, UserRepository};
+use authn_webauthn::WebauthnService;
 use serde_json::{Map, Value};
 use sqlx::{PgConnection, PgPool};
 use time::OffsetDateTime;
@@ -69,6 +70,8 @@ pub struct AdminServiceDeps {
     pub accounts: AccountService,
     /// MFA reset and status.
     pub mfa: MfaService,
+    /// Passkey removal on MFA reset (ADM-03, K-01).
+    pub webauthn: WebauthnService,
     /// Password reset e-mails.
     pub passwords: PasswordService,
     /// Soft locks (unlock).

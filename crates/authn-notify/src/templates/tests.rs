@@ -582,3 +582,90 @@ fn ntf_02_subject_templates_cannot_reveal_links_or_codes() {
         }
     }
 }
+
+/// K-18, K-19, K-40: the new security notices render the provider (escaped)
+/// and the reset link; `registration_attempt` covers sign-up and e-mail
+/// change attempts in both languages.
+#[test]
+fn ntf_01_identity_passkey_clone_and_revert_notices() {
+    let renderer = renderer();
+    let linked = notification(
+        Locale::En,
+        None,
+        NotificationKind::IdentityLinked {
+            provider: "<b>Acme</b>".to_owned(),
+            at: now(),
+        },
+    );
+    let rendered = renderer.render_email(&linked, now()).unwrap();
+    assert!(
+        rendered.text.contains("<b>Acme</b> was linked"),
+        "{}",
+        rendered.text
+    );
+    assert!(
+        !rendered.html.contains("<b>Acme</b>"),
+        "provider must be escaped"
+    );
+    assert!(
+        rendered.html.contains("&lt;b&gt;Acme&lt;&#x2f;b&gt;"),
+        "{}",
+        rendered.html
+    );
+    assert!(rendered.text.contains(&format!("{BASE}/")));
+
+    let unlinked = notification(
+        Locale::Tr,
+        None,
+        NotificationKind::IdentityUnlinked {
+            provider: "Google".to_owned(),
+            at: now(),
+        },
+    );
+    let rendered = renderer.render_email(&unlinked, now()).unwrap();
+    assert!(
+        rendered.text.contains("Google kaldırıldı"),
+        "{}",
+        rendered.text
+    );
+
+    for (kind, en, tr) in [
+        (
+            NotificationKind::PasskeyCloneSuspected { at: now() },
+            "may have been copied",
+            "kopyalanmış olabileceğini",
+        ),
+        (
+            NotificationKind::EmailChangeReverted { at: now() },
+            "was reverted",
+            "geri alındı",
+        ),
+    ] {
+        let en_out = renderer
+            .render_email(&notification(Locale::En, None, kind.clone()), now())
+            .unwrap();
+        let tr_out = renderer
+            .render_email(&notification(Locale::Tr, None, kind), now())
+            .unwrap();
+        assert!(en_out.text.contains(en), "{}", en_out.text);
+        assert!(tr_out.text.contains(tr), "{}", tr_out.text);
+    }
+
+    for (locale, signup, change) in [
+        (
+            Locale::En,
+            "sign up",
+            "change the address of another account",
+        ),
+        (Locale::Tr, "kaydolmak", "başka bir hesabın adresini"),
+    ] {
+        let out = renderer
+            .render_email(
+                &notification(locale, None, NotificationKind::RegistrationAttempt),
+                now(),
+            )
+            .unwrap();
+        assert!(out.text.contains(signup), "{}", out.text);
+        assert!(out.text.contains(change), "{}", out.text);
+    }
+}

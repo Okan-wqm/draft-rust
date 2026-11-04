@@ -6,9 +6,10 @@
 //!
 //! | Provider | Verified when |
 //! |----------|---------------|
-//! | Google, generic OIDC | `email_verified` is `true` |
+//! | Google | `email_verified` is `true` |
+//! | generic OIDC | `email_verified` is `true` **and** the provider's `trust_email_verified` is on (default off: a non-verifying IdP could assert anyone's address) |
 //! | Apple | `email_verified` is `true` (also for private relay addresses) |
-//! | Microsoft | personal account tenant (`9188040d-…`), or the optional claim `xms_edov` is `true` — the plain `email` claim of work accounts is mutable and unverified ("nOAuth") |
+//! | Microsoft | the optional claim `xms_edov` is `true`, or a personal account (tenant `9188040d-…`) **and** `microsoft.trust_personal_account_email` is on (default off) — the plain `email` claim is mutable and unverified ("nOAuth") |
 //! | GitHub | the **primary** address of `/user/emails` is `verified` (other verified addresses are ignored) |
 
 use authn_core::error::AuthError;
@@ -110,9 +111,14 @@ pub fn from_id_claims(
                 .filter(|o| is_guid(o))
                 .ok_or_else(|| invalid("microsoft token without oid"))?
                 .to_ascii_lowercase();
-            let verified = tid == MICROSOFT_CONSUMERS_TENANT || claims.email_domain_verified;
+            let verified = (tid == MICROSOFT_CONSUMERS_TENANT && provider.trust_email_verified)
+                || claims.email_domain_verified;
             (format!("{tid}:{oid}"), verified)
         }
+        ProviderKind::Generic => (
+            claims.subject.clone(),
+            claims.email_verified && provider.trust_email_verified,
+        ),
         _ => (claims.subject.clone(), claims.email_verified),
     };
     let display_name = first_login_name
@@ -204,7 +210,101 @@ pub async fn github_identity(
 
 #[cfg(test)]
 mod tests {
+    use authn_core::config::oidc_client::{GenericOidcProvider, MicrosoftProvider, ProviderClient};
+    use authn_core::secret::SecretString;
+    use authn_testkit::config::TestConfigBuilder;
+
     use super::*;
+    use crate::provider::ProviderRegistry;
+    use crate::settings::OidcClientSettings;
+
+    const WORK_TENANT: &str = "72f988bf-86f1-41af-91ab-2d7cd011db47";
+    const OID: &str = "00000000-0000-0000-0000-0000000000aa";
+
+    fn registry(trust_generic: bool, trust_msa: bool) -> ProviderRegistry {
+        let client = || ProviderClient {
+            client_id: "client".to_owned(),
+            client_secret: SecretString::from("secret".to_owned()),
+            native_client_ids: Vec::new(),
+        };
+        let mut config = TestConfigBuilder::new().build();
+        config.oidc_client.microsoft = Some(MicrosoftProvider {
+            client: client(),
+            tenant: "common".to_owned(),
+            allowed_tenants: Vec::new(),
+            trust_personal_account_email: trust_msa,
+        });
+        config.oidc_client.generic = vec![GenericOidcProvider {
+            slug: "acme".to_owned(),
+            display_name: "Acme".to_owned(),
+            issuer_url: "https://idp.example".to_owned(),
+            client: client(),
+            scopes: vec!["openid".to_owned()],
+            trust_email_verified: trust_generic,
+        }];
+        ProviderRegistry::from_settings(&OidcClientSettings::from_app_config(&config)).unwrap()
+    }
+
+    fn claims(tid: Option<&str>, email_verified: bool, edov: bool) -> IdClaims {
+        IdClaims {
+            issuer: "https://issuer.example".to_owned(),
+            subject: "subject-1".to_owned(),
+            nonce: None,
+            email: Some("user@example.com".to_owned()),
+            email_verified,
+            name: None,
+            tenant_id: tid.map(str::to_owned),
+            object_id: Some(OID.to_owned()),
+            email_domain_verified: edov,
+            is_private_email: false,
+            amr: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn soc_05_generic_provider_email_is_unverified_unless_trusted() {
+        let untrusted = registry(false, false);
+        let acme = untrusted.get("acme").unwrap();
+        let id = from_id_claims(acme, claims(None, true, false), None).unwrap();
+        assert!(!id.email_verified);
+        assert_eq!(id.verified_email(), None);
+
+        let trusted = registry(true, false);
+        let acme = trusted.get("acme").unwrap();
+        let id = from_id_claims(acme, claims(None, true, false), None).unwrap();
+        assert_eq!(id.verified_email(), Some("user@example.com"));
+        // Trust never upgrades an address the provider itself did not verify.
+        let id = from_id_claims(acme, claims(None, false, false), None).unwrap();
+        assert!(!id.email_verified);
+    }
+
+    #[test]
+    fn soc_05_microsoft_personal_account_email_is_unverified_unless_trusted() {
+        let untrusted = registry(false, false);
+        let ms = untrusted.get("microsoft").unwrap();
+        let id = from_id_claims(
+            ms,
+            claims(Some(MICROSOFT_CONSUMERS_TENANT), true, false),
+            None,
+        )
+        .unwrap();
+        assert!(!id.email_verified);
+        // Work accounts with `xms_edov` stay verified either way.
+        let id = from_id_claims(ms, claims(Some(WORK_TENANT), false, true), None).unwrap();
+        assert!(id.email_verified);
+        let id = from_id_claims(ms, claims(Some(WORK_TENANT), true, false), None).unwrap();
+        assert!(!id.email_verified);
+
+        let trusted = registry(false, true);
+        let ms = trusted.get("microsoft").unwrap();
+        let id = from_id_claims(
+            ms,
+            claims(Some(MICROSOFT_CONSUMERS_TENANT), false, false),
+            None,
+        )
+        .unwrap();
+        assert!(id.email_verified);
+    }
 
     #[test]
     fn soc_07_display_names_are_cleaned_and_bounded() {

@@ -644,3 +644,178 @@ async fn adm_08_justification_follows_subject_erasure(pool: sqlx::PgPool) {
     // The chained event itself stays.
     assert_eq!(h.admin_events("revoke_user_sessions").await.len(), 1);
 }
+
+const ORIGIN: &str = "https://auth.test.example";
+
+/// K-01 (ADM-03, PKY-04): an admin MFA reset removes the user's passkeys in
+/// the same transaction. Before the fix the passkey survived the reset and
+/// kept allowing passwordless sign-in (and an attacker-enrolled passkey kept
+/// working after "recovery").
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn adm_03_reset_mfa_removes_passkeys_and_they_no_longer_authenticate(pool: sqlx::PgPool) {
+    use authn_webauthn::service::RegistrationIntent;
+    use authn_webauthn::{
+        AuthenticationFinish, AuthenticationTarget, PasskeyPolicy, RegistrationOptionsRequest,
+        RegistrationVerifyRequest,
+    };
+    use url::Url;
+    use webauthn_authenticator_rs::WebauthnAuthenticator as _;
+    use webauthn_authenticator_rs::softpasskey::SoftPasskey;
+    use webauthn_rs_proto::{
+        AllowCredentials, CreationChallengeResponse, RequestChallengeResponse,
+    };
+
+    let h = Harness::new(pool).await;
+    let (_, admin) = h.admin("admin@example.com").await;
+    let user = h.user("alice@example.com").await;
+    // A real session row: the registration ceremony is bound to it.
+    let session = authn_core::id::SessionId::generate();
+    sqlx::query(
+        "INSERT INTO sessions (id, user_id, client_kind, token_hash, amr, auth_time, \
+         created_at, last_seen_at, idle_expires_at, absolute_expires_at) \
+         VALUES ($1, $2, 'web', $3, ARRAY['pwd'], $4, $4, $4, $5, $5)",
+    )
+    .bind(session)
+    .bind(user)
+    .bind(authn_crypto::sha256(session.to_string().as_bytes()).as_slice())
+    .bind(h.now())
+    .bind(h.now() + std::time::Duration::from_secs(7200))
+    .execute(&h.pool)
+    .await
+    .unwrap();
+    let mut principal = h.principal(user, false);
+    principal.credential = authn_core::domain::PrincipalCredential::SessionCookie {
+        session_id: session,
+    };
+
+    // Alice (or an attacker in her account) registers a passwordless passkey.
+    let mut authenticator = SoftPasskey::new(true);
+    let start = h
+        .webauthn
+        .start_registration(
+            &h.ctx(),
+            &principal,
+            RegistrationOptionsRequest {
+                name: None,
+                usage: Some(RegistrationIntent::Passwordless),
+            },
+        )
+        .await
+        .unwrap();
+    let ccr: CreationChallengeResponse = serde_json::from_value(start.options.clone()).unwrap();
+    let credential = authenticator
+        .do_registration(Url::parse(ORIGIN).unwrap(), ccr)
+        .unwrap();
+    h.webauthn
+        .finish_registration(
+            &h.ctx(),
+            &principal,
+            RegistrationVerifyRequest {
+                ceremony_id: start.ceremony_id,
+                credential: serde_json::to_value(&credential).unwrap(),
+                name: None,
+            },
+        )
+        .await
+        .unwrap();
+    let raw_id = credential.raw_id.clone();
+    let (handle,): (Vec<u8>,) =
+        sqlx::query_as("SELECT user_handle FROM webauthn_user_handles WHERE user_id = $1")
+            .bind(user)
+            .fetch_one(&h.pool)
+            .await
+            .unwrap();
+    let target = AuthenticationTarget::Discoverable {
+        conditional_ui: false,
+    };
+    let login = |authenticator: &mut SoftPasskey, options: &Value| {
+        let mut rcr: RequestChallengeResponse = serde_json::from_value(options.clone()).unwrap();
+        rcr.public_key.allow_credentials = vec![AllowCredentials {
+            type_: "public-key".to_owned(),
+            id: raw_id.clone(),
+            transports: None,
+        }];
+        let mut assertion = authenticator
+            .do_authentication(Url::parse(ORIGIN).unwrap(), rcr)
+            .unwrap();
+        assertion.response.user_handle = Some(handle.clone());
+        assertion
+    };
+
+    // Before the reset the passkey signs Alice in.
+    let begin = h
+        .webauthn
+        .start_authentication(&h.ctx(), target, &PasskeyPolicy::unrestricted())
+        .await
+        .unwrap();
+    let assertion = login(&mut authenticator, &begin.options);
+    let ok = h
+        .webauthn
+        .finish_authentication(
+            &h.ctx(),
+            AuthenticationFinish {
+                ceremony_id: begin.ceremony_id,
+                binding_token: begin.binding_token.clone(),
+                target,
+                credential: serde_json::to_value(&assertion).unwrap(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(ok.user_id, user);
+
+    // A ceremony started before the reset must not complete after it.
+    let pending = h
+        .webauthn
+        .start_authentication(&h.ctx(), target, &PasskeyPolicy::unrestricted())
+        .await
+        .unwrap();
+
+    let res = post(
+        &h,
+        &admin,
+        &format!("/v1/admin/users/{user}/reset-mfa"),
+        json!({ "reason": "Account takeover reported (SUP-91)" }),
+    )
+    .await;
+    res.assert_status(StatusCode::OK);
+    let body: Value = res.json();
+    assert_eq!(body["changed"], true, "{body}");
+    let passkeys: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM webauthn_credentials WHERE user_id = $1")
+            .bind(user)
+            .fetch_one(&h.pool)
+            .await
+            .unwrap();
+    assert_eq!(passkeys, 0);
+    let meta = assert_audited(&h, "reset_mfa", user, "Account takeover reported (SUP-91)").await;
+    assert_eq!(meta["passkeys_removed"], 1);
+    let removed = h.events("passkey.removed").await;
+    assert_eq!(removed.len(), 1);
+    assert_eq!(removed[0].metadata["reason"], "admin_reset");
+
+    // The passkey can no longer sign in: neither the pending ceremony nor a
+    // fresh one.
+    for begin in [
+        pending,
+        h.webauthn
+            .start_authentication(&h.ctx(), target, &PasskeyPolicy::unrestricted())
+            .await
+            .unwrap(),
+    ] {
+        let assertion = login(&mut authenticator, &begin.options);
+        let err = h
+            .webauthn
+            .finish_authentication(
+                &h.ctx(),
+                AuthenticationFinish {
+                    ceremony_id: begin.ceremony_id,
+                    binding_token: begin.binding_token.clone(),
+                    target,
+                    credential: serde_json::to_value(&assertion).unwrap(),
+                },
+            )
+            .await;
+        assert!(err.is_err(), "a removed passkey must not authenticate");
+    }
+}

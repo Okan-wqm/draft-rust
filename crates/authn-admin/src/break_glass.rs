@@ -98,7 +98,7 @@ pub async fn create_break_glass_admin(
         now,
     )
     .await?;
-    mark_break_glass(&mut tx, id).await?;
+    UserRepository::set_admin_flags(&mut tx, id, true, true).await?;
     let event = SecurityEvent::new(SecurityEventKind::AdminAction, now)
         .with_actor(Actor::System)
         .with_subject(id)
@@ -111,15 +111,4 @@ pub async fn create_break_glass_admin(
         user_id: id,
         password: password.into_sensitive(),
     })
-}
-
-/// Flags the account (authn-store has no API for the admin flags; this is
-/// the registered write exception of `contract-change-requests.md`,
-/// `## authn-admin`).
-async fn mark_break_glass(conn: &mut sqlx::PgConnection, id: UserId) -> Result<(), AuthError> {
-    sqlx::query("UPDATE users SET is_platform_admin = true, is_break_glass = true WHERE id = $1")
-        .bind(id)
-        .execute(conn)
-        .await?;
-    Ok(())
 }

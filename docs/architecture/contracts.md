@@ -128,7 +128,7 @@ Tüm portlar `crates/authn-core/src/ports/` altında, nesne güvenli (`Arc<dyn P
 | `PasswordValidator` | `password_validator.rs` | password | account (ACC-01), password, admin | — |
 | `DnsTxtResolver` | `dns.rs` | org | org | — |
 | `SessionRevoker` | `session_revoker.rs` | session | password, account, mfa, org, admin, protect | **çağıranın transaction'ında** (`&mut PgConnection`); `RevokeOptions::also_trusted_devices` aynı bağlantıda authn-mfa'nın `revoke_trusted_devices_in_tx`'i ile uygulanır (PWD-09, MFA-09) |
-| `SessionIssuer` | `session_issuer.rs` | session | oidc-client (sosyal giriş), admin (impersonation), webauthn akışları session üzerinden | kendi transaction'ı |
+| `SessionIssuer` | `session_issuer.rs` | session | oidc-client (sosyal giriş), admin (impersonation), webauthn akışları session üzerinden | kendi transaction'ı; `start_impersonation_audited` (wave 1, K-06) **çağıranın transaction'ında**, çağıranın verdiği `EventId` ile (varsayılan gövde reddeder) |
 | `DataExporter` | `data_exporter.rs` | her modül kendi bölümü için; toplayıcı account | account | çağıranın bağlantısı |
 
 Kurallar:
@@ -254,6 +254,7 @@ Dalga A sonrası migration'lar:
 | `1500`, `1501` | org | API anahtarı tek sahip / üyelik FK, servis hesabı sahip olamaz, `role_permissions_owner_only`, `memberships_last_owner` ertelenmiş kısıtı; `org_auto_join_exclusions` |
 | `1600` | protect | `rate_limit_buckets.allowed` (tek ifadede GCRA kararı), risk ve temizlik indeksleri |
 | `1700` | audit | `webhook_endpoints.failing_since`, `last_success_at`, teslim/kiralama indeksleri, `authn_audit_apply_least_privilege` |
+| `0015` | mimar (wave 1) | `users_created_id_idx (created_at DESC, id DESC)`: admin kullanıcı listesi keyset sayfalaması (`UserRepository::search`, ADM-02, K-38) |
 
 ---
 
@@ -508,4 +509,4 @@ Cargo feature'ları (ARC-11): workspace girdileri `default-features = false` old
 | authn-session | SES-10 istemci doğrulaması `OrgService::authenticate_api_key`'i doğrudan çağırır; giriş ve e-posta doğrulamasından sonra `auto_join_verified_domains` | org: "Server / Dalga B bağlama notları" |
 | authn-session | doğru şifreden sonra `AccountService::assess_login`; `Denied(reason)` ⇒ `reason.into_error(now)`; `required_actions` ⇒ SES-22 | account: "Server / Dalga B bağlama notları" |
 | authn-oidc-client | kimlik ayırma transaction'ının başında `UserRepository::lock_for_update(conn, user)` (PWD-11 yarışı) | password: "PWD-11 yarışına karşı kullanıcı satırı kilidi" |
-| authn-admin | `change_status_in_tx` + aynı transaction'da `SessionRevoker`; `reset_user_mfa_in_tx`; `set_must_change_password`; `LoginProtection::unlock`; personel işlemleri `admin.*` olay türleriyle veya impersonator ile | account, mfa, password, protect, audit |
+| authn-admin | `change_status_in_tx` + aynı transaction'da `SessionRevoker`; `reset_user_mfa_in_tx` + aynı transaction'da `WebauthnService::remove_all_passkeys_in_tx` (K-01); `users` erişimi yalnızca `UserRepository::{search, stale_passwords, set_admin_flags}` (K-38); impersonation `SessionIssuer::start_impersonation_audited` (K-06); `set_must_change_password`; `LoginProtection::unlock`; personel işlemleri `admin.*` olay türleriyle veya impersonator ile | account, mfa, password, protect, audit |

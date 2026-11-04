@@ -173,7 +173,7 @@ Dalga A'nın tüm talepleri işlendi; her kaydın **Durum** satırı güncellend
 - **Gerekçe:** `RegistrationAttempt` iki durumda gönderilir: kayıtlı adresle kayıt denemesi ve e-posta değişikliğinde başka bir hesabın adresinin istenmesi. Geri alma sonrası "şifrenizi sıfırlayın" uyarısı için tür yok.
 - **Önerilen değişiklik:** Şablon metni genel olsun ("Bu adres bir hesap için kullanılmak istendi; siz değilseniz bir şey yapmanıza gerek yok"). İsteğe bağlı yeni tür: `EmailChangeReverted { at }` (account geri almada gönderir).
 - **Geriye uyumluluk:** Şablon metni; yeni tür ekleme.
-- **Durum:** Açık — **authn-notify** (port ve şablon sahibi). Mimar kararı: onaylandı — `registration_attempt` metni kayıt ve e-posta değişikliği girişimlerini kapsayacak şekilde genelleştirilsin (şu an yalnızca kaydı anlatıyor); `NotificationKind::EmailChangeReverted { at }` eklensin (eklemeli varyant; tam eşleşme yapan üretici yok)
+- **Durum:** Uygulandı (wave 1) — `registration_attempt` metni (TR/EN, konu dahil) kayıt ve e-posta değişikliği girişimlerini kapsıyor; `NotificationKind::EmailChangeReverted { at }` + şablonlar. Açık: authn-account geri almada göndermesi (wave 2).
 
 ### 2026-11-01 — Server / Dalga B bağlama notları
 - **Talep eden:** authn-account
@@ -313,7 +313,7 @@ Dalga A'nın tüm talepleri işlendi; her kaydın **Durum** satırı güncellend
 - **Gerekçe:** Passkey ekleme/kaldırma bildirimleri şimdilik `MfaFactorAdded/MfaFactorRemoved { factor: FactorKind::Webauthn }` ile gönderiliyor (NTF-01 "MFA eklendi/kaldırıldı" kapsamında). Şablonda "passkey" ifadesi ve şüpheli klon (PKY-05) için ayrı bir uyarı e-postası kullanıcı deneyimini iyileştirir.
 - **Önerilen değişiklik:** İsteğe bağlı: `NotificationKind::PasskeyCloneSuspected { at }` ve şablonları; eklenirse authn-webauthn klon tespitinde kullanıcıyı da bilgilendirir.
 - **Geriye uyumluluk:** Yeni varyant (tam eşleşme yapan tüketiciler için kırıcı olabilir, §13).
-- **Durum:** Açık — **authn-notify**. Mimar kararı: onaylandı (isteğe bağlı) — `NotificationKind::PasskeyCloneSuspected { at }` + TR/EN şablonları eklenirse authn-webauthn klon tespitinde kullanıcıyı da bilgilendirir; eklemeli varyant
+- **Durum:** Uygulandı (wave 1) — `NotificationKind::PasskeyCloneSuspected { at }` + TR/EN şablonlar (alıcı başına limitli). Açık: authn-webauthn klon tespitinde göndermesi (wave 2).
 
 ### 2026-11-01 — Güvenlik incelemesi: `PasskeyPolicySource` her kimlik doğrulamada, impersonation kaydı yasak (bilgi)
 - **Talep eden:** authn-webauthn
@@ -410,7 +410,7 @@ Dalga A'nın tüm talepleri işlendi; her kaydın **Durum** satırı güncellend
 - **Gerekçe:** `known_devices.device_hash` için anahtarlı hash gerekiyor; `KeyPurpose` içinde uygun bir amaç yok. Şimdilik `RateLimitKey` amaç anahtarı, alanları uzunluk önekli ve **ayrı etiketli** (`authn/protect/known-device/v1` ↔ `authn/protect/rate-limit-key/v1`, `HmacKey::sign_fields`) olarak kullanılıyor; iki kullanım birbirine çakışamaz.
 - **Önerilen değişiklik:** `KeyPurpose::KnownDevice` (`info = "authn/v1/known-device"`) eklenmesi. Eklenirse authn-protect `KeyHasher::device`'ı yeni anahtara taşır (mevcut satırlar bir sonraki girişte yeniden öğrenilir; tek etkisi bir kerelik "yeni cihaz" sinyalidir).
 - **Geriye uyumluluk:** Ekleme; acil değil.
-- **Durum:** Açık — **authn-crypto** (`kdf.rs` sahibi). Mimar kararı: onaylandı, öncelik düşük — CRY-11 her amaç için ayrı HKDF `info` etiketi ister; mevcut kullanım ayrı etiketli ve uzunluk önekli alanlarla çakışmasız olduğundan acil güvenlik açığı değildir. `KeyPurpose::KnownDevice` eklenince authn-protect `KeyHasher::device`'ı taşır (tek etkisi bir kerelik "yeni cihaz" sinyali)
+- **Durum:** Uygulandı (wave 1) — `KeyPurpose::KnownDevice` (`authn/v1/known-device`); authn-protect `KeyHasher::device` taşındı (tek etkisi bir kerelik "yeni cihaz" sinyali; README'de belgeli); test `cry_11_device_hashes_use_the_known_device_purpose_key`.
 
 ### 2026-11-01 — Migration 1600: `rate_limit_buckets.allowed` ve risk indeksleri
 - **Talep eden:** authn-protect
@@ -621,7 +621,7 @@ Dalga A'nın tüm talepleri işlendi; her kaydın **Durum** satırı güncellend
 - **Gerekçe:** 12 kod (`oauth_provider_unknown`, `oauth_state_invalid`, `oauth_nonce_invalid`, `oauth_token_invalid`, `oauth_authorization_denied`, `oauth_email_not_verified`, `oauth_link_required`, `oauth_native_not_supported`, `identity_already_linked`, `identity_provider_already_linked`, `identity_last_login_method`, `identity_link_not_allowed`) geçici olarak `crates/authn-oidc-client/src/codes.rs`'te tanımlı; çalışırlar ama global kayıt defterinde (`codes::all()`, DOC-04 kataloğu) görünmezler.
 - **Önerilen değişiklik:** Sabitler birebir (ad, durum, TR/EN mesaj) `oidc_client.rs`'e taşınır ve `ALL`'a eklenir; `authn_oidc_client::codes` bunları yeniden dışa açar (`pub use authn_core::error::codes::oidc_client::*`). Test `soc_01_codes_are_unique_snake_case_and_not_in_the_global_registry` taşımadan sonra "registry'de bulunur" biçimine çevrilir.
 - **Geriye uyumluluk:** Kod dizeleri aynı kalır.
-- **Durum:** Açık — mimar / authn-oidc-client
+- **Durum:** Uygulandı (wave 1) — 12 kod birebir (ad, durum, TR/EN, tel dizesi) `authn_core::error::codes::oidc_client::ALL`'a taşındı; `authn_oidc_client::codes` yeniden dışa açıyor; test `soc_01_codes_are_unique_snake_case_and_in_the_global_registry` + `soc_01_wire_strings_are_unchanged`.
 
 ### 2026-11-04 — `[oidc_client]` yeni alanlar
 - **Talep eden:** authn-oidc-client
@@ -630,7 +630,7 @@ Dalga A'nın tüm talepleri işlendi; her kaydın **Durum** satırı güncellend
 - **Gerekçe:** Şu an `OidcClientSettings` alanı olarak (varsayılanlı) var, konfigürasyondan okunamıyor.
 - **Önerilen değişiklik:** `microsoft.allowed_tenants: Vec<String>` (GUID; alan adı biçimli `tenant` için zorunlu), `start_per_ip: RateLimitPolicy` (60/10 dk), `native_per_ip: RateLimitPolicy` (60/10 dk), `callback_per_ip: RateLimitPolicy` (60/10 dk; bağımsız denetimde eklendi — callback'in rate limit'i), `jwks_refresh_min_interval` (60 sn, 10 sn–1 sa), `apple.private_key_file: Option<PathBuf>` (`private_key_pem` ile tam olarak biri; SOC-07 "dosya"). `OidcClientSettings::from_app_config` bunları okur.
 - **Geriye uyumluluk:** Varsayılanlı ekleme; `private_key_pem`'in `Option` olması yalnızca bu crate'i etkiler.
-- **Durum:** Açık — authn-oidc-client
+- **Durum:** Uygulandı (wave 1) — tüm anahtarlar + doğrulama + `config/example.toml`; `from_app_config` okuyor. Ek: `microsoft.trust_personal_account_email` (K-17, varsayılan `false`). `apple.private_key_pem` artık `Option` (tam olarak biri: pem/file). Zarf şifreli Apple anahtarı yok (konfigürasyonda zarf deseni yok; K-34 kalan kısmı).
 
 ### 2026-11-04 — Migration `2100`: web akışında oturum seçenekleri
 - **Talep eden:** authn-oidc-client
@@ -655,7 +655,7 @@ Dalga A'nın tüm talepleri işlendi; her kaydın **Durum** satırı güncellend
 - **Gereksinim:** SOC-06 (hesap ele geçirme tespiti)
 - **Önerilen değişiklik:** `NotificationKind::IdentityLinked { provider, at }` ve `IdentityUnlinked { provider, at }`; authn-oidc-client bağlama/ayırma transaction'ında `notify_in_tx` çağırır.
 - **Geriye uyumluluk:** Ekleme (yeni enum varyantı).
-- **Durum:** Açık — authn-notify
+- **Durum:** Uygulandı (wave 1) — `NotificationKind::IdentityLinked/IdentityUnlinked { provider, at }` + TR/EN şablonlar (notify tarafı). Açık: authn-oidc-client'ın bağlama/ayırma transaction'ında `notify_in_tx` çağırması (wave 2).
 
 ### 2026-11-04 — PWD-11 kullanıcı satırı kilidi (bilgi)
 - **Talep eden:** authn-oidc-client
@@ -679,7 +679,7 @@ Dalga A'nın tüm talepleri işlendi; her kaydın **Durum** satırı güncellend
 - **Gerekçe:** Genel OIDC sağlayıcısının `email_verified` beyanına koşulsuz güveniliyor. Otomatik bağlama kapalıyken bile doğrulamayan bir IdP, henüz kayıtlı olmayan bir adresle doğrulanmış hesap açtırabilir; gerçek sahip sonradan şifre sıfırlamayla girse de IdP kimliği hesapta kalır (README kabul edilen risk 1).
 - **Önerilen değişiklik:** `GenericOidcProvider.trust_email_verified: bool` (varsayılan `true` — mevcut davranış); `false` ise `identity::from_id_claims` e-postayı hiçbir zaman doğrulanmış saymaz (yeni hesap ve otomatik bağlama yok; yalnızca giriş yapmış kullanıcının açık bağlaması).
 - **Geriye uyumluluk:** Varsayılanlı ekleme.
-- **Durum:** Açık — authn-oidc-client
+- **Durum:** Uygulandı (wave 1) — **varsayılan `false`** (talepteki `true` yerine; proje sahibinin K-04 kararı: genel sağlayıcı için güvenli taraf) ve davranış bağlandı (`identity::from_id_claims`); testler `soc_05_generic_provider_email_is_unverified_unless_trusted`, `soc_05_untrusted_providers_never_create_accounts`.
 
 ## authn-admin
 
@@ -699,7 +699,7 @@ Dalga A'nın tüm talepleri işlendi; her kaydın **Durum** satırı güncellend
 - **Gerekçe:** `UserRepository`'de admin araması, toplu şifre taraması ve admin bayrağı yazımı için API yok. §13 gereği geçici olarak authn-admin'in kendi `src/store.rs` / `src/break_glass.rs` dosyalarında çalışma zamanı sqlx sorgularıyla uygulandı.
 - **Önerilen değişiklik:** contracts §5'e kayıtlı istisna olarak eklensin **veya** sahip API'ye taşınsın: (1) salt-okunur `users` araması — `starts_with(email_normalized, $1)`, `status`, `is_platform_admin`, doğrulanmış, oluşturma aralığı filtreleri, keyset `(created_at, id) < ($7, $8) ORDER BY created_at DESC, id DESC` → önerilen `UserRepository::search(executor, &UserSearchFilter, after, limit)`; ayrıca `CREATE INDEX users_created_id_idx ON users (created_at DESC, id DESC)` (store migration'ı); (2) salt-okunur `password_credentials` taraması `WHERE changed_at < $1 AND NOT must_change AND user_id > $2 ORDER BY user_id LIMIT $3` (ADM-06) → önerilen `UserRepository::stale_passwords(conn, before, after, limit)`; (3) salt-okunur `audit_events` sorgusu `SELECT id … WHERE kind = 'admin.impersonation_started' AND resource_type = 'session' AND resource_id = $1` (impersonation gerekçesini session'ın olayına bağlamak için; aşağıdaki session talebi kabul edilirse kaldırılır); (4) **yazma:** `UPDATE users SET is_platform_admin = true, is_break_glass = true WHERE id = $1` (break-glass oluşturma, ADM-05; authn-server `operations.rs` aynısını yapıyor) → önerilen `UserRepository::set_admin_flags(conn, id, is_platform_admin, is_break_glass)`. Ayrıca `admin_action_reasons.event_id` → `audit_events(id)` FK'si (ON DELETE CASCADE): authn-audit olay kimliği anlamını (`SecurityEvent::id` = `audit_events.id`) korumalı.
 - **Geriye uyumluluk:** Yalnızca ekleme; API'ye taşınırsa authn-admin çağrıları değiştirir, davranış aynı.
-- **Durum:** Açık — **mimar / authn-store** (istisna kaydı veya API), **authn-audit** (bilgi: FK)
+- **Durum:** Uygulandı (wave 1) — `UserRepository::{search(executor, &UserSearchFilter, after, limit), stale_passwords(conn, before, after, limit), set_admin_flags(conn, id, is_platform_admin, is_break_glass)}` + migration `0015` (`users_created_id_idx`); `audit_events` sorgusu kaldırıldı (impersonation olay kimliği artık port üzerinden). authn-admin'in `store.rs`'i yalnızca `admin_action_reasons`'a SQL yazar.
 
 ### 2026-11-04 — authn-session: impersonation olay kimliği ve break-glass girişi
 - **Talep eden:** authn-admin
@@ -708,7 +708,7 @@ Dalga A'nın tüm talepleri işlendi; her kaydın **Durum** satırı güncellend
 - **Gerekçe:** (1) `start_impersonation_with` `admin.impersonation_started` olayını kendisi yazar (doğru), ancak olay gerekçe içermez ve port olay kimliğini döndürmez; authn-admin gerekçeyi olaya ancak commit'ten sonra `audit_events`'te arayarak bağlayabiliyor (ayrı transaction; başarısızlıkta yalnızca log). (2) Break-glass hesabıyla **giriş** (oturum açılması) yüksek öncelikli olay üretmiyor; authn-admin yalnızca admin API'sindeki her kullanımı `admin.break_glass_used` ile kaydedebiliyor.
 - **Önerilen değişiklik:** (1) Varsayılan gövdeli yeni port metodu `start_impersonation_audited(ctx, request, client, admin_session, event_id: EventId) -> IssuedSession` (session `admin.impersonation_started` olayını verilen kimlikle yazar; authn-admin gerekçe satırını önceden bilinen kimlikle yazabilir) **veya** `IssuedSession`'a dokunmadan `start_impersonation_with` sonucu yanında olay kimliğini döndüren bir varyant. (2) Giriş akışında `UserRecord.is_break_glass` olan hesap için oturum açılınca `SecurityEventKind::BreakGlassUsed` (`priority: high`, `surface: login`) kaydı.
 - **Geriye uyumluluk:** Yeni varsayılan gövdeli metot / yeni olay; kırıcı değil.
-- **Durum:** Açık — **authn-session**
+- **Durum:** Kısmen uygulandı (wave 1) — (1) `SessionIssuer::start_impersonation_audited(conn, ctx, request, client, admin_session, event_id)`: talepten farkı **çağıranın bağlantısı** (`conn`) — gerekçe ancak böyle olayla atomik yazılır; authn-session uygular, authn-admin kullanır (`adm_08_impersonation_reason_and_event_commit_atomically`). (2) break-glass girişinde `admin.break_glass_used` **açık** (K-05, wave 2).
 
 ### 2026-11-04 — Personel kimliği ve redakte edilen metadata anahtarları (bilgi)
 - **Talep eden:** authn-admin
@@ -717,7 +717,7 @@ Dalga A'nın tüm talepleri işlendi; her kaydın **Durum** satırı güncellend
 - **Gerekçe:** (1) `confirm_mailbox_control_in_tx(…, MailboxProof::Administrator { admin })` `account.email_verified` olayını `Actor::User(admin)` ile yazıyor; authn-audit personel kimliğini yalnızca `admin.*` ve impersonation olaylarında gizlediği için adminin kullanıcı kimliği kullanıcının kendi güvenlik olaylarında görünebilir. authn-admin aynı transaction'da `admin.action` (`mark_email_verified`) yazıyor. (2) Testlerde sink'in şu anahtarları `[REDACTED]` yaptığı görüldü (yasaklı segment): `account.email_verified.password_removed`, `password.reset_requested.code_issued`, `password.change_required_set.must_change_password`.
 - **Önerilen değişiklik:** (1) Administrator kanıtında aktör `Actor::System` (gerçek aktör admin olayında) veya `impersonator` alanı. (2) Anahtarları yasaklı segment içermeyen adlara çevirmek (ör. `credential_removed`, `reset_link_issued`, `must_change`).
 - **Geriye uyumluluk:** Yalnızca audit içeriği değişir.
-- **Durum:** Açık — **authn-account**, **authn-password** (düşük öncelik)
+- **Durum:** Kısmen uygulandı (wave 1) — (2) anahtar yeniden adlandırmak yerine authn-audit sanitizer'ı yasaklı kelimeli anahtarlarda **boolean** değerleri korur (K-15; boolean olmayanlar yine redakte). (1) `Actor::User(admin)` → **açık** (K-14, authn-account).
 
 ### 2026-11-04 — Sunucu bağlaması (bilgi)
 - **Talep eden:** authn-admin
@@ -735,7 +735,7 @@ Dalga A'nın tüm talepleri işlendi; her kaydın **Durum** satırı güncellend
 - **Gerekçe:** `POST /v1/admin/users/{id}/reset-mfa` TOTP/SMS/e-posta faktörlerini, kurtarma kodlarını ve güvenilir cihazları siler, passkey'leri silemez: authn-webauthn'de yalnızca principal'a bağlı, step-up isteyen `delete_passkey` var. Sonuç: (a) hesabı ele geçirilmiş kullanıcıda saldırganın kaydettiği passkey sıfırlamadan sonra da şifresiz girişe izin verir; (b) passkey'i kaybolan cihazdaki kullanıcı passkey ikinci faktör olarak kayıtlı kaldıkça kilitli kalabilir. authn-admin README'sinde açık risk (orta) olarak kayıtlı.
 - **Önerilen değişiklik:** `WebauthnService::remove_all_passkeys_in_tx(&self, conn: &mut PgConnection, ctx: &RequestContext, user: UserId) -> Result<u32, AuthError>` — çağıranın transaction'ında kullanıcının tüm passkey'lerini siler, `passkey.removed` olayını `Actor::System` ile yazar (gerçek aktör authn-admin'in `admin.action` olayında), son giriş yöntemi kuralını uygulamaz (admin kararı; şifre sıfırlama ile birlikte kullanılır) ve kullanıcı bildirimini aynı transaction'da kuyruğa alır. authn-admin bunu `reset_user_mfa_in_tx` ile aynı transaction'da çağırır (`AdminServiceDeps`'e `WebauthnService` eklenir; Dalga B → Dalga A bağımlılığı izinli).
 - **Geriye uyumluluk:** Yalnızca ekleme.
-- **Durum:** Açık — **authn-webauthn**
+- **Durum:** Uygulandı (wave 1) — `WebauthnService::remove_all_passkeys_in_tx(conn, ctx, user) -> u32` (talep edilen imza); authn-admin `AdminServiceDeps.webauthn` ile aynı transaction'da çağırır; testler `pky_04_remove_all_passkeys_in_tx_for_admin_reset`, `adm_03_reset_mfa_removes_passkeys_and_they_no_longer_authenticate`. Sunucu `AdminServiceDeps`'e `webauthn` vermeli (K-50).
 
 
 ## authn-server

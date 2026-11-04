@@ -71,9 +71,21 @@ fn b64_json(value: &serde_json::Value) -> Result<String, AuthError> {
 }
 
 impl AppleClientSecret {
-    /// Parses the configured PKCS#8 PEM key (fail fast at start-up).
+    /// Parses the configured PKCS#8 PEM key — inline
+    /// (`private_key_pem`) or from `private_key_file` (SOC-07) — and fails
+    /// fast at start-up. The file's content and path never appear in errors.
     pub fn from_config(config: &AppleProvider, ttl: Duration) -> Result<Self, AuthError> {
-        let pem = Zeroizing::new(config.private_key_pem.expose_secret().to_owned());
+        let pem = match (&config.private_key_pem, &config.private_key_file) {
+            (Some(inline), None) => Zeroizing::new(inline.expose_secret().to_owned()),
+            (None, Some(path)) => Zeroizing::new(std::fs::read_to_string(path).map_err(|_| {
+                AuthError::internal("oidc_client.apple.private_key_file could not be read")
+            })?),
+            _ => {
+                return Err(AuthError::internal(
+                    "exactly one of oidc_client.apple.private_key_pem and private_key_file must be set",
+                ));
+            }
+        };
         Self::new(
             &pem,
             &config.team_id,
@@ -193,6 +205,41 @@ mod tests {
 
     fn decode(part: &str) -> serde_json::Value {
         serde_json::from_slice(&URL_SAFE_NO_PAD.decode(part).unwrap()).unwrap()
+    }
+
+    fn apple_config(pem: Option<&str>, file: Option<std::path::PathBuf>) -> AppleProvider {
+        AppleProvider {
+            client_id: "com.example.web".to_owned(),
+            team_id: "TEAMID1234".to_owned(),
+            key_id: "KEYID12345".to_owned(),
+            private_key_pem: pem.map(|p| authn_core::secret::SecretString::from(p.to_owned())),
+            private_key_file: file,
+            native_client_ids: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn soc_07_private_key_is_read_from_a_file_or_inline() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("authn-apple-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("apple.p8");
+        std::fs::write(&path, TEST_EC_KEY).unwrap();
+        let ttl = Duration::from_secs(3600);
+        let from_file = AppleClientSecret::from_config(&apple_config(None, Some(path)), ttl);
+        assert!(from_file.is_ok());
+        let inline = AppleClientSecret::from_config(&apple_config(Some(TEST_EC_KEY), None), ttl);
+        assert!(inline.is_ok());
+        // Missing file, neither and both sources fail fast.
+        let missing = dir.join("missing.p8");
+        assert!(AppleClientSecret::from_config(&apple_config(None, Some(missing)), ttl).is_err());
+        assert!(AppleClientSecret::from_config(&apple_config(None, None), ttl).is_err());
+        let both = apple_config(Some(TEST_EC_KEY), Some(dir.join("apple.p8")));
+        assert!(AppleClientSecret::from_config(&both, ttl).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

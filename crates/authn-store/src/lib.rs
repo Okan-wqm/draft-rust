@@ -37,4 +37,5 @@ pub use signing_keys::{SigningKeyError, SigningKeyRecord, SigningKeyRepository};
 pub use tx::{PgTx, begin, begin_serializable, commit, with_tx};
 pub use users::{
     NewPasswordHash, NewUser, PasswordCredentialRecord, UserClaim, UserRecord, UserRepository,
+    UserSearchFilter,
 };

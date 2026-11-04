@@ -84,7 +84,11 @@ pub fn deliver_before(kind: &NotificationKind) -> Option<OffsetDateTime> {
         | NotificationKind::NewDeviceLogin { .. }
         | NotificationKind::SuspiciousLoginBlocked { .. }
         | NotificationKind::AccountDeletionCancelled { .. }
-        | NotificationKind::ImpersonationStarted { .. } => None,
+        | NotificationKind::ImpersonationStarted { .. }
+        | NotificationKind::IdentityLinked { .. }
+        | NotificationKind::IdentityUnlinked { .. }
+        | NotificationKind::PasskeyCloneSuspected { .. }
+        | NotificationKind::EmailChangeReverted { .. } => None,
     }
 }
 
@@ -179,7 +183,14 @@ pub(crate) fn email_values(
             v.insert("at", at(when));
         }
         NotificationKind::MfaReset { at: when }
-        | NotificationKind::AccountDeletionCancelled { at: when } => {
+        | NotificationKind::AccountDeletionCancelled { at: when }
+        | NotificationKind::PasskeyCloneSuspected { at: when }
+        | NotificationKind::EmailChangeReverted { at: when } => {
+            v.insert("at", at(when));
+        }
+        NotificationKind::IdentityLinked { provider, at: when }
+        | NotificationKind::IdentityUnlinked { provider, at: when } => {
+            v.insert("provider", detail(provider));
             v.insert("at", at(when));
         }
         NotificationKind::MfaEmailCode {
@@ -362,7 +373,11 @@ pub(crate) fn secret_parts(kind: &NotificationKind) -> SecretParts {
         | NotificationKind::RecoveryCodeUsed { .. }
         | NotificationKind::SuspiciousLoginBlocked { .. }
         | NotificationKind::AccountDeletionCancelled { .. }
-        | NotificationKind::ImpersonationStarted { .. } => {}
+        | NotificationKind::ImpersonationStarted { .. }
+        | NotificationKind::IdentityLinked { .. }
+        | NotificationKind::IdentityUnlinked { .. }
+        | NotificationKind::PasskeyCloneSuspected { .. }
+        | NotificationKind::EmailChangeReverted { .. } => {}
     }
     SecretParts { tokens, codes }
 }
@@ -468,6 +483,16 @@ pub(crate) fn samples(locale: Locale, now: OffsetDateTime) -> Vec<Notification> 
             at: now,
             expires_at: now + Duration::minutes(15),
         },
+        NotificationKind::IdentityLinked {
+            provider: "Google".to_owned(),
+            at: now,
+        },
+        NotificationKind::IdentityUnlinked {
+            provider: "Acme SSO".to_owned(),
+            at: now,
+        },
+        NotificationKind::PasskeyCloneSuspected { at: now },
+        NotificationKind::EmailChangeReverted { at: now },
     ];
     let email = EmailAddress::parse("ada@example.com").ok();
     kinds

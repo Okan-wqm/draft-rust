@@ -52,6 +52,11 @@ pub enum KeyPurpose {
     OAuthState,
     /// Sealing of webhook signing secrets derivation inputs (AUD-07).
     WebhookSecret,
+    /// Keyed hash of client device ids remembered per user
+    /// (`known_devices.device_hash`, RSK-02, CRY-11). Its only consumer is
+    /// the "new device" signal: the key is independent of
+    /// [`KeyPurpose::RateLimitKey`], which device hashes used before.
+    KnownDevice,
 }
 
 impl KeyPurpose {
@@ -67,6 +72,7 @@ impl KeyPurpose {
         Self::RateLimitKey,
         Self::OAuthState,
         Self::WebhookSecret,
+        Self::KnownDevice,
     ];
 
     /// The HKDF `info` label.
@@ -83,6 +89,7 @@ impl KeyPurpose {
             Self::RateLimitKey => "authn/v1/rate-limit-key",
             Self::OAuthState => "authn/v1/oauth-state",
             Self::WebhookSecret => "authn/v1/webhook-secret",
+            Self::KnownDevice => "authn/v1/known-device",
         }
     }
 }

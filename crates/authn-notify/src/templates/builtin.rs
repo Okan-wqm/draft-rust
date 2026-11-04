@@ -6,7 +6,7 @@ use authn_core::domain::Locale;
 pub const LOCALES: [Locale; 2] = [Locale::En, Locale::Tr];
 
 /// Every e-mail template kind (`NotificationKind::template_name`).
-pub const EMAIL_TEMPLATES: [&str; 20] = [
+pub const EMAIL_TEMPLATES: [&str; 24] = [
     "email_verification",
     "registration_attempt",
     "password_reset",
@@ -27,6 +27,10 @@ pub const EMAIL_TEMPLATES: [&str; 20] = [
     "login_code",
     "org_ownership_transfer",
     "impersonation_started",
+    "identity_linked",
+    "identity_unlinked",
+    "passkey_clone_suspected",
+    "email_change_reverted",
 ];
 
 /// Every SMS template kind (`SmsNotificationKind::template_name`).
@@ -102,6 +106,18 @@ pub(crate) const BUILTIN: &[(&str, &str)] = templates![
     "en/email/impersonation_started.subject.txt",
     "en/email/impersonation_started.txt",
     "en/email/impersonation_started.html",
+    "en/email/identity_linked.subject.txt",
+    "en/email/identity_linked.txt",
+    "en/email/identity_linked.html",
+    "en/email/identity_unlinked.subject.txt",
+    "en/email/identity_unlinked.txt",
+    "en/email/identity_unlinked.html",
+    "en/email/passkey_clone_suspected.subject.txt",
+    "en/email/passkey_clone_suspected.txt",
+    "en/email/passkey_clone_suspected.html",
+    "en/email/email_change_reverted.subject.txt",
+    "en/email/email_change_reverted.txt",
+    "en/email/email_change_reverted.html",
     "en/sms/mfa_sms_code.txt",
     "en/sms/phone_verification.txt",
     "tr/email/layout.txt",
@@ -166,6 +182,18 @@ pub(crate) const BUILTIN: &[(&str, &str)] = templates![
     "tr/email/impersonation_started.subject.txt",
     "tr/email/impersonation_started.txt",
     "tr/email/impersonation_started.html",
+    "tr/email/identity_linked.subject.txt",
+    "tr/email/identity_linked.txt",
+    "tr/email/identity_linked.html",
+    "tr/email/identity_unlinked.subject.txt",
+    "tr/email/identity_unlinked.txt",
+    "tr/email/identity_unlinked.html",
+    "tr/email/passkey_clone_suspected.subject.txt",
+    "tr/email/passkey_clone_suspected.txt",
+    "tr/email/passkey_clone_suspected.html",
+    "tr/email/email_change_reverted.subject.txt",
+    "tr/email/email_change_reverted.txt",
+    "tr/email/email_change_reverted.html",
     "tr/sms/mfa_sms_code.txt",
     "tr/sms/phone_verification.txt",
 ];

@@ -1,6 +1,6 @@
 {% extends "tr/email/layout.txt" %}
 {% block content %}
-Az önce bu e-posta adresiyle yeni bir {{ app_name }} hesabı oluşturulmaya çalışıldı. Zaten bir hesabınız olduğu için hiçbir şey değiştirilmedi ve yeni hesap açılmadı.
+Az önce bu e-posta adresi bir {{ app_name }} hesabı için kullanılmak istendi — kaydolmak ya da başka bir hesabın adresini buna değiştirmek için. Adres zaten sizin hesabınıza ait olduğu için hiçbir şey değiştirilmedi ve adres başka kimseye verilmedi.
 {% endblock %}
 {% block closing %}
 Bu siz idiyseniz bunun yerine giriş yapın: {{ sign_in_link }}

@@ -1,0 +1,13 @@
+{% extends "en/email/layout.html" %}
+{% block content %}
+<p style="margin:0 0 16px;">{{ provider }} was removed from the sign-in methods of your {{ app_name }} account. You can no longer sign in with it.</p>
+{% endblock %}
+{% block details %}
+<table role="presentation" cellspacing="0" cellpadding="0" style="margin:0 0 16px;font-size:14px;">
+<tr><td style="padding:2px 12px 2px 0;color:#52606d;vertical-align:top;">Provider</td><td style="padding:2px 0;">{{ provider }}</td></tr>
+<tr><td style="padding:2px 12px 2px 0;color:#52606d;vertical-align:top;">Time</td><td style="padding:2px 0;">{{ at }}</td></tr>
+</table>
+{% endblock %}
+{% block closing %}
+<p style="margin:0 0 16px;">If you did not do this, someone may have access to your account: <a href="{{ reset_request_link }}">reset your password</a> immediately and review your security settings.</p>
+{% endblock %}

@@ -46,6 +46,7 @@ Dalga A. `core`, `crypto`, `store` dışında hiçbir authn crate'ine bağımlı
 | `list_passkeys(&principal) -> Vec<PasskeySummary>` | PKY-04 | HTTP |
 | `rename_passkey(&ctx, &principal, CredentialId, &str) -> PasskeySummary` | PKY-04 | HTTP |
 | `delete_passkey(&ctx, &principal, CredentialId)` | PKY-04 | HTTP |
+| `remove_all_passkeys_in_tx(&mut conn, &ctx, UserId) -> u32` | ADM-03, PKY-04 (wave 1, K-01) | authn-admin (MFA sıfırlama). Çağıranın transaction'ında **tüm** passkey'leri siler; step-up ve son giriş yöntemi kuralı **yok** (yetki çağıranın işi), kullanıcı satırını kilitler, passkey başına `passkey.removed` (`Actor::System`, `reason: admin_reset`), en az biri silindiyse bir `mfa_factor_removed` bildirimi; kullanıcının açık seremonileri (kayıt dahil) aynı transaction'da yakılır. Testler: `pky_04_remove_all_passkeys_in_tx_for_admin_reset`, `pky_04_remove_all_passkeys_in_tx_cancels_open_ceremonies` |
 | `start_authentication(&ctx, AuthenticationTarget, &PasskeyPolicy) -> AuthenticationStart` (verilen politika `PasskeyPolicySource` ile en katı biçimde birleştirilir) | PKY-01/02/08 | authn-session |
 | `finish_authentication(&ctx, AuthenticationFinish) -> AuthenticatedPasskey` | PKY-01/02/05 | authn-session |
 | `passkey_count_in(&mut conn, user, login_capable_only) -> u32` | MFA-07/08, PWD-11 | authn-server (authn-mfa / authn-password trait'leri) |
@@ -140,6 +141,17 @@ Kabul edilen riskler (gerekçeli; düzeltme gerektirmez):
 - **Global `credential_id` benzersizliği:** başka bir hesaptaki credential id'si ile kayıt denendiğinde `passkey_already_registered` döner. Bu yalnızca o ham credential id'sini zaten bilen ve kendi oturumunda kayıt seremonisi başlatabilen birine id'nin kayıtlı olduğunu söyler; hesap ele geçirme imkânı yoktur (her satır kendi açık anahtarıyla doğrulanır).
 - **Passkey adlarında Unicode normalizasyonu (NFC) / benzer glif kontrolü yok.** Adlar yalnızca sahibine gösterilir, audit ve bildirimlere girmez; kontrol, bidi-override, görünmez ve etiket karakterleri reddedilir.
 - **Attestation sertifikalarının geçerlilik zamanı** `webauthn-rs` içinde `SystemTime` ile kontrol edilir (enjekte edilen `Clock` değil); yalnızca kısıtlayıcı politika altındaki kayıtları etkiler.
+
+### Güvenlik incelemesi (wave 1, K-01 — 2026-11-04)
+
+| Önem | Bulgu | Düzeltme | Test |
+|------|-------|----------|------|
+| Düşük | `remove_all_passkeys_in_tx` yalnızca kimlik bilgilerini siliyordu; sıfırlamadan **önce** başlatılmış bir **kayıt** seremonisi sıfırlamadan sonra tamamlanabiliyor ve "tüm passkey'leri sil"in hemen ardından yeni bir passkey ekliyordu. Admin MFA sıfırlaması aynı transaction'da tüm oturumları kapattığı için varsayılan yapılandırmada sömürülemez; ancak `session.access_token_session_check = false` iken iptal edilmiş oturumun access token'ı `access_token_ttl` boyunca geçerli kalır ve bu pencerede seremoni bitirilebilirdi. Belge ("devam eden seremoniler tamamlanamaz") yalnızca kimlik doğrulama seremonileri için doğruydu. | Kullanıcının açık seremonileri (`webauthn_ceremonies`, `user_id` eşleşen, tüketilmemiş) aynı transaction'da tüketilmiş işaretlenir — passkey olmasa da. | `pky_04_remove_all_passkeys_in_tx_cancels_open_ceremonies` |
+
+Kabul edilen riskler:
+
+- **Son giriş yöntemi kuralı bilinçli olarak uygulanmaz.** Yalnızca passkey'le giren (şifresiz, sosyal kimliği olmayan) bir hesapta sıfırlamadan sonra passkey ve şifre kalmaz. Hesap kullanılamaz hâle gelmez: e-posta adresine sahip olan kullanıcı magic link / e-posta koduyla (SES-18/19) girer, ardından zorunlu adımlar (SES-22) yeni passkey veya MFA kaydını ister; kullanıcıya hem `mfa_reset` hem `mfa_factor_removed` bildirimi gider. Kuralı uygulamak, saldırganın eklediği passkey'i korumak demek olurdu (K-01'in kendisi).
+- **`access_token_session_check = false` iken** iptal edilmiş oturumun access token'ı `access_token_ttl` (varsayılan 10 dk) boyunca kabul edildiğinden, o token'ı elinde tutan biri sıfırlamadan sonra **yeni** bir kayıt seremonisi başlatıp ilk passkey'i ekleyebilir (`step_up_for_first_passkey = false` ise step-up da gerekmez). Bu, oturum katmanının belgelenmiş ödünleşimidir (authn-session README); yüksek güvenlik gereken kurulumlarda kontrol açık kalmalıdır (varsayılan).
 
 ## authn-server / Dalga B'nin bağlaması gerekenler
 

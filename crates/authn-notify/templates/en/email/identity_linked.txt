@@ -1,0 +1,11 @@
+{% extends "en/email/layout.txt" %}
+{% block content %}
+{{ provider }} was linked to your {{ app_name }} account. You can now sign in with it.
+{% endblock %}
+{% block details %}
+Provider: {{ provider }}
+Time: {{ at }}
+{% endblock %}
+{% block closing %}
+If you did not do this, someone may have access to your account: remove the provider in your security settings, reset your password and sign out of all devices: {{ reset_request_link }}
+{% endblock %}

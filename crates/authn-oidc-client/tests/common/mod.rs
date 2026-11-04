@@ -233,12 +233,18 @@ impl Harness {
         config.oidc_client.microsoft = Some(MicrosoftProvider {
             client: client(MS_WEB, &[MS_NATIVE]),
             tenant: "common".to_owned(),
+            allowed_tenants: Vec::new(),
+            // The flow tests exercise personal-account sign-ups; the
+            // default (`false`) is covered by `identity.rs` unit tests and
+            // `soc_05_untrusted_providers_never_create_accounts`.
+            trust_personal_account_email: true,
         });
         config.oidc_client.apple = Some(AppleProvider {
             client_id: APPLE_WEB.to_owned(),
             team_id: "TEAMID1234".to_owned(),
             key_id: "APPLEKEY01".to_owned(),
-            private_key_pem: SecretString::from(EC_KEY.to_owned()),
+            private_key_pem: Some(SecretString::from(EC_KEY.to_owned())),
+            private_key_file: None,
             native_client_ids: vec![APPLE_NATIVE.to_owned()],
         });
         config.oidc_client.github = Some(client(GITHUB_WEB, &[]));
@@ -248,6 +254,7 @@ impl Harness {
             issuer_url: idp.issuer("/acme"),
             client: client(ACME_WEB, &[ACME_NATIVE]),
             scopes: vec!["openid".to_owned(), "email".to_owned()],
+            trust_email_verified: true,
         }];
         config.protect.redirect_allow_list = vec!["https://app.example.com/after".to_owned()];
 

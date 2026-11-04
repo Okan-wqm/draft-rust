@@ -14,12 +14,13 @@ use std::time::Duration;
 use async_trait::async_trait;
 use axum::response::Response;
 use serde::Serialize;
+use sqlx::PgConnection;
 use time::OffsetDateTime;
 
 use crate::domain::{AuthMethodRef, ClientKind, FactorKind, LoginMethod};
 use crate::error::AuthError;
 use crate::http::RequestContext;
-use crate::id::{ChallengeId, OrgId, SessionId, UserId};
+use crate::id::{ChallengeId, EventId, OrgId, SessionId, UserId};
 use crate::secret::SensitiveString;
 
 /// Runs the post-identification login pipeline.
@@ -73,6 +74,35 @@ pub trait SessionIssuer: Send + Sync {
             ClientKind::Native => Err(AuthError::new(crate::error::codes::common::BAD_REQUEST)
                 .with_context("native impersonation is not supported by this issuer")),
         }
+    }
+
+    /// [`SessionIssuer::start_impersonation_with`] inside the **caller's
+    /// transaction** `conn`, recording the `admin.impersonation_started`
+    /// audit event with the caller-chosen id `event_id` (ADM-04, ADM-08).
+    ///
+    /// The caller (authn-admin) can then store the justification of the
+    /// impersonation against `event_id` in the same transaction, so the
+    /// session, the user notification, the audit event and the
+    /// justification commit — or roll back — together. Nothing is visible
+    /// until the caller commits `conn`; dropping it without commit undoes
+    /// everything. `event_id` must be fresh (a duplicate fails the insert).
+    ///
+    /// The default implementation refuses (an issuer without transactional
+    /// support must not pretend to be atomic); the authn-session
+    /// implementation overrides it.
+    async fn start_impersonation_audited(
+        &self,
+        conn: &mut PgConnection,
+        ctx: &RequestContext,
+        request: ImpersonationRequest,
+        client: ClientKind,
+        admin_session: Option<SessionId>,
+        event_id: EventId,
+    ) -> Result<IssuedSession, AuthError> {
+        let _ = (conn, ctx, request, client, admin_session, event_id);
+        Err(AuthError::internal(
+            "transactional impersonation is not supported by this issuer",
+        ))
     }
 }
 

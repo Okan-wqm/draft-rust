@@ -106,6 +106,26 @@ pub enum UserClaim {
     LockExpiredAt(OffsetDateTime),
 }
 
+/// Filters of [`UserRepository::search`] (platform admin listing, ADM-02).
+/// Every `None` filter is ignored.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UserSearchFilter {
+    /// Prefix of the **normalized** address (`starts_with`, not `LIKE`:
+    /// `%` and `_` match literally). The caller normalizes it the way
+    /// `EmailAddress::normalized` does (lowercase).
+    pub email_prefix: Option<String>,
+    /// Exact status.
+    pub status: Option<AccountStatus>,
+    /// `is_platform_admin`.
+    pub platform_admin: Option<bool>,
+    /// Whether the address is verified.
+    pub email_verified: Option<bool>,
+    /// `created_at >= created_after`.
+    pub created_after: Option<OffsetDateTime>,
+    /// `created_at < created_before`.
+    pub created_before: Option<OffsetDateTime>,
+}
+
 /// Input of [`UserRepository::create`].
 #[derive(Debug, Clone)]
 pub struct NewUser {
@@ -286,6 +306,90 @@ impl UserRepository {
             .bind(skip)
             .fetch_optional(conn)
             .await?)
+    }
+
+    /// One keyset page of users, newest first (`created_at DESC, id DESC`,
+    /// index `users_created_id_idx`), for the platform admin listing
+    /// (ADM-02). `after` is the `(created_at, id)` of the last row of the
+    /// previous page; at most `limit` rows are returned (callers fetch
+    /// `page + 1` to learn whether another page exists). Read-only.
+    pub async fn search<'e>(
+        executor: impl PgExecutor<'e>,
+        filter: &UserSearchFilter,
+        after: Option<(OffsetDateTime, UserId)>,
+        limit: i64,
+    ) -> Result<Vec<UserRecord>, StoreError> {
+        let sql = concat!(
+            "SELECT ",
+            user_columns!(),
+            " FROM users \
+             WHERE ($1::text IS NULL OR starts_with(email_normalized, $1)) \
+               AND ($2::text IS NULL OR status = $2) \
+               AND ($3::boolean IS NULL OR is_platform_admin = $3) \
+               AND ($4::boolean IS NULL OR (email_verified_at IS NOT NULL) = $4) \
+               AND ($5::timestamptz IS NULL OR created_at >= $5) \
+               AND ($6::timestamptz IS NULL OR created_at < $6) \
+               AND ($7::timestamptz IS NULL OR (created_at, id) < ($7, $8)) \
+             ORDER BY created_at DESC, id DESC \
+             LIMIT $9"
+        );
+        Ok(sqlx::query_as::<_, UserRecord>(sql)
+            .bind(filter.email_prefix.as_deref())
+            .bind(filter.status)
+            .bind(filter.platform_admin)
+            .bind(filter.email_verified)
+            .bind(filter.created_after)
+            .bind(filter.created_before)
+            .bind(after.map(|(at, _)| at))
+            .bind(after.map(|(_, id)| id))
+            .bind(limit.max(0))
+            .fetch_all(executor)
+            .await?)
+    }
+
+    /// Users whose password was last changed strictly before `before` and
+    /// is not already flagged `must_change`, with id greater than `after`,
+    /// in id order, at most `limit` (ADM-06 bulk forced reset; the caller
+    /// pages with the last id). Read-only.
+    pub async fn stale_passwords(
+        conn: &mut PgConnection,
+        before: OffsetDateTime,
+        after: Option<UserId>,
+        limit: i64,
+    ) -> Result<Vec<UserId>, StoreError> {
+        Ok(sqlx::query_scalar(
+            "SELECT user_id FROM password_credentials \
+             WHERE changed_at < $1 AND NOT must_change \
+               AND ($2::uuid IS NULL OR user_id > $2) \
+             ORDER BY user_id LIMIT $3",
+        )
+        .bind(before)
+        .bind(after)
+        .bind(limit.max(0))
+        .fetch_all(conn)
+        .await?)
+    }
+
+    /// Sets the platform-admin flags (ADM-05 break-glass creation, CLI).
+    /// The schema refuses `is_break_glass` without `is_platform_admin`
+    /// (`users_break_glass_is_admin_check`, surfaced as
+    /// `StoreError::CheckViolation`). Authorization and auditing are the
+    /// caller's job. Returns whether a row changed.
+    pub async fn set_admin_flags(
+        conn: &mut PgConnection,
+        id: UserId,
+        is_platform_admin: bool,
+        is_break_glass: bool,
+    ) -> Result<bool, StoreError> {
+        let result = sqlx::query(
+            "UPDATE users SET is_platform_admin = $2, is_break_glass = $3 WHERE id = $1",
+        )
+        .bind(id)
+        .bind(is_platform_admin)
+        .bind(is_break_glass)
+        .execute(conn)
+        .await?;
+        Ok(result.rows_affected() == 1)
     }
 
     /// Finds a user by normalized address (ACC-03). Callers on

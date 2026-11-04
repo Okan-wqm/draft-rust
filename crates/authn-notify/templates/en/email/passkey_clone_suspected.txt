@@ -1,0 +1,10 @@
+{% extends "en/email/layout.txt" %}
+{% block content %}
+One of the passkeys of your {{ app_name }} account was used in a way that suggests it may have been copied to another device. The passkey is marked in your security settings.
+{% endblock %}
+{% block details %}
+Time: {{ at }}
+{% endblock %}
+{% block closing %}
+If you do not recognize this, remove the marked passkey, register a new one and reset your password: {{ reset_request_link }}
+{% endblock %}

@@ -316,6 +316,7 @@ dependencies = [
  "authn-protect",
  "authn-store",
  "authn-testkit",
+ "authn-webauthn",
  "axum",
  "http",
  "http-body-util",
@@ -331,8 +332,11 @@ dependencies = [
  "tokio",
  "tower",
  "tracing",
+ "url",
  "utoipa",
  "uuid",
+ "webauthn-authenticator-rs",
+ "webauthn-rs-proto",
 ]
 
 [[package]]

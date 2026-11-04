@@ -487,3 +487,218 @@ async fn cry_04_wrapped_legacy_hashes_require_pepper_version(pool: PgPool) {
     .await
     .unwrap();
 }
+
+async fn user_at(
+    conn: &mut sqlx::PgConnection,
+    email: &str,
+    status: AccountStatus,
+    created_at: OffsetDateTime,
+) -> UserId {
+    let new = NewUser {
+        id: UserId::generate(),
+        email: EmailAddress::parse(email).unwrap(),
+        status,
+        created_at,
+    };
+    UserRepository::create(conn, &new).await.unwrap().id
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn adm_02_search_filters_and_pages_newest_first(pool: PgPool) {
+    use authn_store::UserSearchFilter;
+    let mut conn = pool.acquire().await.unwrap();
+    let t = |m: i64| NOW + time::Duration::minutes(m);
+    let a = user_at(&mut conn, "alice@example.com", AccountStatus::Active, t(1)).await;
+    let b = user_at(
+        &mut conn,
+        "alex@example.com",
+        AccountStatus::Suspended,
+        t(2),
+    )
+    .await;
+    let c = user_at(&mut conn, "bob@example.com", AccountStatus::Active, t(3)).await;
+    // Same created_at: the id breaks the tie.
+    let d = user_at(&mut conn, "al_x@example.com", AccountStatus::Active, t(3)).await;
+    UserRepository::mark_email_verified(&mut conn, a, NOW)
+        .await
+        .unwrap();
+    UserRepository::set_admin_flags(&mut conn, c, true, false)
+        .await
+        .unwrap();
+
+    let all = UserRepository::search(&pool, &UserSearchFilter::default(), None, 10)
+        .await
+        .unwrap();
+    let ids: Vec<UserId> = all.iter().map(|u| u.id).collect();
+    let (first, second) = if c > d { (c, d) } else { (d, c) };
+    assert_eq!(ids, vec![first, second, b, a]);
+
+    // Keyset paging: two pages of two, no overlap.
+    let page1 = UserRepository::search(&pool, &UserSearchFilter::default(), None, 2)
+        .await
+        .unwrap();
+    let last = page1.last().unwrap();
+    let page2 = UserRepository::search(
+        &pool,
+        &UserSearchFilter::default(),
+        Some((last.created_at, last.id)),
+        2,
+    )
+    .await
+    .unwrap();
+    let paged: Vec<UserId> = page1.iter().chain(&page2).map(|u| u.id).collect();
+    assert_eq!(paged, ids);
+
+    let by = |filter: UserSearchFilter| {
+        let pool = pool.clone();
+        async move {
+            let mut ids: Vec<UserId> = UserRepository::search(&pool, &filter, None, 10)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|u| u.id)
+                .collect();
+            ids.sort();
+            ids
+        }
+    };
+    let sorted = |mut v: Vec<UserId>| {
+        v.sort();
+        v
+    };
+    // `starts_with`, not LIKE: `_` matches only itself.
+    let prefix = |p: &str| UserSearchFilter {
+        email_prefix: Some(p.to_owned()),
+        ..UserSearchFilter::default()
+    };
+    assert_eq!(by(prefix("al")).await, sorted(vec![a, b, d]));
+    assert_eq!(by(prefix("al_")).await, vec![d]);
+    assert_eq!(by(prefix("%")).await, Vec::<UserId>::new());
+    let status = UserSearchFilter {
+        status: Some(AccountStatus::Suspended),
+        ..UserSearchFilter::default()
+    };
+    assert_eq!(by(status).await, vec![b]);
+    let admins = UserSearchFilter {
+        platform_admin: Some(true),
+        ..UserSearchFilter::default()
+    };
+    assert_eq!(by(admins).await, vec![c]);
+    let verified = UserSearchFilter {
+        email_verified: Some(true),
+        ..UserSearchFilter::default()
+    };
+    assert_eq!(by(verified).await, vec![a]);
+    let range = UserSearchFilter {
+        created_after: Some(t(2)),
+        created_before: Some(t(3)),
+        ..UserSearchFilter::default()
+    };
+    assert_eq!(by(range).await, vec![b]);
+    // A negative limit is treated as zero instead of failing.
+    assert!(
+        UserRepository::search(&pool, &UserSearchFilter::default(), None, -1)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn adm_02_search_uses_the_keyset_index(pool: PgPool) {
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM pg_indexes WHERE tablename = 'users' \
+         AND indexname = 'users_created_id_idx' \
+         AND indexdef LIKE '%(created_at DESC, id DESC)%')",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(exists);
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn adm_06_stale_passwords_pages_by_id_and_skips_flagged(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let hash = SensitiveString::new("$argon2id$v=19$m=19456,t=2,p=1$c2FsdA$aGFzaA");
+    let pw = NewPasswordHash {
+        password_hash: &hash,
+        algorithm: "argon2id",
+        pepper_version: Some(1),
+    };
+    let old = NOW - time::Duration::days(400);
+    let mut stale = Vec::new();
+    for i in 0..3 {
+        let id = user_at(
+            &mut conn,
+            &format!("stale{i}@example.com"),
+            AccountStatus::Active,
+            NOW,
+        )
+        .await;
+        UserRepository::set_password(&mut conn, id, &pw, false, old)
+            .await
+            .unwrap();
+        stale.push(id);
+    }
+    stale.sort();
+    let flagged = user_at(&mut conn, "flagged@example.com", AccountStatus::Active, NOW).await;
+    UserRepository::set_password(&mut conn, flagged, &pw, true, old)
+        .await
+        .unwrap();
+    let fresh = user_at(&mut conn, "fresh@example.com", AccountStatus::Active, NOW).await;
+    UserRepository::set_password(&mut conn, fresh, &pw, false, NOW)
+        .await
+        .unwrap();
+    let _no_password = user_at(&mut conn, "nopw@example.com", AccountStatus::Active, NOW).await;
+
+    let before = NOW - time::Duration::days(365);
+    let page1 = UserRepository::stale_passwords(&mut conn, before, None, 2)
+        .await
+        .unwrap();
+    assert_eq!(page1, stale[..2]);
+    let page2 = UserRepository::stale_passwords(&mut conn, before, page1.last().copied(), 2)
+        .await
+        .unwrap();
+    assert_eq!(page2, stale[2..]);
+    let page3 = UserRepository::stale_passwords(&mut conn, before, page2.last().copied(), 2)
+        .await
+        .unwrap();
+    assert!(page3.is_empty());
+}
+
+#[sqlx::test(migrations = "../../migrations")]
+async fn adm_05_set_admin_flags_respects_the_break_glass_invariant(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let id = user_at(&mut conn, "root@example.com", AccountStatus::Active, NOW).await;
+    assert!(
+        UserRepository::set_admin_flags(&mut conn, id, true, true)
+            .await
+            .unwrap()
+    );
+    let record = UserRepository::find_by_id(&pool, id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(record.is_platform_admin && record.is_break_glass);
+    // Break-glass without platform admin is refused by the schema.
+    let err = UserRepository::set_admin_flags(&mut conn, id, false, true)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, StoreError::CheckViolation { .. }), "{err:?}");
+    assert!(
+        !UserRepository::set_admin_flags(&mut conn, UserId::generate(), true, false)
+            .await
+            .unwrap()
+    );
+    assert!(
+        UserRepository::set_admin_flags(&mut conn, id, false, false)
+            .await
+            .unwrap()
+    );
+    let record = UserRepository::find_by_id(&pool, id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!record.is_platform_admin && !record.is_break_glass);
+}

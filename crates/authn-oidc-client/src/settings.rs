@@ -9,7 +9,8 @@ use url::Url;
 
 /// Shortest gap between two JWKS downloads forced by an unknown `kid`
 /// (SOC-03): a flood of tokens with random `kid` values cannot turn into a
-/// flood of requests to the provider.
+/// flood of requests to the provider. The configured value is
+/// `oidc_client.jwks_refresh_min_interval` (same default).
 pub const DEFAULT_JWKS_REFRESH_MIN_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Lifetime of a generated Apple `client_secret` JWT (SOC-07). Apple accepts
@@ -18,9 +19,11 @@ pub const DEFAULT_APPLE_CLIENT_SECRET_TTL: Duration = Duration::from_secs(3600);
 
 /// Everything the service reads from the configuration.
 ///
-/// The fields after `step_up_max_age` have no configuration key yet (a
-/// contract change request asks for them in `[oidc_client]`); their
-/// defaults are the documented values and the server may override them.
+/// The fields after `step_up_max_age` are read from `[oidc_client]`
+/// (`microsoft.allowed_tenants`, `start_per_ip`, `native_per_ip`,
+/// `callback_per_ip`, `jwks_refresh_min_interval`) except
+/// `apple_client_secret_ttl`, which keeps its documented default; tests and
+/// the server may override any of them.
 #[derive(Debug, Clone)]
 pub struct OidcClientSettings {
     /// `[oidc_client]`.
@@ -70,12 +73,54 @@ impl OidcClientSettings {
             redirect_allow_list,
             jwt_leeway: config.crypto.jwt_leeway,
             step_up_max_age: config.session.step_up_max_age,
-            microsoft_allowed_tenants: Vec::new(),
-            start_per_ip: RateLimitPolicy::new(60, Duration::from_secs(600)),
-            native_per_ip: RateLimitPolicy::new(60, Duration::from_secs(600)),
-            callback_per_ip: RateLimitPolicy::new(60, Duration::from_secs(600)),
-            jwks_refresh_min_interval: DEFAULT_JWKS_REFRESH_MIN_INTERVAL,
+            microsoft_allowed_tenants: config
+                .oidc_client
+                .microsoft
+                .as_ref()
+                .map(|m| m.allowed_tenants.clone())
+                .unwrap_or_default(),
+            start_per_ip: config.oidc_client.start_per_ip,
+            native_per_ip: config.oidc_client.native_per_ip,
+            callback_per_ip: config.oidc_client.callback_per_ip,
+            jwks_refresh_min_interval: config.oidc_client.jwks_refresh_min_interval,
             apple_client_secret_ttl: DEFAULT_APPLE_CLIENT_SECRET_TTL,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use authn_core::config::oidc_client::MicrosoftProvider;
+    use authn_core::secret::SecretString;
+    use authn_testkit::config::TestConfigBuilder;
+
+    use super::*;
+
+    #[test]
+    fn soc_03_settings_are_read_from_the_configuration() {
+        let mut config = TestConfigBuilder::new().build();
+        config.oidc_client.start_per_ip = RateLimitPolicy::new(11, Duration::from_secs(60));
+        config.oidc_client.native_per_ip = RateLimitPolicy::new(12, Duration::from_secs(60));
+        config.oidc_client.callback_per_ip = RateLimitPolicy::new(13, Duration::from_secs(60));
+        config.oidc_client.jwks_refresh_min_interval = Duration::from_secs(15);
+        config.oidc_client.microsoft = Some(MicrosoftProvider {
+            client: authn_core::config::oidc_client::ProviderClient {
+                client_id: "ms".to_owned(),
+                client_secret: SecretString::from("s".to_owned()),
+                native_client_ids: Vec::new(),
+            },
+            tenant: "common".to_owned(),
+            allowed_tenants: vec!["72f988bf-86f1-41af-91ab-2d7cd011db47".to_owned()],
+            trust_personal_account_email: false,
+        });
+        let s = OidcClientSettings::from_app_config(&config);
+        assert_eq!(s.start_per_ip.limit, 11);
+        assert_eq!(s.native_per_ip.limit, 12);
+        assert_eq!(s.callback_per_ip.limit, 13);
+        assert_eq!(s.jwks_refresh_min_interval, Duration::from_secs(15));
+        assert_eq!(
+            s.microsoft_allowed_tenants,
+            ["72f988bf-86f1-41af-91ab-2d7cd011db47"]
+        );
     }
 }

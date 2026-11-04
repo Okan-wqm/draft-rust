@@ -233,4 +233,20 @@ impl SessionIssuer for FakeSessionIssuer {
         lock(&self.impersonations).push(request);
         Ok(self.issue(user, ClientKind::Web))
     }
+
+    /// Records the request like [`SessionIssuer::start_impersonation`]
+    /// (nothing is written to `conn`: the fake keeps no database state).
+    async fn start_impersonation_audited(
+        &self,
+        _conn: &mut sqlx::PgConnection,
+        _ctx: &RequestContext,
+        request: ImpersonationRequest,
+        client: ClientKind,
+        _admin_session: Option<authn_core::id::SessionId>,
+        _event_id: authn_core::id::EventId,
+    ) -> Result<IssuedSession, AuthError> {
+        let user = request.target_user_id;
+        lock(&self.impersonations).push(request);
+        Ok(self.issue(user, client))
+    }
 }

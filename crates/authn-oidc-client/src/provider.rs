@@ -20,8 +20,7 @@ use url::Url;
 use crate::apple::AppleClientSecret;
 use crate::settings::OidcClientSettings;
 
-/// Tenant id of personal Microsoft accounts (MSA).
-pub const MICROSOFT_CONSUMERS_TENANT: &str = "9188040d-6c67-4c5b-b112-36a304b66dad";
+pub use authn_core::config::oidc_client::{MICROSOFT_CONSUMERS_TENANT, is_guid};
 
 /// Which protocol family a provider belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,17 +116,6 @@ impl TenantPolicy {
     }
 }
 
-/// Whether `value` is a canonical GUID (`8-4-4-4-12` hex digits).
-#[must_use]
-pub fn is_guid(value: &str) -> bool {
-    let groups: Vec<&str> = value.split('-').collect();
-    groups.len() == 5
-        && groups
-            .iter()
-            .zip([8usize, 4, 4, 4, 12])
-            .all(|(g, len)| g.len() == len && g.bytes().all(|b| b.is_ascii_hexdigit()))
-}
-
 /// Where a provider's endpoints come from.
 #[derive(Debug, Clone)]
 pub enum EndpointSource {
@@ -184,6 +172,13 @@ pub struct Provider {
     pub endpoints: EndpointSource,
     /// Issuer rule (for generic providers the configured issuer).
     pub issuer: IssuerRule,
+    /// Whether the provider's own e-mail verification is trusted (SOC-05,
+    /// ADR 0002). Generic providers: `trust_email_verified` (default
+    /// `false`). Microsoft: whether a personal-account (MSA) address counts
+    /// as verified, `trust_personal_account_email` (default `false`; work
+    /// accounts still need `xms_edov`). Google, Apple, GitHub: `true` (they
+    /// verify addresses; the claim / API flag is still required).
+    pub trust_email_verified: bool,
 }
 
 impl Provider {
@@ -238,6 +233,7 @@ fn simple(
         scopes: scopes(requested),
         endpoints: EndpointSource::Static(Box::new(endpoints)),
         issuer,
+        trust_email_verified: true,
     }
 }
 
@@ -255,6 +251,7 @@ fn generic(provider: &GenericOidcProvider) -> Provider {
             issuer: provider.issuer_url.clone(),
         },
         issuer: IssuerRule::Exact(vec![provider.issuer_url.clone()]),
+        trust_email_verified: provider.trust_email_verified,
     }
 }
 
@@ -319,25 +316,24 @@ impl ProviderRegistry {
                 Some(&format!("{base}/discovery/v2.0/keys")),
                 None,
             )?;
-            providers.insert(
-                "microsoft".to_owned(),
-                simple(
-                    ProviderKind::Microsoft,
-                    "microsoft",
-                    "Microsoft",
-                    &microsoft.client,
-                    endpoints,
-                    IssuerRule::MicrosoftTenant {
-                        prefix: "https://login.microsoftonline.com/".to_owned(),
-                        suffix: "/v2.0".to_owned(),
-                        policy: TenantPolicy {
-                            configured: tenant,
-                            allowed,
-                        },
+            let mut provider = simple(
+                ProviderKind::Microsoft,
+                "microsoft",
+                "Microsoft",
+                &microsoft.client,
+                endpoints,
+                IssuerRule::MicrosoftTenant {
+                    prefix: "https://login.microsoftonline.com/".to_owned(),
+                    suffix: "/v2.0".to_owned(),
+                    policy: TenantPolicy {
+                        configured: tenant,
+                        allowed,
                     },
-                    &["openid", "email", "profile"],
-                ),
+                },
+                &["openid", "email", "profile"],
             );
+            provider.trust_email_verified = microsoft.trust_personal_account_email;
+            providers.insert("microsoft".to_owned(), provider);
         }
         if let Some(apple) = &cfg.apple {
             let secret = AppleClientSecret::from_config(apple, settings.apple_client_secret_ttl)?;
@@ -360,6 +356,7 @@ impl ProviderRegistry {
                     scopes: scopes(&["openid", "email", "name"]),
                     endpoints: EndpointSource::Static(Box::new(endpoints)),
                     issuer: IssuerRule::Exact(vec!["https://appleid.apple.com".to_owned()]),
+                    trust_email_verified: true,
                 },
             );
         }

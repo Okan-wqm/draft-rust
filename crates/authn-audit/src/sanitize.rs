@@ -13,7 +13,12 @@
 //!   the secret / personal-data deny list (`password`, `token`, `otp`,
 //!   `code`, `email`, `ip`, `phone`, `name`, …; a final `key` segment);
 //! * keys that merely *contain* an unambiguous secret word (`newpassword`,
-//!   `clientsecret`, `accesstoken`, …) are redacted as well;
+//!   `clientsecret`, `accesstoken`, …) are redacted as well — except when
+//!   the value is a **boolean**: one bit states a fact about a secret
+//!   (`must_change_password: true`, `code_issued: false`,
+//!   `password_removed: true`) and cannot itself be a secret or personal
+//!   data, so it is kept; strings, numbers, arrays, objects and `null`
+//!   under such keys are still redacted;
 //! * values: `null`, booleans, integers (`i64`/`u64`), and strings of at most
 //!   128 printable ASCII characters (no whitespace) that do not look like an
 //!   e-mail address, IP address, phone number, numeric code (≥ 4 digits),
@@ -403,7 +408,11 @@ fn sanitize_object(
             });
             continue;
         }
-        if is_forbidden_key(&key) {
+        // A boolean carries one bit: it can state a fact about a secret
+        // (`must_change_password`, `code_issued`, `password_removed`) but
+        // can never *be* a credential, token, address or name. Every other
+        // value type under a forbidden key is still redacted.
+        if is_forbidden_key(&key) && !value.is_boolean() {
             redactions.push(Redaction {
                 path,
                 rule: RedactionRule::ForbiddenKey,
@@ -776,6 +785,51 @@ mod tests {
         }
         for key in ["description_changed", "ship_count", "typed_value", "kind"] {
             assert!(!is_forbidden_key(key), "{key}");
+        }
+    }
+
+    /// K-15: boolean facts about secrets are kept (they were redacted
+    /// because their keys contain `password` / `code`), while every
+    /// non-boolean value under the same keys is still redacted.
+    #[test]
+    fn aud_03_boolean_flags_under_secret_words_are_kept() {
+        let out = sanitize(json!({
+            "must_change_password": true,
+            "code_issued": false,
+            "password_removed": true,
+        }));
+        assert!(out.redactions.is_empty(), "{:?}", out.redactions);
+        assert_eq!(out.metadata["must_change_password"], true);
+        assert_eq!(out.metadata["code_issued"], false);
+        assert_eq!(out.metadata["password_removed"], true);
+    }
+
+    #[test]
+    fn aud_03_non_boolean_values_under_secret_words_stay_redacted() {
+        for value in [
+            json!("hunter2"),
+            json!(123_456),
+            json!("123456"),
+            json!(null),
+            json!(["true"]),
+            json!({ "set": true }),
+            json!("true"),
+        ] {
+            for key in [
+                "password",
+                "must_change_password",
+                "code",
+                "code_issued",
+                "otp",
+                "email",
+                "client_secret",
+                "access_token",
+                "signing_key",
+            ] {
+                let out = sanitize(json!({ key: value.clone() }));
+                assert_eq!(out.metadata[key], REDACTED, "{key} = {value}");
+                assert_eq!(out.redactions[0].rule, RedactionRule::ForbiddenKey, "{key}");
+            }
         }
     }
 

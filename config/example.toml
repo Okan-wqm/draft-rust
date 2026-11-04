@@ -204,6 +204,10 @@ allowed_origins = ["http://localhost:8080"]  # exact match; rp_id or its subdoma
 # trust_provider_mfa = false
 # store_provider_tokens = false
 # jwks_cache_ttl = "1h"
+# jwks_refresh_min_interval = "60s"    # SOC-03: min gap between JWKS downloads forced by an unknown kid, 10s-1h
+# start_per_ip = { limit = 60, period = "10m" }     # web flow starts per client IP
+# native_per_ip = { limit = 60, period = "10m" }    # native nonces + native logins per client IP
+# callback_per_ip = { limit = 60, period = "10m" }  # web callbacks per client IP (before the state lookup)
 # [oidc_client.google]
 # client_id = "..."
 # client_secret = "..."
@@ -211,12 +215,15 @@ allowed_origins = ["http://localhost:8080"]  # exact match; rp_id or its subdoma
 # [oidc_client.microsoft]
 # client_id = "..."
 # client_secret = "..."
-# tenant = "common"
+# tenant = "common"                   # common | organizations | consumers | tenant id | domain (needs allowed_tenants)
+# allowed_tenants = []                 # tenant ids (GUIDs) allowed to sign in; empty = all admitted by `tenant`
+# trust_personal_account_email = false # personal (MSA) account e-mail counts as verified; default false (unverified claim)
 # [oidc_client.apple]
 # client_id = "com.example.web"
 # team_id = "TEAMID"
 # key_id = "KEYID"
 # private_key_pem = "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"
+# private_key_file = "/run/secrets/apple_signin.p8"   # instead of private_key_pem (exactly one of them)
 # [oidc_client.github]
 # client_id = "..."
 # client_secret = "..."
@@ -226,6 +233,7 @@ allowed_origins = ["http://localhost:8080"]  # exact match; rp_id or its subdoma
 # issuer_url = "https://login.acme.example"
 # client_id = "..."
 # client_secret = "..."
+# trust_email_verified = false         # trust this IdP's email_verified claim; default false (non-verifying IdP)
 
 [org]                                  # ORG-*
 # invitation_ttl = "7d"                # ORG-05, 1h-30d

@@ -926,3 +926,108 @@ async fn soc_05_reserved_address_gets_no_new_account(pool: PgPool) {
     // Other addresses are unaffected.
     login("r-2", "free@example.com").await.unwrap();
 }
+
+/// K-04 / K-17: with the safe defaults (`trust_email_verified = false` for
+/// a generic provider, `trust_personal_account_email = false` for
+/// Microsoft) an asserted address never creates an account, whatever the
+/// token claims, and the answer does not depend on existing accounts.
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn soc_05_untrusted_providers_never_create_accounts(pool: PgPool) {
+    let h = Harness::with(pool, |s| {
+        s.config.generic[0].trust_email_verified = false;
+        if let Some(ms) = s.config.microsoft.as_mut() {
+            ms.trust_personal_account_email = false;
+        }
+    })
+    .await;
+    github_like_native(
+        &h,
+        "acme",
+        "/acme",
+        ACME_NATIVE,
+        "acme-sub",
+        "a@acme.example",
+    )
+    .await
+    .assert_error(StatusCode::FORBIDDEN, "oauth_email_not_verified");
+
+    let nonce = h.native_nonce("microsoft").await;
+    let mut claims = h.claims(
+        &format!("{}/ms/{MS_CONSUMERS}/v2.0", h.idp.uri()),
+        MS_NATIVE,
+        "pairwise-sub",
+        &nonce,
+        "person@outlook.com",
+    );
+    claims["tid"] = json!(MS_CONSUMERS);
+    claims["oid"] = json!("aaaaaaaa-0000-0000-0000-0000000000f1");
+    h.native("microsoft", &sign_rs256(KEY_A, "key-a", &claims))
+        .await
+        .assert_error(StatusCode::FORBIDDEN, "oauth_email_not_verified");
+    assert_eq!(h.identity_count().await, 0);
+}
+
+/// Security review (wave 1, K-04 / K-17): distrusting a provider's e-mail
+/// claim must not lock out identities that are already linked — they keep
+/// signing in by `(provider, subject)` — and the refusal for a new identity
+/// is the same whether or not an account owns the asserted address.
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn soc_05_untrusted_providers_keep_linked_identities_and_reveal_no_accounts(pool: PgPool) {
+    let h = Harness::with(pool, |s| {
+        s.config.generic[0].trust_email_verified = false;
+        if let Some(ms) = s.config.microsoft.as_mut() {
+            ms.trust_personal_account_email = false;
+        }
+    })
+    .await;
+    let user = h.user("u@example.com", AccountStatus::Active, true).await;
+    // Explicit linking by a signed-in user needs no verified address.
+    link_native(&h, user, "acme", "/acme", ACME_NATIVE, "acme-linked").await;
+    link_native(&h, user, "microsoft", "/ms", MS_NATIVE, "ms-linked").await;
+    assert_eq!(h.identity_count().await, 2);
+
+    // Already linked identities still sign in.
+    assert_eq!(
+        github_like_native(
+            &h,
+            "acme",
+            "/acme",
+            ACME_NATIVE,
+            "acme-linked",
+            "x@example.com"
+        )
+        .await
+        .status,
+        StatusCode::OK
+    );
+    let nonce = h.native_nonce("microsoft").await;
+    let mut claims = h.claims(
+        &format!("{}/ms/{MS_CONSUMERS}/v2.0", h.idp.uri()),
+        MS_NATIVE,
+        "ms-linked",
+        &nonce,
+        "x@example.com",
+    );
+    claims["tid"] = json!(MS_CONSUMERS);
+    claims["oid"] = json!("dddddddd-0000-0000-0000-000000000001");
+    let res = h
+        .native("microsoft", &sign_rs256(KEY_A, "key-a", &claims))
+        .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.text());
+    let logins = h.ports.session_issuer.logins();
+    assert_eq!(logins.len(), 2);
+    assert!(logins.iter().all(|l| l.user_id == user));
+
+    // New identities: same answer for an owned and a free address.
+    let owned = github_like_native(&h, "acme", "/acme", ACME_NATIVE, "n-1", "u@example.com").await;
+    let free =
+        github_like_native(&h, "acme", "/acme", ACME_NATIVE, "n-2", "free@example.com").await;
+    assert_eq!(owned.status, StatusCode::FORBIDDEN);
+    assert_eq!(owned.status, free.status);
+    let a: Value = owned.json();
+    let b: Value = free.json();
+    assert_eq!(a["error"]["code"], b["error"]["code"]);
+    assert_eq!(a["error"]["message"], b["error"]["message"]);
+    assert_eq!(a["error"]["code"], "oauth_email_not_verified");
+    assert_eq!(h.identity_count().await, 2);
+}

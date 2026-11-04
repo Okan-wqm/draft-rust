@@ -1,0 +1,12 @@
+{% extends "en/email/layout.txt" %}
+{% block content %}
+The recent change of the e-mail address of your {{ app_name }} account was reverted: this address is your sign-in address again. All sessions were signed out and your password must be reset, because whoever changed the address may know it.
+{% endblock %}
+{% block details %}
+Time: {{ at }}
+{% endblock %}
+{% block closing %}
+Choose a new password now: {{ reset_request_link }}
+
+Afterwards, review your security settings (passkeys, two-step verification and linked sign-in providers) and remove anything you do not recognize.
+{% endblock %}

@@ -153,7 +153,9 @@ fn limit_action(kind: &NotificationKind) -> Option<&'static str> {
         | NotificationKind::RegistrationAttempt
         | NotificationKind::EmailChangeVerification { .. }
         | NotificationKind::Invitation { .. }
-        | NotificationKind::OrgOwnershipTransfer { .. } => Some(RECIPIENT_LIMIT_ACTION),
+        | NotificationKind::OrgOwnershipTransfer { .. }
+        // Whoever holds a cloned passkey can trigger the detection at will.
+        | NotificationKind::PasskeyCloneSuspected { .. } => Some(RECIPIENT_LIMIT_ACTION),
         NotificationKind::PasswordReset { .. } => Some("notify_recipient_password_reset"),
         NotificationKind::MagicLink { .. } => Some("notify_recipient_magic_link"),
         NotificationKind::LoginCode { .. } => Some("notify_recipient_login_code"),
@@ -168,7 +170,10 @@ fn limit_action(kind: &NotificationKind) -> Option<&'static str> {
         | NotificationKind::SuspiciousLoginBlocked { .. }
         | NotificationKind::AccountDeletionScheduled { .. }
         | NotificationKind::AccountDeletionCancelled { .. }
-        | NotificationKind::ImpersonationStarted { .. } => None,
+        | NotificationKind::ImpersonationStarted { .. }
+        | NotificationKind::IdentityLinked { .. }
+        | NotificationKind::IdentityUnlinked { .. }
+        | NotificationKind::EmailChangeReverted { .. } => None,
     }
 }
 

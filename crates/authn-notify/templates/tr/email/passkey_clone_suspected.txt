@@ -1,0 +1,10 @@
+{% extends "tr/email/layout.txt" %}
+{% block content %}
+{{ app_name }} hesabınızın passkey'lerinden biri, başka bir cihaza kopyalanmış olabileceğini düşündüren bir biçimde kullanıldı. Passkey güvenlik ayarlarınızda işaretlendi.
+{% endblock %}
+{% block details %}
+Zaman: {{ at }}
+{% endblock %}
+{% block closing %}
+Bunu tanımıyorsanız işaretli passkey'i kaldırın, yeni bir passkey kaydedin ve şifrenizi sıfırlayın: {{ reset_request_link }}
+{% endblock %}

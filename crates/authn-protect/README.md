@@ -31,7 +31,7 @@ Dalga A: yalnızca `authn-core`, `authn-crypto`, `authn-store`. Başka bir modü
 
 | Öğe | Açıklama |
 |-----|----------|
-| `KeyHasher::new(&KeyRing)` | Rate limit anahtarları ve cihaz kimlikleri için HMAC (amaç `RateLimitKey`, kullanım başına ayrı etiket). Ham e-posta/IP/cihaz kimliği hiçbir yerde saklanmaz |
+| `KeyHasher::new(&KeyRing)` | Rate limit anahtarları (amaç `RateLimitKey`) ve cihaz kimlikleri (amaç `KnownDevice`, CRY-11; wave 1, K-21) için HMAC, kullanım başına ayrıca ayrı etiket. Ham e-posta/IP/cihaz kimliği hiçbir yerde saklanmaz. **Geçiş etkisi:** eski anahtarla yazılmış `known_devices` satırları artık eşleşmez; her hatırlanan cihaz bir sonraki girişte bir kez "yeni cihaz" sayılır (risk sinyali / `new_device_login` bildirimi) ve yeni anahtarla yeniden öğrenilir — başka etkisi yoktur (`cry_11_device_hashes_use_the_known_device_purpose_key`) |
 | `rate_limit::build_rate_limiter(&RateLimitConfig, PgPool, Arc<dyn Clock>, KeyHasher) -> Result<Arc<dyn RateLimiter>>` | Yapılandırılan arka uç (`redis` seçilip feature yoksa başlangıçta hata) |
 | `MemoryRateLimiter`, `PostgresRateLimiter` (`purge_expired`), `RedisRateLimiter` (`connect`, `quit`; feature `redis`) | Aynı GCRA aritmetiği (`rate_limit::gcra`), enjekte edilen saat |
 | `rate_limit::{HttpRateLimit, http_rate_limit}` | IP başına kaba HTTP limiti (`/health/` muaf; limiter hatasında açık başarısızlık, `fail_open(false)` ile kapatılabilir) |

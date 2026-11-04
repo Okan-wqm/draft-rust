@@ -42,7 +42,7 @@ Dalga B. `authn-core`, `authn-crypto`, `authn-store` ve tüm Dalga A crate'lerin
 | `SessionService::new(SessionServiceDeps, SessionSettings)` | Servis (ucuz kopyalanır, `FromRef<AppState>`). Bağımlılıklar: `pool`, `clock`, `keys` (`CryptoServices::keys`), `envelopes`, `rate_limiter`, `audit`, `events`, `notifier`, `passwords`, `mfa`, `webauthn`, `orgs`, `accounts` |
 | `SessionSettings::from_app_config(&AppConfig)` | `[session]` + `server.public_base_url` (issuer, izinli origin), `crypto.jwt_leeway`, `crypto.signing_keys.jwks_cache_ttl`, `admin.impersonation_max_ttl`, `oidc_client.trust_provider_mfa`, `webauthn.ceremony_ttl` |
 | `PgSessionRevoker::new(clock, audit, events, mfa)` | `SessionRevoker` port uygulaması (SES-15) |
-| `impl SessionIssuer for SessionService` | `complete_primary_authentication`, `login_response`, `start_impersonation`, `start_impersonation_with` (ADM-04) |
+| `impl SessionIssuer for SessionService` | `complete_primary_authentication`, `login_response`, `start_impersonation`, `start_impersonation_with`, `start_impersonation_audited` (ADM-04, ADM-08; wave 1, K-06: çağıranın transaction'ında, çağıranın verdiği olay kimliğiyle `admin.impersonation_started`; commit çağıranın) |
 | `authenticate` | Kimlik doğrulama ara katmanı (`from_fn_with_state(service, authenticate)`) |
 | `router::<S>()`, `SessionApi` | Uç noktalar ve OpenAPI |
 | `SessionDataExporter` | ACC-10 dışa aktarma bölümü `sessions` |
@@ -235,7 +235,7 @@ let sessions = SessionService::new(SessionServiceDeps { pool, clock, keys: crypt
 - Açılış: `SigningKeyRepository::rotate_if_due` (ilk anahtar) — anahtar yoksa token basılamaz (`service_unavailable`); acil rotasyondan sonra aynı süreçte `sessions.invalidate_signing_keys()`.
 - Arka plan işi (OPS-06): `sessions.purge_expired(limit)` (biten oturumlar 30 gün sonra, challenge'lar 1 gün sonra, tolerans ardılları).
 - Dışa aktarma (ACC-10): `AccountServiceDeps.exporters`'a `Arc::new(authn_session::SessionDataExporter)`.
-- authn-admin: impersonation için `SessionIssuer::start_impersonation_with(ctx, request, client, Some(admin_session_id))` (bildirim ve audit burada yazılır; admin tekrar göndermez, kendi `admin.action` gerekçe kaydını yazar).
+- authn-admin: impersonation için `SessionIssuer::start_impersonation_audited(conn, ctx, request, client, Some(admin_session_id), event_id)` (bildirim ve audit burada, adminin transaction'ında yazılır; admin tekrar göndermez, gerekçeyi aynı transaction'da `event_id`'ye bağlar). Test: `ses_15_audited_impersonation_runs_in_the_callers_transaction`.
 
 ## Testler
 

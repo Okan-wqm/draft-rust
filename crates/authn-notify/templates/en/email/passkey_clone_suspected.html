@@ -1,0 +1,12 @@
+{% extends "en/email/layout.html" %}
+{% block content %}
+<p style="margin:0 0 16px;">One of the passkeys of your {{ app_name }} account was used in a way that suggests it may have been copied to another device. The passkey is marked in your security settings.</p>
+{% endblock %}
+{% block details %}
+<table role="presentation" cellspacing="0" cellpadding="0" style="margin:0 0 16px;font-size:14px;">
+<tr><td style="padding:2px 12px 2px 0;color:#52606d;vertical-align:top;">Time</td><td style="padding:2px 0;">{{ at }}</td></tr>
+</table>
+{% endblock %}
+{% block closing %}
+<p style="margin:0 0 16px;">If you do not recognize this, remove the marked passkey, register a new one and <a href="{{ reset_request_link }}">reset your password</a>.</p>
+{% endblock %}

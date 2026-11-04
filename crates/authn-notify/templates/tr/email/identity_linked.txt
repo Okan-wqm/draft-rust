@@ -1,0 +1,11 @@
+{% extends "tr/email/layout.txt" %}
+{% block content %}
+{{ app_name }} hesabınıza {{ provider }} bağlandı. Artık bu sağlayıcıyla giriş yapabilirsiniz.
+{% endblock %}
+{% block details %}
+Sağlayıcı: {{ provider }}
+Zaman: {{ at }}
+{% endblock %}
+{% block closing %}
+Bunu siz yapmadıysanız hesabınıza başka biri erişiyor olabilir: sağlayıcıyı güvenlik ayarlarınızdan kaldırın, şifrenizi sıfırlayın ve tüm cihazlardan çıkış yapın: {{ reset_request_link }}
+{% endblock %}

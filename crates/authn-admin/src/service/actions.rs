@@ -413,15 +413,14 @@ impl AdminService {
         ))
     }
 
-    /// Resets the account's MFA (ADM-03): every factor, recovery code and
-    /// trusted device is removed, the user is notified (authn-mfa queues
-    /// the `mfa_reset` notification in this transaction) and every session
-    /// is revoked.
-    ///
-    /// **Passkeys (authn-webauthn) are not removed** (no admin removal API
-    /// exists there yet; requested in `contract-change-requests.md`). An
-    /// attacker-enrolled passkey therefore survives a reset: on suspected
-    /// account takeover, suspend the account instead.
+    /// Resets the account's MFA (ADM-03): every factor, recovery code,
+    /// trusted device **and passkey** is removed, the user is notified
+    /// (authn-mfa queues the `mfa_reset` notification and authn-webauthn the
+    /// passkey removal notice in this transaction) and every session is
+    /// revoked — all in one transaction. Removing every passkey closes two
+    /// holes (K-01): an attacker-enrolled passkey would otherwise keep
+    /// allowing passwordless sign-in after the reset, and a user who lost
+    /// the device holding a second-factor passkey would stay locked out.
     pub async fn reset_user_mfa(
         &self,
         caller: &AdminCaller,
@@ -437,6 +436,11 @@ impl AdminService {
             .deps()
             .mfa
             .reset_user_mfa_in_tx(&mut tx, ctx, user)
+            .await?;
+        let passkeys = self
+            .deps()
+            .webauthn
+            .remove_all_passkeys_in_tx(&mut tx, ctx, user)
             .await?;
         let revoked = self
             .deps()
@@ -462,12 +466,17 @@ impl AdminService {
                         "trusted_devices_revoked",
                         Value::from(summary.trusted_devices),
                     ),
+                    ("passkeys_removed", Value::from(passkeys)),
                     ("sessions_revoked", Value::from(revoked)),
                 ]),
             )
             .await?;
         authn_store::commit(tx).await?;
-        let changed = summary.factors + summary.recovery_codes + summary.trusted_devices > 0;
+        let changed = summary.factors
+            + summary.recovery_codes
+            + summary.trusted_devices
+            + u64::from(passkeys)
+            > 0;
         Ok(outcome(ACTION, user, changed, revoked, event))
     }
 

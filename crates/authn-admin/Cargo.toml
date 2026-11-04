@@ -21,6 +21,7 @@ authn-mfa.workspace = true
 authn-org.workspace = true
 authn-protect.workspace = true
 authn-audit.workspace = true
+authn-webauthn.workspace = true
 async-trait.workspace = true
 axum.workspace = true
 serde.workspace = true
@@ -38,6 +39,11 @@ metrics.workspace = true
 
 [dev-dependencies]
 authn-testkit.workspace = true
+# The MFA-reset regression test registers and uses real passkeys.
+authn-webauthn = { workspace = true, features = ["passkey"] }
+webauthn-authenticator-rs.workspace = true
+webauthn-rs-proto.workspace = true
+url.workspace = true
 tokio.workspace = true
 tower.workspace = true
 http.workspace = true

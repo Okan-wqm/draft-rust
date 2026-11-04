@@ -1,0 +1,12 @@
+{% extends "tr/email/layout.txt" %}
+{% block content %}
+{{ app_name }} hesabınızın e-posta adresindeki son değişiklik geri alındı: bu adres yeniden giriş adresiniz. Adresi değiştiren kişi şifrenizi biliyor olabileceği için tüm oturumlar kapatıldı ve şifrenizin sıfırlanması gerekiyor.
+{% endblock %}
+{% block details %}
+Zaman: {{ at }}
+{% endblock %}
+{% block closing %}
+Şimdi yeni bir şifre belirleyin: {{ reset_request_link }}
+
+Ardından güvenlik ayarlarınızı (passkey'ler, iki adımlı doğrulama ve bağlı giriş sağlayıcıları) gözden geçirin ve tanımadığınız her şeyi kaldırın.
+{% endblock %}

@@ -11,7 +11,7 @@ use authn_core::http::RequestContext;
 use authn_core::id::UserId;
 use authn_core::ports::SecurityEventKind;
 use authn_mfa::MfaStatus;
-use authn_store::UserRepository;
+use authn_store::{UserRecord, UserRepository, UserSearchFilter};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
@@ -19,7 +19,6 @@ use utoipa::{IntoParams, ToSchema};
 
 use super::{AdminService, meta};
 use crate::guard::AdminCaller;
-use crate::store::{self, UserFilter, UserRow};
 
 /// Status filter of the user listing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
@@ -98,7 +97,7 @@ fn parse_time(
 }
 
 impl UserSearch {
-    fn into_filter(self) -> Result<(UserFilter, PageRequest), AuthError> {
+    fn into_filter(self) -> Result<(UserSearchFilter, PageRequest), AuthError> {
         let email_prefix = match self.email.as_deref().map(str::trim) {
             None => None,
             Some(e)
@@ -108,7 +107,7 @@ impl UserSearch {
             }
             Some(e) => Some(e.to_lowercase()),
         };
-        let filter = UserFilter {
+        let filter = UserSearchFilter {
             email_prefix,
             status: self.status.map(AccountStatus::from),
             platform_admin: self.platform_admin,
@@ -151,8 +150,8 @@ pub struct AdminUserSummary {
     pub last_login_at: Option<OffsetDateTime>,
 }
 
-impl From<UserRow> for AdminUserSummary {
-    fn from(row: UserRow) -> Self {
+impl From<UserRecord> for AdminUserSummary {
+    fn from(row: UserRecord) -> Self {
         Self {
             id: row.id,
             email: row.email,
@@ -249,7 +248,8 @@ impl AdminService {
             None => None,
         };
         let limit = page.limit();
-        let rows = store::search_users(self.pool(), &filter, after, i64::from(limit) + 1).await?;
+        let rows =
+            UserRepository::search(self.pool(), &filter, after, i64::from(limit) + 1).await?;
         let items: Vec<AdminUserSummary> = rows.into_iter().map(AdminUserSummary::from).collect();
         Ok(Page::from_overfetch(items, limit, |u| Cursor {
             sort_key: time_to_micros(u.created_at),

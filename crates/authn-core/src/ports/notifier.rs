@@ -143,7 +143,10 @@ pub enum NotificationKind {
         #[serde(with = "time::serde::rfc3339")]
         expires_at: OffsetDateTime,
     },
-    /// Someone tried to register with an existing address (ACC-02).
+    /// Someone tried to use the recipient's address for an account: a
+    /// sign-up with an already registered address (ACC-02) or an e-mail
+    /// change of another account to this address (ACC-07). The text covers
+    /// both cases.
     RegistrationAttempt,
     /// Password reset link and optional mobile code (PWD-07, PWD-08).
     PasswordReset {
@@ -308,6 +311,38 @@ pub enum NotificationKind {
         #[serde(with = "time::serde::rfc3339")]
         expires_at: OffsetDateTime,
     },
+    /// An external sign-in provider was linked to the account (SOC-06):
+    /// lets the owner notice a provider an attacker linked.
+    IdentityLinked {
+        /// Provider display name (`Google`, `Apple`, a generic provider's
+        /// configured name). Escaped and length-capped by templates.
+        provider: String,
+        /// When.
+        #[serde(with = "time::serde::rfc3339")]
+        at: OffsetDateTime,
+    },
+    /// An external sign-in provider was unlinked from the account (SOC-06).
+    IdentityUnlinked {
+        /// Provider display name (escaped and length-capped by templates).
+        provider: String,
+        /// When.
+        #[serde(with = "time::serde::rfc3339")]
+        at: OffsetDateTime,
+    },
+    /// A passkey presented a signature counter that did not advance: the
+    /// authenticator may have been cloned (PKY-05).
+    PasskeyCloneSuspected {
+        /// When it was detected.
+        #[serde(with = "time::serde::rfc3339")]
+        at: OffsetDateTime,
+    },
+    /// An e-mail change was reverted from the previous address (ACC-07):
+    /// every session was signed out and a password reset is required.
+    EmailChangeReverted {
+        /// When.
+        #[serde(with = "time::serde::rfc3339")]
+        at: OffsetDateTime,
+    },
 }
 
 impl NotificationKind {
@@ -335,6 +370,10 @@ impl NotificationKind {
             Self::LoginCode { .. } => "login_code",
             Self::OrgOwnershipTransfer { .. } => "org_ownership_transfer",
             Self::ImpersonationStarted { .. } => "impersonation_started",
+            Self::IdentityLinked { .. } => "identity_linked",
+            Self::IdentityUnlinked { .. } => "identity_unlinked",
+            Self::PasskeyCloneSuspected { .. } => "passkey_clone_suspected",
+            Self::EmailChangeReverted { .. } => "email_change_reverted",
         }
     }
 }

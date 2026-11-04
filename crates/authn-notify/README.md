@@ -65,11 +65,13 @@ Dosya düzeni (yerleşik: `templates/`, geçersiz kılma: `notify.template_dir` 
 
 ```
 <locale>/email/layout.txt, layout.html
-<locale>/email/<tür>.subject.txt | <tür>.txt | <tür>.html   (20 tür)
+<locale>/email/<tür>.subject.txt | <tür>.txt | <tür>.html   (24 tür)
 <locale>/sms/mfa_sms_code.txt, phone_verification.txt
 ```
 
-`<locale>`: `en`, `tr`. Türler: `email_verification`, `registration_attempt`, `password_reset`, `password_changed`, `email_change_verification`, `email_changed`, `mfa_factor_added`, `mfa_factor_removed`, `mfa_reset`, `mfa_email_code`, `recovery_code_used`, `new_device_login`, `suspicious_login_blocked`, `account_deletion_scheduled`, `account_deletion_cancelled`, `invitation`, `magic_link`, `login_code`, `org_ownership_transfer`, `impersonation_started`.
+`<locale>`: `en`, `tr`. Türler: `email_verification`, `registration_attempt`, `password_reset`, `password_changed`, `email_change_verification`, `email_changed`, `mfa_factor_added`, `mfa_factor_removed`, `mfa_reset`, `mfa_email_code`, `recovery_code_used`, `new_device_login`, `suspicious_login_blocked`, `account_deletion_scheduled`, `account_deletion_cancelled`, `invitation`, `magic_link`, `login_code`, `org_ownership_transfer`, `impersonation_started`, `identity_linked`, `identity_unlinked`, `passkey_clone_suspected`, `email_change_reverted`.
+
+Wave 1 (K-18, K-19, K-40): `IdentityLinked { provider, at }` / `IdentityUnlinked { provider, at }` (sağlayıcı görünen adı; şablonda kaçışlı ve uzunluk sınırlı), `PasskeyCloneSuspected { at }` (bir passkey'in klonlanmış olabileceği uyarısı; alıcı başına limit uygulanır, çünkü klonu elinde tutan tespiti istediği kadar tetikleyebilir), `EmailChangeReverted { at }` (geri alma sonrası "oturumlar kapatıldı, şifrenizi sıfırlayın" uyarısı). `registration_attempt` metni hem kayıt hem e-posta değişikliği girişimini kapsayacak şekilde genelleştirildi ("bu adres bir hesap için kullanılmak istendi"). Test: `ntf_01_identity_passkey_clone_and_revert_notices`. Üreticiler (authn-oidc-client bağlama/ayırma, authn-webauthn klon tespiti, authn-account geri alma) wave 2'de bağlanacak.
 
 Kurallar:
 

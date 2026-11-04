@@ -149,3 +149,22 @@ pub(crate) async fn purge_expired(
     .await?;
     Ok(result.rows_affected())
 }
+
+/// Burns every open ceremony of `user` (registration and user-bound
+/// authentication): administrative removal of all passkeys must not be
+/// undone by a ceremony started before it. Returns how many were burned.
+pub(crate) async fn cancel_open_for_user(
+    conn: &mut PgConnection,
+    user: UserId,
+    now: OffsetDateTime,
+) -> Result<u64, AuthError> {
+    let result = sqlx::query(
+        "UPDATE webauthn_ceremonies SET consumed_at = $2 \
+         WHERE user_id = $1 AND consumed_at IS NULL",
+    )
+    .bind(user)
+    .bind(now)
+    .execute(conn)
+    .await?;
+    Ok(result.rows_affected())
+}

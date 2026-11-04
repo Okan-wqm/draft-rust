@@ -598,3 +598,73 @@ async fn ses_11_impersonation_cannot_end_the_users_other_sessions(pool: PgPool) 
         .assert_status(StatusCode::NO_CONTENT);
     assert_eq!(me_status(&h, &cookie).await, StatusCode::UNAUTHORIZED);
 }
+
+/// ADM-08 / K-06: the transactional variant records the start event with
+/// the caller's id in the caller's transaction; nothing exists until the
+/// caller commits, and a rollback leaves no session behind.
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn ses_15_audited_impersonation_runs_in_the_callers_transaction(pool: PgPool) {
+    use authn_core::id::EventId;
+    let h = Harness::new(pool).await;
+    let admin = h.user("admin@example.com").await;
+    h.make_admin(admin).await;
+    let target = h.user("alice@example.com").await;
+    let mut admin_login = h.request(admin, h.web_channel());
+    admin_login.amr = vec![AuthMethodRef::Hwk, AuthMethodRef::User, AuthMethodRef::Mfa];
+    h.establish(admin_login).await;
+    let issuer: &dyn SessionIssuer = &h.service;
+    let impersonations = |pool: PgPool| async move {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM sessions WHERE impersonator_user_id IS NOT NULL",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+    };
+
+    // Rolled back: no session.
+    let mut tx = h.pool.begin().await.unwrap();
+    issuer
+        .start_impersonation_audited(
+            &mut tx,
+            &h.ctx(),
+            impersonation(admin, target, true),
+            ClientKind::Web,
+            None,
+            EventId::generate(),
+        )
+        .await
+        .unwrap();
+    tx.rollback().await.unwrap();
+    assert_eq!(impersonations(h.pool.clone()).await, 0);
+
+    // Committed: the session exists and the event carries the given id.
+    let event_id = EventId::generate();
+    let mut tx = h.pool.begin().await.unwrap();
+    let issued = issuer
+        .start_impersonation_audited(
+            &mut tx,
+            &h.ctx(),
+            impersonation(admin, target, true),
+            ClientKind::Web,
+            None,
+            event_id,
+        )
+        .await
+        .unwrap();
+    // Not visible to others before the commit.
+    assert_eq!(impersonations(h.pool.clone()).await, 0);
+    tx.commit().await.unwrap();
+    assert_eq!(impersonations(h.pool.clone()).await, 1);
+    assert_eq!(issued.user_id, target);
+    let events = h
+        .ports
+        .audit
+        .of_kind(SecurityEventKind::ImpersonationStarted);
+    let last = events.last().unwrap();
+    assert_eq!(last.id, event_id);
+    assert_eq!(
+        last.resource.as_ref().map(|r| r.id.clone()),
+        Some(issued.session_id.to_string())
+    );
+}

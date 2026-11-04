@@ -98,22 +98,26 @@ Doğrulanmış kimlik `PrimaryAuthentication { method: Social, amr: [fed], provi
 
 `[oidc_client]` (`crates/authn-core/src/config/oidc_client.rs`): `state_ttl` (10 dk), `native_nonce_ttl` (10 dk), `allowed_return_to`, `google`/`microsoft`/`apple`/`github`/`generic[]`, `auto_link_verified_email` (false), `auto_link_trusted_providers`, `trust_provider_mfa` (false), `store_provider_tokens` (false), `jwks_cache_ttl` (1 sa; discovery de aynı süreyle önbelleklenir).
 
-Konfigürasyon anahtarı henüz olmayan, `OidcClientSettings` alanları (varsayılanlarıyla; sunucu programatik olarak değiştirebilir, anahtarlar için sözleşme değişikliği talebi açık):
+Wave 1'de eklenen anahtarlar (K-31; `OidcClientSettings::from_app_config` bunları okur, sunucu programatik olarak yine değiştirebilir):
 
-| Alan | Varsayılan | Anlam |
-|------|-----------|-------|
-| `microsoft_allowed_tenants` | boş | Microsoft `tid` izin listesi (GUID); alan adı biçimli `tenant` için zorunlu |
+| Anahtar | Varsayılan | Anlam |
+|---------|-----------|-------|
+| `microsoft.allowed_tenants` | boş | Microsoft `tid` izin listesi (GUID); alan adı biçimli `tenant` için zorunlu (konfigürasyon doğrulaması ve açılış ikisi de reddeder) |
+| `microsoft.trust_personal_account_email` | **false** | Microsoft kişisel hesap (MSA) `email`'i doğrulanmış sayılsın mı (K-17). Varsayılan güvenli taraf: Microsoft `email` claim'ini değişebilir/doğrulanmamış olarak belgeler, `xms_edov` yalnızca iş hesaplarında gelir; `false` iken MSA kimliği yeni hesap açmaz ve e-postayla otomatik bağlanmaz (kullanıcı e-postayla kaydolup Microsoft'u giriş yapmışken açıkça bağlar) |
+| `generic[].trust_email_verified` | **false** | Genel sağlayıcının `email_verified` claim'ine güvenilsin mi (K-04, ADR 0002 "non-verifying IdP"); `false` iken bu sağlayıcının adresleri doğrulanmamış sayılır (yeni hesap ve otomatik bağlama yok, yalnızca açık bağlama) |
+| `apple.private_key_file` | yok | Apple özel anahtarı (PKCS#8 PEM) dosyadan (ör. secret mount); `private_key_pem` ile **tam olarak biri** zorunlu (K-34, SOC-07). Dosya açılışta bir kez okunur, içerik/yol hata mesajına girmez |
 | `start_per_ip` | 60 / 10 dk | web başlatma (giriş + bağlama), IP başına |
 | `native_per_ip` | 60 / 10 dk | native nonce + native giriş/bağlama, IP başına |
 | `callback_per_ip` | 60 / 10 dk | web callback'i, IP başına (state sorgusundan **önce**; kısılan istek audit'e yazılmaz) |
-| `jwks_refresh_min_interval` | 60 sn | bilinmeyen `kid` ile zorlanan iki JWKS indirmesi arası en kısa süre |
-| `apple_client_secret_ttl` | 1 sa | Apple `client_secret` ömrü (çeyreği kalınca yenilenir) |
+| `jwks_refresh_min_interval` | 60 sn (10 sn–1 sa) | bilinmeyen `kid` ile zorlanan iki JWKS indirmesi arası en kısa süre |
 
-Microsoft `tenant`: `common` (her kiracı), `organizations` (kişisel hesap kiracısı hariç), `consumers` (yalnızca kişisel), kiracı GUID'i (yalnızca o), alan adı (yalnızca `microsoft_allowed_tenants`; liste boşsa açılışta hata).
+Anahtarı olmayan tek alan: `apple_client_secret_ttl` (1 sa; Apple `client_secret` ömrü, çeyreği kalınca yenilenir).
+
+Microsoft `tenant`: `common` (her kiracı), `organizations` (kişisel hesap kiracısı hariç), `consumers` (yalnızca kişisel), kiracı GUID'i (yalnızca o), alan adı (yalnızca `microsoft.allowed_tenants`; liste boşsa konfigürasyon geçersiz).
 
 ## Hata kodları
 
-`codes.rs` (her biri `ErrorCode::new` ile, TR/EN mesajlı):
+Kodlar global kayıt defterinde, `authn_core::error::codes::oidc_client` (wave 1, K-30; `codes::all()` ve DOC-04 kataloğunda görünür); `codes.rs` bunları yeniden dışa açar. Tel dizeleri değişmedi (`soc_01_wire_strings_are_unchanged`):
 
 | Kod | Durum | Ne zaman |
 |-----|-------|----------|
@@ -162,16 +166,16 @@ Ek: rezervasyon yolu hiç test edilmiyordu → `soc_05_reserved_address_gets_no_
 
 ### Kabul edilen riskler / sınırlamalar
 
-1. **Genel OIDC sağlayıcısının `email_verified` beyanına güvenilir.** Sağlayıcı operatör tarafından yapılandırılır; kötü niyetli/özensiz bir sağlayıcı, kendi kullanıcısına başkasının adresiyle hesap açtırabilir veya `oauth_link_required` yanıtıyla adres varlığını öğrenebilir. Denetçi değerlendirmesi: otomatik bağlama varsayılan kapalı olduğundan *var olan* hesabın ele geçirilmesi yolu kapalıdır; kalan risk, **henüz kayıtlı olmayan** bir adresin doğrulamayan bir IdP üzerinden önceden alınmasıdır (ADR 0002 "non-verifying IdP": gerçek sahip sonradan şifre sıfırlamayla girse bile IdP kimliği hesapta kalır). Bu yalnızca operatörün güvendiği IdP'ler için kabul edilebilir: e-postayı doğrulamayan bir IdP'yi **yapılandırmayın**; otomatik bağlamayı yalnızca e-postayı gerçekten doğrulayan sağlayıcılar için açın. Sağlayıcı başına `trust_email_verified` anahtarı için sözleşme değişikliği talebi açıldı.
+1. ~~Genel OIDC sağlayıcısının `email_verified` beyanına koşulsuz güvenilir~~ — **kapatıldı (wave 1, K-04):** sağlayıcı başına `trust_email_verified`, varsayılan `false`; güvenilmeyen sağlayıcı yeni hesap açtıramaz ve adres varlığını öğrenemez (`oauth_email_not_verified` hesap aramasından önce döner). Testler: `soc_05_generic_provider_email_is_unverified_unless_trusted`, `soc_05_untrusted_providers_never_create_accounts`. Operatör `true`'yu yalnızca adresleri gerçekten doğrulayan IdP'ler için açmalıdır. Güven ayarını kapatmak zaten bağlı kimlikleri kilitlemez: giriş `(provider, subject)` ile sürer (bağımsız denetim, `soc_05_untrusted_providers_keep_linked_identities_and_reveal_no_accounts`; MSA için de).
 2. **Web akışında `remember_me`/`shared_device` yok:** `oauth_states` tablosunda bu seçenekler için kolon yok (migration talebi açık); web sosyal girişi her zaman varsayılan oturum ömrünü kullanır. Native akış gövdedeki değerleri iletir.
 3. **Adres rezervasyonu (ACC-07)** `AddressReservations` kancasına bağlıdır; `NoReservations` hiçbir adresi ayrılmış saymaz (fail-open). Denetçi değerlendirmesi: bu bir "varsayılan" değil, `OidcClientServiceDeps`'te **zorunlu ve açık** bir seçimdir; fail-closed bir varsayılan (her yeni sosyal kaydı reddetmek) sosyal kaydı tamamen kapatırdı ve rezervasyon verisi authn-account'un tablosunda olduğundan bu crate onu doğrudan okuyamaz (contracts §5). Etkisi: geri alma süresinde eski adresle sosyal girişte yeni hesap açılırsa, eski sahibin "geri al" işlemi benzersizlik ihlaliyle **başarısız olur** — rezervasyonun koruduğu kurtarma yolu kapanır. Bunu yapabilen yalnızca o adresi sağlayıcıda doğrulamış kişidir (pratikte kurtarmaya çalışan eski sahibin kendisi, ya da doğrulamayan bir genel IdP; bkz. madde 1). Önlem: `NoReservations` bağlıysa servis açılışta `warn` loglar; üretimde authn-account adaptörü zorunludur (talep açık).
 4. **Bağlama/ayırma bildirimi yok:** `NotificationKind`'da kimlik bağlandı/ayrıldı türü yok; yalnızca audit olayı yazılır (talep açık).
 5. **Yeni sosyal hesapta profil satırı yok:** görünen ad yalnızca `identities.display_name`'de tutulur (`user_profiles` authn-account'a ait; sağlama API'si talebi açık). Şartların kabulü (ACC-11) giriş hattında zorunlu adım olarak istenir.
-6. **Apple özel anahtarı** yalnızca PEM olarak konfigürasyondan (ortam değişkeni/secret mount ile) okunur; SOC-07'deki "dosya veya zarf şifreli" seçenekleri için konfigürasyon alanı talebi açık.
+6. **Apple özel anahtarı:** satır içi PEM veya `private_key_file` (wave 1, K-34 kısmen; `soc_07_private_key_is_read_from_a_file_or_inline`). Zarf şifreli değer seçeneği **yok**: konfigürasyon sisteminde zarf şifreli değer deseni bulunmuyor (KEK `[crypto]`'da, çözme authn-crypto'da); eklenmesi wave 2'ye bırakıldı.
 7. **Apple native yetkilendirme kodu takas edilmez:** native akış yalnızca ID token'ı doğrular; Apple refresh token'ı alınmaz/saklanmaz (hesap silmede Apple token iptali kapsam dışı).
 8. **Hata yanıtı tarayıcıya JSON olarak döner:** callback hataları (`oauth_state_invalid` vb.) standart hata zarfıdır; ön yüz kendi hata sayfasına yönlendirmek isterse bunu bir ters vekil/ön yüz katmanında yapmalıdır. Güvenlik etkisi yok (hata gövdesi kararlı kod ve genel mesajdır; ayrıntı yalnızca log'da).
 9. **Bağlama akışı callback'inde oturum yeniden doğrulanmaz:** step-up başlatmada (`POST /v1/me/identities/link`) kontrol edilir; `oauth_states` satırı oturum kimliğini değil yalnızca `user_id`'yi taşır ve Apple'ın çapraz site `form_post`'unda oturum çerezi gelmez. Başlatan oturum en çok `state_ttl` (10 dk) içinde iptal edilse (çıkış, şifre sıfırlama) bile, akışı başlatan **aynı tarayıcı** (bağlama çerezi) callback'i tamamlayıp kimliği bağlayabilir. Saldırganın zaten taze step-up'lı bir oturuma sahip olmasını gerektirir ve o anda doğrudan da bağlayabilirdi; pencere 10 dk ile sınırlı, `identity.linked` audit'i yazılır. Kalıcı çözüm için talep açıldı (`oauth_states.session_id` + callback'te oturumun hâlâ geçerli olduğunun bir port ile kontrolü).
-10. **Microsoft kişisel hesap (MSA, `9188040d-…` kiracısı) e-postası doğrulanmış sayılır** (MSA hesap açılışında adresi doğrular); iş/okul hesaplarında yalnızca `xms_edov`. Microsoft MSA davranışını değiştirirse bu kural yeniden değerlendirilmelidir.
+10. ~~Microsoft kişisel hesap e-postası koşulsuz doğrulanmış sayılır~~ — **kapatıldı (wave 1, K-17):** `microsoft.trust_personal_account_email`, varsayılan `false` (güvenli taraf; gerekçe rustdoc'ta ve yukarıdaki tabloda). İş/okul hesaplarında yine yalnızca `xms_edov`. Test: `soc_05_microsoft_personal_account_email_is_unverified_unless_trusted`.
 11. **JWKS indirmesi başarısızken yenileme sınırı yok:** bilinmeyen `kid` ile yenileme yalnızca başarılı indirmeden sonra `jwks_refresh_min_interval` ile sınırlıdır; sağlayıcıya ulaşılamazken her doğrulama bir indirme dener (URL başına kilitle seri, 10 sn zaman aşımı). Bu istekler zaten IP başına sınırlı uçlardan (native, callback) gelir; etki sağlayıcı kesintisi sırasında gecikmeyle sınırlıdır.
 12. **Kullanılmayan bağımlılıklar:** `Cargo.toml`'da `oauth2`, `subtle`, `axum-extra`, `reqwest`, `uuid`, `thiserror` bu crate'in kodunda kullanılmıyor (hepsi zaten workspace grafiğinde; `oauth2` `openidconnect` üzerinden). Kaldırmak kök `Cargo.lock`'u değiştirir; paralel çalışma nedeniyle bu denetimde yapılmadı.
 

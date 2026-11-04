@@ -29,7 +29,7 @@ use authn_core::domain::{AccountStatus, EmailAddress};
 use authn_core::domain::{AuthMethodRef, ClientKind, LoginMethod};
 use authn_core::error::{AuthError, codes};
 use authn_core::http::RequestContext;
-use authn_core::id::SessionId;
+use authn_core::id::{EventId, SessionId};
 use authn_core::ports::{
     Actor, ImpersonationRequest, IssuedSession, LoginOutcome, Notification, NotificationKind,
     PendingChallenge, PrimaryAuthentication, Recipient, SecurityEvent, SecurityEventKind,
@@ -190,6 +190,35 @@ impl SessionService {
         client: ClientKind,
         admin_session: Option<SessionId>,
     ) -> Result<EstablishedSession, AuthError> {
+        let mut tx = self.begin().await?;
+        let established = self
+            .impersonate_in_tx(
+                &mut tx,
+                ctx,
+                request,
+                client,
+                admin_session,
+                EventId::generate(),
+            )
+            .await?;
+        authn_store::commit(tx).await?;
+        metrics::sessions_created("impersonation");
+        Ok(established)
+    }
+
+    /// [`SessionService::impersonate`] in the caller's transaction, with
+    /// the `admin.impersonation_started` event recorded under `event_id`
+    /// (`SessionIssuer::start_impersonation_audited`). The caller commits;
+    /// the same checks apply, and the target row stays locked until then.
+    pub async fn impersonate_in_tx(
+        &self,
+        conn: &mut PgConnection,
+        ctx: &RequestContext,
+        request: ImpersonationRequest,
+        client: ClientKind,
+        admin_session: Option<SessionId>,
+        event_id: EventId,
+    ) -> Result<EstablishedSession, AuthError> {
         let reason = request.reason.trim();
         let reason_chars = reason.chars().count();
         if reason_chars == 0
@@ -207,18 +236,17 @@ impl SessionService {
             return Err(AuthError::new(codes::session::IMPERSONATION_NOT_ALLOWED));
         }
         let now = self.now();
-        let mut tx = self.begin().await?;
-        let admin = UserRepository::find_by_id(&mut *tx, request.admin_user_id)
+        let admin = UserRepository::find_by_id(&mut *conn, request.admin_user_id)
             .await?
             .filter(|a| a.is_platform_admin && a.status == AccountStatus::Active)
             .ok_or_else(|| AuthError::new(codes::common::FORBIDDEN))?;
-        let admin_session = sessions::admin_session(&mut *tx, admin.id, admin_session, now)
+        let admin_session = sessions::admin_session(&mut *conn, admin.id, admin_session, now)
             .await?
             .ok_or_else(|| {
                 AuthError::new(codes::common::FORBIDDEN)
                     .with_context("the admin has no live session")
             })?;
-        let target = UserRepository::lock_for_update(&mut tx, request.target_user_id)
+        let target = UserRepository::lock_for_update(conn, request.target_user_id)
             .await?
             .ok_or_else(|| AuthError::new(codes::common::NOT_FOUND))?;
         if target.is_platform_admin
@@ -237,7 +265,7 @@ impl SessionService {
         let device = DeviceInfo::from_context(ctx);
         let scopes = self.settings().session.default_scopes.clone();
         let record = sessions::insert(
-            &mut tx,
+            conn,
             &NewSession {
                 id,
                 user_id: target.id,
@@ -266,7 +294,7 @@ impl SessionService {
         .await?;
         let credentials = match web_token {
             Some(token) => self.web_credentials(&record, token, None, now)?,
-            None => self.impersonation_tokens(&mut tx, &record, now).await?,
+            None => self.impersonation_tokens(conn, &record, now).await?,
         };
         let mut event = SecurityEvent::new(SecurityEventKind::ImpersonationStarted, now)
             .with_context(ctx)
@@ -276,8 +304,9 @@ impl SessionService {
             .with_meta("read_only", request.read_only)
             .with_meta("ttl_seconds", request.ttl.as_secs())
             .with_meta("client", client.as_str());
+        event.id = event_id;
         event.impersonator = Some(admin.id);
-        self.deps().audit.record_in_tx(&mut tx, event).await?;
+        self.deps().audit.record_in_tx(conn, event).await?;
         if let Some(email) = target
             .email
             .as_deref()
@@ -287,7 +316,7 @@ impl SessionService {
             self.deps()
                 .notifier
                 .notify_in_tx(
-                    &mut tx,
+                    conn,
                     Notification {
                         recipient: Recipient {
                             email,
@@ -303,8 +332,6 @@ impl SessionService {
                 )
                 .await?;
         }
-        authn_store::commit(tx).await?;
-        metrics::sessions_created("impersonation");
         Ok(EstablishedSession {
             session: record,
             credentials,
@@ -413,6 +440,23 @@ impl SessionIssuer for SessionService {
         self.impersonate(ctx, request, client, admin_session)
             .await
             .map(|e| e.to_issued_session())
+    }
+
+    async fn start_impersonation_audited(
+        &self,
+        conn: &mut PgConnection,
+        ctx: &RequestContext,
+        request: ImpersonationRequest,
+        client: ClientKind,
+        admin_session: Option<SessionId>,
+        event_id: EventId,
+    ) -> Result<IssuedSession, AuthError> {
+        let established = self
+            .impersonate_in_tx(conn, ctx, request, client, admin_session, event_id)
+            .await?;
+        // Counted when issued; the caller's commit is not observable here.
+        metrics::sessions_created("impersonation");
+        Ok(established.to_issued_session())
     }
 }
 

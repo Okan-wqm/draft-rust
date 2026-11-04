@@ -168,3 +168,55 @@ async fn adm_04_impersonation_session_cannot_start_another(pool: sqlx::PgPool) {
     res.assert_error(StatusCode::FORBIDDEN, "forbidden");
     assert!(h.issuer.requests.lock().unwrap().is_empty());
 }
+
+/// K-06 (ADM-08): the justification is written in the transaction that
+/// creates the impersonation and its `admin.impersonation_started` event.
+/// If storing the justification fails, nothing is committed — before the
+/// fix the impersonation and its event were already committed and only a
+/// log line remained.
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn adm_08_impersonation_reason_and_event_commit_atomically(pool: sqlx::PgPool) {
+    let h = Harness::new(pool).await;
+    let (_, admin) = h.admin("admin@example.com").await;
+    let user = h.user("alice@example.com").await;
+    // Make the justification insert fail for one marker reason.
+    sqlx::raw_sql(
+        "CREATE FUNCTION test_fail_reason() RETURNS trigger LANGUAGE plpgsql AS $$ \
+         BEGIN IF NEW.reason LIKE 'FAIL%' THEN RAISE EXCEPTION 'injected failure'; END IF; \
+         RETURN NEW; END $$; \
+         CREATE TRIGGER test_fail_reason BEFORE INSERT ON admin_action_reasons \
+         FOR EACH ROW EXECUTE FUNCTION test_fail_reason();",
+    )
+    .execute(&h.pool)
+    .await
+    .unwrap();
+    let start = |reason: &'static str| {
+        TestRequest::post(&format!("/v1/admin/users/{user}/impersonate"))
+            .json(&json!({ "reason": reason }))
+    };
+
+    let res = h
+        .send(&admin, start("FAIL: storage of this reason fails"))
+        .await;
+    assert!(res.status.is_server_error(), "{}", res.text());
+    assert!(
+        h.events("admin.impersonation_started").await.is_empty(),
+        "the event must roll back with the justification"
+    );
+    let reasons: i64 = sqlx::query_scalar("SELECT count(*) FROM admin_action_reasons")
+        .fetch_one(&h.pool)
+        .await
+        .unwrap();
+    assert_eq!(reasons, 0);
+
+    // The successful path stores both, the reason under the event's id.
+    h.send(&admin, start("Ticket SUP-10"))
+        .await
+        .assert_status(StatusCode::OK);
+    let started = h.events("admin.impersonation_started").await;
+    assert_eq!(started.len(), 1);
+    assert_eq!(
+        h.justification(started[0].id).await.as_deref(),
+        Some("Ticket SUP-10")
+    );
+}

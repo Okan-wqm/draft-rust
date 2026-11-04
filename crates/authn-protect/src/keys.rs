@@ -2,10 +2,16 @@
 //!
 //! Rate-limit keys contain e-mail addresses, IPs and phone numbers; device
 //! ids are bearer-like identifiers. None of them is ever stored in clear text:
-//! they are HMAC-SHA256'd under the `RateLimitKey` purpose key of the
-//! [`KeyRing`] (CRY-11). Every use is framed with its own label
-//! (`HmacKey::sign_fields`), so a tag computed for one use can never collide
-//! with a tag computed for another.
+//! rate-limit keys are HMAC-SHA256'd under the `RateLimitKey` purpose key
+//! and device ids under the separate `KnownDevice` purpose key of the
+//! [`KeyRing`] (CRY-11: one HKDF `info` label per purpose). Every use is
+//! additionally framed with its own label (`HmacKey::sign_fields`).
+//!
+//! Migration note (K-21): device hashes were computed under the
+//! `RateLimitKey` key before. Rows written that way no longer match, so
+//! each user's device is "learned" again on the next login: the only effect
+//! is a one-time "new device" signal (risk score / `NewDeviceLogin` notice)
+//! per remembered device, after which the row is stored under the new key.
 
 use std::fmt;
 
@@ -21,22 +27,32 @@ const DEVICE_LABEL: &[u8] = b"authn/protect/known-device/v1";
 #[derive(Clone)]
 pub struct KeyHasher {
     key: HmacKey,
+    device_key: HmacKey,
 }
 
 impl KeyHasher {
-    /// Uses the `RateLimitKey` purpose key of `ring`.
+    /// Uses the `RateLimitKey` and `KnownDevice` purpose keys of `ring`.
     pub fn new(ring: &KeyRing) -> Result<Self, AuthError> {
         let key = ring
             .key(KeyPurpose::RateLimitKey)
             .map_err(|_| AuthError::internal("rate-limit purpose key missing"))?
             .clone();
-        Ok(Self { key })
+        let device_key = ring
+            .key(KeyPurpose::KnownDevice)
+            .map_err(|_| AuthError::internal("known-device purpose key missing"))?
+            .clone();
+        Ok(Self { key, device_key })
     }
 
-    /// Builds a hasher directly from a purpose key (tests, embedding).
+    /// Builds a hasher directly from the two purpose keys (tests,
+    /// embedding): `rate_limit` for rate-limit keys, `known_device` for
+    /// device hashes.
     #[must_use]
-    pub fn from_key(key: HmacKey) -> Self {
-        Self { key }
+    pub fn from_keys(rate_limit: HmacKey, known_device: HmacKey) -> Self {
+        Self {
+            key: rate_limit,
+            device_key: known_device,
+        }
     }
 
     /// The 32-byte storage key of a rate-limit key.
@@ -50,7 +66,7 @@ impl KeyHasher {
     /// the same device id yields unrelated hashes for different accounts.
     #[must_use]
     pub fn device(&self, user: UserId, device_id: &str) -> [u8; 32] {
-        self.key.sign_fields(&[
+        self.device_key.sign_fields(&[
             DEVICE_LABEL,
             user.as_uuid().as_bytes(),
             device_id.as_bytes(),
@@ -110,5 +126,26 @@ mod tests {
             hasher.device(a, "device-0123456789"),
             hasher.device(a, "device-0123456789")
         );
+    }
+
+    /// K-21 (CRY-11): device hashes use their own HKDF purpose key, not the
+    /// rate-limit key (the hash the previous version stored differs).
+    #[test]
+    fn cry_11_device_hashes_use_the_known_device_purpose_key() {
+        let ring = KeyRing::derive(&[7_u8; 32]).unwrap();
+        let hasher = KeyHasher::new(&ring).unwrap();
+        let user = UserId::generate();
+        let expected = ring.key(KeyPurpose::KnownDevice).unwrap().sign_fields(&[
+            DEVICE_LABEL,
+            user.as_uuid().as_bytes(),
+            b"device-0123456789",
+        ]);
+        assert_eq!(hasher.device(user, "device-0123456789"), expected);
+        let legacy = ring.key(KeyPurpose::RateLimitKey).unwrap().sign_fields(&[
+            DEVICE_LABEL,
+            user.as_uuid().as_bytes(),
+            b"device-0123456789",
+        ]);
+        assert_ne!(hasher.device(user, "device-0123456789"), legacy);
     }
 }

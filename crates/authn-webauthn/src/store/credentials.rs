@@ -244,3 +244,17 @@ pub(crate) async fn delete(
         .await?;
     Ok(result.rows_affected() == 1)
 }
+
+/// Deletes every credential of `user`; the ids removed, in id order.
+pub(crate) async fn delete_all_for_user(
+    conn: &mut PgConnection,
+    user: UserId,
+) -> Result<Vec<CredentialId>, AuthError> {
+    let mut ids: Vec<CredentialId> =
+        sqlx::query_scalar("DELETE FROM webauthn_credentials WHERE user_id = $1 RETURNING id")
+            .bind(user)
+            .fetch_all(conn)
+            .await?;
+    ids.sort();
+    Ok(ids)
+}

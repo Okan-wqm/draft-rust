@@ -1,14 +1,17 @@
 //! Impersonation (ADM-04).
 //!
 //! The admin crate validates the request (justification, duration bounds,
-//! target eligibility) and delegates to
-//! `SessionIssuer::start_impersonation_with(ctx, request, client,
-//! Some(admin_session))`. authn-session re-checks everything in its own
-//! transaction, creates the session (read-only by default, the admin's
-//! `amr`/`acr` inherited, RFC 8693 `act` claim in native access tokens),
-//! notifies the user and records `admin.impersonation_started` — this
-//! crate does **not** send a second notification or event. It only attaches
-//! the justification to that event (`admin_action_reasons`, ADM-08).
+//! target eligibility), opens a transaction, picks the audit event id and
+//! delegates to `SessionIssuer::start_impersonation_audited(conn, ctx,
+//! request, client, Some(admin_session), event_id)`. authn-session
+//! re-checks everything in that transaction, creates the session
+//! (read-only by default, the admin's `amr`/`acr` inherited, RFC 8693
+//! `act` claim in native access tokens), notifies the user and records
+//! `admin.impersonation_started` under `event_id` — this crate does **not**
+//! send a second notification or event. It stores the justification
+//! against `event_id` (`admin_action_reasons`, ADM-08) in the **same**
+//! transaction and commits: the session, the event and the justification
+//! exist together or not at all.
 //!
 //! The impersonation ends at its expiry and whenever the admin is
 //! suspended, demoted or has their sessions revoked (authn-session).
@@ -18,7 +21,7 @@ use std::time::Duration;
 use authn_core::domain::{AccountStatus, ClientKind};
 use authn_core::error::{AuthError, codes};
 use authn_core::http::RequestContext;
-use authn_core::id::UserId;
+use authn_core::id::{EventId, UserId};
 use authn_core::ports::{ImpersonationRequest, IssuedSession};
 use authn_store::UserRepository;
 
@@ -84,10 +87,13 @@ impl AdminService {
             return Err(AuthError::new(codes::session::IMPERSONATION_NOT_ALLOWED)
                 .with_context("only active accounts can be impersonated"));
         }
+        let event_id = EventId::generate();
+        let mut tx = self.begin().await?;
         let issued = self
             .deps()
             .issuer
-            .start_impersonation_with(
+            .start_impersonation_audited(
+                &mut tx,
                 ctx,
                 ImpersonationRequest {
                     admin_user_id: caller.user_id(),
@@ -98,10 +104,20 @@ impl AdminService {
                 },
                 options.client,
                 Some(caller.session_id()),
+                event_id,
             )
             .await?;
-        self.attach_impersonation_reason(caller, target, &issued, reason)
-            .await;
+        store::insert_reason(
+            &mut tx,
+            event_id,
+            Some(caller.user_id()),
+            Some(target),
+            "impersonation_started",
+            reason.as_str(),
+            self.now(),
+        )
+        .await?;
+        authn_store::commit(tx).await?;
         crate::metrics::action("impersonation_started");
         tracing::info!(
             admin = %caller.user_id(),
@@ -110,49 +126,5 @@ impl AdminService {
             "impersonation started"
         );
         Ok(issued)
-    }
-
-    /// Links the justification to the `admin.impersonation_started` event
-    /// recorded by authn-session. The impersonation is already committed;
-    /// a failure here is logged (the reason also stays on the session row,
-    /// `sessions.impersonation_reason`) and never undoes it.
-    async fn attach_impersonation_reason(
-        &self,
-        caller: &AdminCaller,
-        target: UserId,
-        issued: &IssuedSession,
-        reason: &Justification,
-    ) {
-        let result: Result<bool, AuthError> = async {
-            let mut tx = self.begin().await?;
-            let Some(event) = store::impersonation_event(&mut *tx, issued.session_id).await? else {
-                return Ok(false);
-            };
-            store::insert_reason(
-                &mut tx,
-                event,
-                Some(caller.user_id()),
-                Some(target),
-                "impersonation_started",
-                reason.as_str(),
-                self.now(),
-            )
-            .await?;
-            authn_store::commit(tx).await?;
-            Ok(true)
-        }
-        .await;
-        match result {
-            Ok(true) => {}
-            Ok(false) => tracing::warn!(
-                session = %issued.session_id,
-                "impersonation audit event not found; justification kept on the session only"
-            ),
-            Err(err) => tracing::error!(
-                session = %issued.session_id,
-                code = err.code().code(),
-                "could not store the impersonation justification"
-            ),
-        }
     }
 }

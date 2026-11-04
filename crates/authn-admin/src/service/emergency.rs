@@ -33,7 +33,6 @@ use utoipa::ToSchema;
 use super::{AdminService, meta};
 use crate::guard::AdminCaller;
 use crate::reason::Justification;
-use crate::store;
 
 /// Result of an emergency revocation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -260,7 +259,7 @@ impl AdminService {
         revoke_sessions: bool,
     ) -> Result<Option<(UserId, u64, u64)>, AuthError> {
         let mut tx = self.begin().await?;
-        let ids = store::stale_password_users(&mut tx, changed_before, after, limit).await?;
+        let ids = UserRepository::stale_passwords(&mut tx, changed_before, after, limit).await?;
         let Some(last) = ids.last().copied() else {
             return Ok(None);
         };

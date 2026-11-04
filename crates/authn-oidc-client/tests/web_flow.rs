@@ -667,6 +667,7 @@ async fn soc_01_generic_discovery_with_foreign_issuer_is_refused(pool: PgPool) {
                 native_client_ids: Vec::new(),
             },
             scopes: vec!["openid".to_owned()],
+            trust_email_verified: true,
         });
     Mock::given(method("GET"))
         .and(path("/mixup/.well-known/openid-configuration"))

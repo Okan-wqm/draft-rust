@@ -19,7 +19,7 @@ use authn_core::domain::{
 };
 use authn_core::error::AuthError;
 use authn_core::http::RequestContext;
-use authn_core::id::{RequestId, SessionId, UserId};
+use authn_core::id::{EventId, RequestId, SessionId, UserId};
 use authn_core::ports::{
     Actor, AuditSink, Clock, ImpersonationRequest, IssuedSession, LoginOutcome,
     PrimaryAuthentication, SecurityEvent, SecurityEventKind, SessionIssuer,
@@ -33,6 +33,10 @@ use authn_password::{
 use authn_store::{NewPasswordHash, NewUser, SigningKeyRepository, UserRepository};
 use authn_testkit::TestPorts;
 use authn_testkit::http::{TestRequest, TestResponse, with_request_context};
+use authn_webauthn::{
+    PasswordOnlyMethods, UnrestrictedPolicySource, WebauthnService, WebauthnServiceDeps,
+    WebauthnServiceSettings,
+};
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Router};
 use sqlx::PgPool;
@@ -57,6 +61,7 @@ impl SigningKeyCache for CountingKeyCache {
 /// and, like the real implementation, records `admin.impersonation_started`
 /// (resource = the new session).
 pub struct TestIssuer {
+    pub pool: PgPool,
     pub clock: Arc<dyn Clock>,
     pub audit: Arc<dyn AuditSink>,
     pub requests: Mutex<Vec<(ImpersonationRequest, ClientKind, Option<SessionId>)>>,
@@ -102,6 +107,30 @@ impl SessionIssuer for TestIssuer {
         client: ClientKind,
         admin_session: Option<SessionId>,
     ) -> Result<IssuedSession, AuthError> {
+        let mut tx = authn_store::begin(&self.pool).await?;
+        let issued = self
+            .start_impersonation_audited(
+                &mut tx,
+                ctx,
+                request,
+                client,
+                admin_session,
+                EventId::generate(),
+            )
+            .await?;
+        authn_store::commit(tx).await?;
+        Ok(issued)
+    }
+
+    async fn start_impersonation_audited(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        ctx: &RequestContext,
+        request: ImpersonationRequest,
+        client: ClientKind,
+        admin_session: Option<SessionId>,
+        event_id: EventId,
+    ) -> Result<IssuedSession, AuthError> {
         let now = self.clock.now();
         let session_id = SessionId::generate();
         let expires = now + request.ttl;
@@ -111,8 +140,9 @@ impl SessionIssuer for TestIssuer {
             .with_subject(request.target_user_id)
             .with_resource("session", session_id)
             .with_meta("read_only", request.read_only);
+        event.id = event_id;
         event.impersonator = Some(request.admin_user_id);
-        self.audit.record(event).await?;
+        self.audit.record_in_tx(conn, event).await?;
         let user_id = request.target_user_id;
         self.requests
             .lock()
@@ -145,6 +175,7 @@ pub struct Harness {
     pub keys: Arc<CountingKeyCache>,
     pub mfa: MfaService,
     pub passwords: PasswordService,
+    pub webauthn: WebauthnService,
 }
 
 impl Harness {
@@ -239,7 +270,21 @@ impl Harness {
             risk_store,
             &config.protect,
         );
+        let webauthn = WebauthnService::new(
+            WebauthnServiceDeps {
+                pool: pool.clone(),
+                clock: ports.clock.clone(),
+                rate_limiter: ports.rate_limiter.clone(),
+                notifier: ports.notifier.clone(),
+                audit: audit.clone(),
+                account_methods: Arc::new(PasswordOnlyMethods),
+                policy_source: Arc::new(UnrestrictedPolicySource),
+            },
+            WebauthnServiceSettings::from_app_config(&config).unwrap(),
+        )
+        .unwrap();
         let issuer = Arc::new(TestIssuer {
+            pool: pool.clone(),
             clock: ports.clock.clone(),
             audit: audit.clone(),
             requests: Mutex::new(Vec::new()),
@@ -256,6 +301,7 @@ impl Harness {
                 issuer: issuer.clone(),
                 accounts,
                 mfa: mfa.clone(),
+                webauthn: webauthn.clone(),
                 passwords: passwords.clone(),
                 protection,
                 hasher: crypto.passwords.clone(),
@@ -274,6 +320,7 @@ impl Harness {
             keys,
             mfa,
             passwords,
+            webauthn,
         }
     }
 
