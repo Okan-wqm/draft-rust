@@ -57,6 +57,90 @@ impl SigningKeyCache for CountingKeyCache {
     }
 }
 
+/// The testkit `RecordingSessionRevoker` plus `revoke_everything_except`
+/// (K-10), which the testkit fake does not implement (the port's default
+/// refuses). Calls of that method are recorded here.
+pub struct TestRevoker {
+    pub inner: Arc<authn_testkit::fakes::RecordingSessionRevoker>,
+    pub kept: Mutex<Vec<(SessionId, authn_core::ports::RevocationReason)>>,
+}
+
+#[async_trait]
+impl authn_core::ports::SessionRevoker for TestRevoker {
+    async fn revoke_session(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        session: SessionId,
+        reason: authn_core::ports::RevocationReason,
+    ) -> Result<bool, AuthError> {
+        self.inner.revoke_session(conn, session, reason).await
+    }
+
+    async fn revoke_all_for_user(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        user: UserId,
+        reason: authn_core::ports::RevocationReason,
+        options: authn_core::ports::RevokeOptions,
+    ) -> Result<u64, AuthError> {
+        self.inner
+            .revoke_all_for_user(conn, user, reason, options)
+            .await
+    }
+
+    async fn revoke_all_except(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        user: UserId,
+        keep: SessionId,
+        reason: authn_core::ports::RevocationReason,
+        options: authn_core::ports::RevokeOptions,
+    ) -> Result<u64, AuthError> {
+        self.inner
+            .revoke_all_except(conn, user, keep, reason, options)
+            .await
+    }
+
+    async fn revoke_for_user_in_org(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        user: UserId,
+        org: authn_core::id::OrgId,
+        reason: authn_core::ports::RevocationReason,
+    ) -> Result<u64, AuthError> {
+        self.inner
+            .revoke_for_user_in_org(conn, user, org, reason)
+            .await
+    }
+
+    async fn revoke_all_for_org(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        org: authn_core::id::OrgId,
+        reason: authn_core::ports::RevocationReason,
+    ) -> Result<u64, AuthError> {
+        self.inner.revoke_all_for_org(conn, org, reason).await
+    }
+
+    async fn revoke_everything(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        reason: authn_core::ports::RevocationReason,
+    ) -> Result<u64, AuthError> {
+        self.inner.revoke_everything(conn, reason).await
+    }
+
+    async fn revoke_everything_except(
+        &self,
+        _conn: &mut sqlx::PgConnection,
+        keep: SessionId,
+        reason: authn_core::ports::RevocationReason,
+    ) -> Result<u64, AuthError> {
+        self.kept.lock().unwrap().push((keep, reason));
+        Ok(7)
+    }
+}
+
 /// A `SessionIssuer` standing in for authn-session: issues fake sessions
 /// and, like the real implementation, records `admin.impersonation_started`
 /// (resource = the new session).
@@ -173,6 +257,8 @@ pub struct Harness {
     pub service: AdminService,
     pub issuer: Arc<TestIssuer>,
     pub keys: Arc<CountingKeyCache>,
+    pub revoker: Arc<TestRevoker>,
+    pub audit: Arc<dyn AuditSink>,
     pub mfa: MfaService,
     pub passwords: PasswordService,
     pub webauthn: WebauthnService,
@@ -290,14 +376,18 @@ impl Harness {
             requests: Mutex::new(Vec::new()),
         });
         let keys = Arc::new(CountingKeyCache::default());
+        let revoker = Arc::new(TestRevoker {
+            inner: ports.session_revoker.clone(),
+            kept: Mutex::new(Vec::new()),
+        });
         let mut settings = AdminSettings::from_app_config(&config);
         tweak(&mut settings);
         let service = AdminService::new(
             AdminServiceDeps {
                 pool: pool.clone(),
                 clock: ports.clock.clone(),
-                audit,
-                sessions: ports.session_revoker.clone(),
+                audit: audit.clone(),
+                sessions: revoker.clone(),
                 issuer: issuer.clone(),
                 accounts,
                 mfa: mfa.clone(),
@@ -307,6 +397,7 @@ impl Harness {
                 hasher: crypto.passwords.clone(),
                 envelopes: crypto.envelopes.clone(),
                 signing_keys: keys.clone(),
+                rate_limiter: ports.rate_limiter.clone(),
             },
             settings,
         );
@@ -318,6 +409,8 @@ impl Harness {
             service,
             issuer,
             keys,
+            revoker,
+            audit,
             mfa,
             passwords,
             webauthn,
@@ -519,4 +612,12 @@ pub struct StoredEvent {
     pub outcome: String,
     pub reason: Option<String>,
     pub metadata: serde_json::Value,
+}
+
+/// A response kept after its body was read.
+#[derive(Debug)]
+pub struct StoredResponse {
+    pub status: axum::http::StatusCode,
+    pub retry_after: Option<String>,
+    pub body: serde_json::Value,
 }

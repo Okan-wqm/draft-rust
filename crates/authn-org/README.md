@@ -179,8 +179,8 @@ Tablo: `src/routes.rs` modül belgesi. Tüm yollar `/v1/orgs/{org_id}/…` adlan
 - Domain otomatik katılımını açmak / kapatmak `domains:manage` ister, step-up istemez (audit'e `org.policy_changed` olarak yazılır).
 - `org_domain_claimed` hatası, TXT kaydını yayımlayabilen (domain'i kontrol eden) çağırana domain'in başka bir organizasyonda doğrulandığını söyler; domain'i kontrol etmeyen biri bunu öğrenemez.
 - Doğrulanmış domain'ler periyodik olarak yeniden doğrulanmaz (Faz 2); domain el değiştirirse eski doğrulama ve otomatik katılım sürer.
-- Üye listesi e-posta adreslerini `UserRepository::find_by_id` ile satır başına okur (sayfa ≤ 100); toplu okuma için authn-store'a talep açıldı.
-- Rol düşürme / rolden izin çıkarma / devirde eski sahibin düşürülmesi için `RevocationReason::MembershipRemoved` kullanılıyor (porta yeni neden eklenmesi talep edildi).
+- ~~Üye listesi satır başına okuma~~ — **kapatıldı (wave 2B, K-41):** üye listesi sayfanın adreslerini tek sorguyla `UserRepository::find_many` ile okur.
+- ~~Rol değişikliğinde `MembershipRemoved`~~ — **kapatıldı (wave 2B, K-41):** rol düşürme, özel rolden izin çıkarma ve devirde eski sahibin düşürülmesi oturumları `RevocationReason::MembershipChanged` (`membership_changed`) ile kapatır; üyelik askıya alma / çıkarma / ayrılma `MembershipRemoved` kalır (testler `changed_in_org` / `revoked_in_org` ile ayırır).
 - IP izin listesi değişikliği (genişletme dahil) sıkılaştırma sayılır ve oturumları kapatır (bilinçli olarak temkinli).
 - `GET /v1/org-permissions` (statik katalog) da bir organizasyon yolu olmadığından API anahtarıyla çağrılamaz.
 - Uygulanmayan SHOULD/MAY maddesi yoktur; ORG-06 `sso_required` Faz 2'dir.

@@ -69,6 +69,27 @@ pub trait SessionRevoker: Send + Sync {
         conn: &mut PgConnection,
         reason: RevocationReason,
     ) -> Result<u64, AuthError>;
+
+    /// Emergency: revokes every session of every user **except** `keep`
+    /// (ADM-06, K-10: the calling admin's own session survives "revoke all
+    /// sessions" unless they ask otherwise). Impersonation sessions started
+    /// from `keep` are revoked like any other session.
+    ///
+    /// The default implementation refuses: a revoker that cannot keep a
+    /// session must not silently revoke it (or anything else). Wrappers
+    /// (e.g. authn-account's `AccountAwareSessionRevoker`) must forward it
+    /// with the same side effects as [`SessionRevoker::revoke_everything`].
+    async fn revoke_everything_except(
+        &self,
+        conn: &mut PgConnection,
+        keep: SessionId,
+        reason: RevocationReason,
+    ) -> Result<u64, AuthError> {
+        let _ = (conn, keep, reason);
+        Err(AuthError::internal(
+            "revoke_everything_except is not supported by this session revoker",
+        ))
+    }
 }
 
 /// Extra effects of a bulk revocation.

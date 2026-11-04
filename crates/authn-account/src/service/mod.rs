@@ -27,6 +27,7 @@ mod export;
 mod login;
 mod maintenance;
 mod profile;
+mod provisioning;
 mod registration;
 mod revocation;
 mod signup;
@@ -59,10 +60,11 @@ use time::OffsetDateTime;
 use crate::background::BackgroundJobs;
 use crate::disposable::DisposableDomains;
 use crate::export::AccountDataExporter;
-use crate::hooks::OrganizationOwnership;
+use crate::hooks::{AccountErasureHook, OrganizationOwnership};
 use crate::repo::ProfileRepository;
 use crate::tx::AccountTx;
 
+pub use self::provisioning::{ProvisionOutcome, VerifiedUserProvision};
 pub use self::registration::{
     CredentialConfirmation, LinkConfirmation, MAX_PASSWORD_CONFIRMATIONS, REGISTRATION_COOKIE,
     RegistrationReceipt,
@@ -179,6 +181,9 @@ struct Inner {
     settings: AccountServiceSettings,
     jobs: BackgroundJobs,
     own_exporter: AccountDataExporter,
+    /// Registered after construction (the hooks' modules depend on this
+    /// service, so they cannot be passed in `AccountServiceDeps`).
+    erasure_hooks: std::sync::RwLock<Vec<Arc<dyn AccountErasureHook>>>,
 }
 
 impl std::fmt::Debug for AccountService {
@@ -214,6 +219,7 @@ impl AccountService {
                 settings,
                 jobs: BackgroundJobs::new(),
                 own_exporter,
+                erasure_hooks: std::sync::RwLock::new(Vec::new()),
             }),
         })
     }
@@ -223,6 +229,28 @@ impl AccountService {
     /// shutdown (OPS-07); tests use it to observe the side effects.
     pub async fn drain_background_jobs(&self) {
         self.inner.jobs.drain().await;
+    }
+
+    /// Registers work that must run in every account-erasure transaction
+    /// (ACC-09; see [`AccountErasureHook`]). `authn-server` registers the
+    /// hooks of other modules once at start-up, e.g.
+    /// `account.register_erasure_hook(Arc::new(oidc.erasure_hook()))`.
+    pub fn register_erasure_hook(&self, hook: Arc<dyn AccountErasureHook>) {
+        self.inner
+            .erasure_hooks
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(hook);
+    }
+
+    /// Snapshot of the registered erasure hooks (no lock held across
+    /// `.await`).
+    fn erasure_hooks(&self) -> Vec<Arc<dyn AccountErasureHook>> {
+        self.inner
+            .erasure_hooks
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// The unverified-account login policy (ACC-05).

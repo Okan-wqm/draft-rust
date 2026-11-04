@@ -228,7 +228,7 @@ impl OrgService {
                             &mut tx,
                             user,
                             org,
-                            RevocationReason::MembershipRemoved,
+                            RevocationReason::MembershipChanged,
                         )
                         .await?;
                     // Like a member downgrade (ORG-04): a pending invitation

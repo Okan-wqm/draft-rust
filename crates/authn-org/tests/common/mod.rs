@@ -271,6 +271,17 @@ impl Harness {
         self.ports.session_revoker.calls()
     }
 
+    /// Sessions in `org` revoked because the membership's role or
+    /// permissions changed (demotion, permission removed, previous owner
+    /// demoted by a transfer; K-41: `RevocationReason::MembershipChanged`).
+    pub fn changed_in_org(&self, user: UserId, org: OrgId) -> bool {
+        self.revocations().iter().any(|c| {
+            matches!(c, RevocationCall::UserInOrg(u, o, RevocationReason::MembershipChanged) if *u == user && *o == org)
+        })
+    }
+
+    /// Sessions in `org` revoked because the membership ended or was
+    /// suspended (`RevocationReason::MembershipRemoved`).
     pub fn revoked_in_org(&self, user: UserId, org: OrgId) -> bool {
         self.revocations().iter().any(|c| {
             matches!(c, RevocationCall::UserInOrg(u, o, RevocationReason::MembershipRemoved) if *u == user && *o == org)

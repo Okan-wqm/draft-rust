@@ -27,7 +27,8 @@
 //!    forces a password reset by replacing the password hash with an
 //!    unusable random one (`must_change_password` set) — an attacker who
 //!    knew the password cannot sign in with it any more; the owner resets
-//!    it through the restored address.
+//!    it through the restored address. The restored address receives an
+//!    `email_change_reverted` notice in the same transaction (outbox).
 //!
 //! Address check-then-write sequences take advisory locks on the involved
 //! addresses (sorted, deadlock-free) before the user row lock.
@@ -53,7 +54,7 @@ use super::verification::{invalid_code, invalid_token};
 use super::{AccountService, LinkSpec, actions, after, parse_email, stored_email};
 use crate::lifecycle::lock_user;
 use crate::model::RevertOutcome;
-use crate::repo::{ReservationRepository, RevertLinkRepository, lock_emails};
+use crate::repo::{ReservationRepository, lock_emails};
 use crate::tx::AccountTx;
 
 impl AccountService {
@@ -538,11 +539,11 @@ impl AccountService {
         // changes stay valid: otherwise whoever controls an intermediate
         // address (an attacker who changed it twice) could revert to it and
         // thereby cancel the original owner's revert link.
-        RevertLinkRepository::revoke_issued_since(
+        OneTimeTokenRepository::revoke_for_user_since(
             tx.conn(),
             user.id,
-            record.created_at,
-            record.id,
+            &[TokenPurpose::EmailChangeRevert],
+            (record.created_at, record.id),
             self.now(),
         )
         .await?;
@@ -573,6 +574,23 @@ impl AccountService {
             .invalidate_password(&mut tx, user.id, &unusable)
             .await?;
         self.publish_email_changed(&mut tx, user.id, true).await?;
+        // K-40: the restored address learns about the revert and the forced
+        // password reset in the same transaction (outbox): the notice is
+        // queued exactly when the revert commits.
+        let (recipient, locale) = self
+            .recipient_at(tx.conn(), user.id, old_email.clone(), ctx.locale)
+            .await?;
+        self.deps()
+            .notifier
+            .notify_in_tx(
+                tx.conn(),
+                Notification {
+                    recipient,
+                    locale,
+                    kind: NotificationKind::EmailChangeReverted { at: self.now() },
+                },
+            )
+            .await?;
         tx.audit(
             self.event(SecurityEventKind::EmailChangeReverted, ctx)
                 .with_actor(Actor::Anonymous)
@@ -599,17 +617,22 @@ impl AccountService {
             return Ok(());
         };
         let now = self.now();
-        let until = RevertLinkRepository::active(tx.conn(), user, now)
-            .await?
-            .into_iter()
-            .filter(|link| {
-                link.target
-                    .as_deref()
-                    .and_then(|t| EmailAddress::parse(t).ok())
-                    .is_some_and(|t| t.normalized() == left)
-            })
-            .map(|link| link.expires_at)
-            .max();
+        let until = OneTimeTokenRepository::active_for_user(
+            tx.conn(),
+            user,
+            &[TokenPurpose::EmailChangeRevert],
+            now,
+        )
+        .await?
+        .into_iter()
+        .filter(|link| {
+            link.target
+                .as_deref()
+                .and_then(|t| EmailAddress::parse(t).ok())
+                .is_some_and(|t| t.normalized() == left)
+        })
+        .map(|link| link.expires_at)
+        .max();
         if let Some(until) = until {
             ReservationRepository::reserve(tx.conn(), left, user, until, now).await?;
         }

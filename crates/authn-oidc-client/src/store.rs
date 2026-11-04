@@ -1,9 +1,9 @@
 //! SQL for this crate's tables (`identities`, `oauth_states`, migration
-//! `0007`). Runtime queries with `&'static str` SQL; values are always bind
-//! parameters.
+//! `0007`, `2100`–`2102`; `oauth_token_revocations`, `2102`). Runtime
+//! queries with `&'static str` SQL; values are always bind parameters.
 
 use authn_core::domain::ClientKind;
-use authn_core::id::{IdentityId, OAuthStateId, UserId};
+use authn_core::id::{IdentityId, OAuthStateId, SessionId, UserId};
 use authn_store::StoreError;
 use sqlx::{PgConnection, PgExecutor};
 use time::OffsetDateTime;
@@ -35,6 +35,12 @@ pub struct NewState<'a> {
     pub binding_hash: Option<&'a [u8; 32]>,
     pub created_at: OffsetDateTime,
     pub expires_at: OffsetDateTime,
+    /// "Remember me" of a web login (SES-06, K-32).
+    pub remember_me: bool,
+    /// "Not my device" of a web login (SES-07, K-32).
+    pub shared_device: bool,
+    /// Session that started a link flow (K-03).
+    pub session_id: Option<SessionId>,
 }
 
 /// A consumed `oauth_states` row.
@@ -48,6 +54,9 @@ pub struct StateRow {
     pub user_id: Option<UserId>,
     pub return_to: Option<String>,
     pub binding_hash: Option<Vec<u8>>,
+    pub remember_me: bool,
+    pub shared_device: bool,
+    pub session_id: Option<SessionId>,
 }
 
 /// Inserts an authorization state / native nonce.
@@ -58,7 +67,8 @@ pub async fn insert_state(
     sqlx::query(
         "INSERT INTO oauth_states (id, provider, flow, state_hash, nonce_hash, \
          pkce_verifier_ciphertext, user_id, return_to, client_kind, binding_hash, created_at, \
-         expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+         expires_at, remember_me, shared_device, session_id) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
     )
     .bind(new.id)
     .bind(new.provider)
@@ -72,6 +82,9 @@ pub async fn insert_state(
     .bind(new.binding_hash.map(|h| &h[..]))
     .bind(new.created_at)
     .bind(new.expires_at)
+    .bind(new.remember_me)
+    .bind(new.shared_device)
+    .bind(new.session_id)
     .execute(executor)
     .await?;
     Ok(())
@@ -113,7 +126,7 @@ mod const_format_returning {
     macro_rules! returning {
         () => {
             " RETURNING id, provider, flow, nonce_hash, pkce_verifier_ciphertext, user_id, \
-             return_to, binding_hash"
+             return_to, binding_hash, remember_me, shared_device, session_id"
         };
     }
     pub(super) const CONSUME_WEB: &str = concat!(
@@ -159,6 +172,7 @@ pub struct IdentityRow {
     pub access_token_ciphertext: Option<Vec<u8>>,
     pub refresh_token_ciphertext: Option<Vec<u8>>,
     pub token_expires_at: Option<OffsetDateTime>,
+    pub token_client_id: Option<String>,
     pub created_at: OffsetDateTime,
     pub last_login_at: Option<OffsetDateTime>,
 }
@@ -169,7 +183,14 @@ impl std::fmt::Debug for IdentityRow {
             .field("id", &self.id)
             .field("user_id", &self.user_id)
             .field("provider", &self.provider)
-            .field("tokens_stored", &self.access_token_ciphertext.is_some())
+            .field(
+                "access_token_stored",
+                &self.access_token_ciphertext.is_some(),
+            )
+            .field(
+                "refresh_token_stored",
+                &self.refresh_token_ciphertext.is_some(),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -177,8 +198,8 @@ impl std::fmt::Debug for IdentityRow {
 macro_rules! identity_columns {
     () => {
         "id, user_id, provider, subject, issuer, email, email_verified, display_name, \
-         access_token_ciphertext, refresh_token_ciphertext, token_expires_at, created_at, \
-         last_login_at"
+         access_token_ciphertext, refresh_token_ciphertext, token_expires_at, token_client_id, \
+         created_at, last_login_at"
     };
 }
 
@@ -292,22 +313,32 @@ pub async fn touch_identity(
     Ok(())
 }
 
-/// Stores (or clears, with `None`s) the sealed provider tokens (SOC-08).
+/// Sealed provider tokens of an identity (SOC-08); `None` columns are
+/// cleared.
+#[derive(Debug, Default)]
+pub struct SealedTokens<'a> {
+    pub access: Option<&'a [u8]>,
+    pub refresh: Option<&'a [u8]>,
+    pub expires_at: Option<OffsetDateTime>,
+    /// Client id the tokens were issued to (K-35: revocation presents it).
+    pub client_id: Option<&'a str>,
+}
+
+/// Stores (or clears) the sealed provider tokens (SOC-08).
 pub async fn set_tokens(
     conn: &mut PgConnection,
     id: IdentityId,
-    access: Option<&[u8]>,
-    refresh: Option<&[u8]>,
-    expires_at: Option<OffsetDateTime>,
+    tokens: &SealedTokens<'_>,
 ) -> Result<(), StoreError> {
     sqlx::query(
         "UPDATE identities SET access_token_ciphertext = $2, refresh_token_ciphertext = $3, \
-         token_expires_at = $4 WHERE id = $1",
+         token_expires_at = $4, token_client_id = $5 WHERE id = $1",
     )
     .bind(id)
-    .bind(access)
-    .bind(refresh)
-    .bind(expires_at)
+    .bind(tokens.access)
+    .bind(tokens.refresh)
+    .bind(tokens.expires_at)
+    .bind(tokens.client_id)
     .execute(conn)
     .await?;
     Ok(())
@@ -325,4 +356,104 @@ pub async fn delete_identity(
         .execute(conn)
         .await?;
     Ok(result.rows_affected() == 1)
+}
+
+/// A queued provider-token revocation (K-35).
+#[derive(Clone, sqlx::FromRow)]
+pub struct RevocationRow {
+    pub id: sqlx::types::Uuid,
+    pub provider: String,
+    pub client_id: String,
+    pub token_ciphertext: Vec<u8>,
+    pub token_type_hint: String,
+    pub attempts: i32,
+}
+
+impl std::fmt::Debug for RevocationRow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RevocationRow")
+            .field("id", &self.id)
+            .field("provider", &self.provider)
+            .field("attempts", &self.attempts)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Input of [`enqueue_revocation`].
+#[derive(Debug)]
+pub struct NewRevocation<'a> {
+    pub id: sqlx::types::Uuid,
+    pub provider: &'a str,
+    pub client_id: &'a str,
+    pub token_ciphertext: &'a [u8],
+    pub token_type_hint: &'static str,
+    pub now: OffsetDateTime,
+}
+
+/// Queues a token revocation (caller's transaction).
+pub async fn enqueue_revocation(
+    conn: &mut PgConnection,
+    new: &NewRevocation<'_>,
+) -> Result<(), StoreError> {
+    sqlx::query(
+        "INSERT INTO oauth_token_revocations (id, provider, client_id, token_ciphertext, \
+         token_type_hint, attempts, next_attempt_at, created_at) \
+         VALUES ($1, $2, $3, $4, $5, 0, $6, $6)",
+    )
+    .bind(new.id)
+    .bind(new.provider)
+    .bind(new.client_id)
+    .bind(new.token_ciphertext)
+    .bind(new.token_type_hint)
+    .bind(new.now)
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
+/// Claims the next due revocation (multi-instance safe): its attempt
+/// counter is raised and it is leased until `lease_until`, in one
+/// statement, so the HTTP call runs without holding a lock or a
+/// transaction.
+pub async fn claim_revocation(
+    executor: impl PgExecutor<'_>,
+    now: OffsetDateTime,
+    lease_until: OffsetDateTime,
+) -> Result<Option<RevocationRow>, StoreError> {
+    Ok(sqlx::query_as::<_, RevocationRow>(
+        "UPDATE oauth_token_revocations SET attempts = attempts + 1, next_attempt_at = $2 \
+         WHERE id = (SELECT id FROM oauth_token_revocations WHERE next_attempt_at <= $1 \
+           ORDER BY next_attempt_at, id LIMIT 1 FOR UPDATE SKIP LOCKED) \
+         RETURNING id, provider, client_id, token_ciphertext, token_type_hint, attempts",
+    )
+    .bind(now)
+    .bind(lease_until)
+    .fetch_optional(executor)
+    .await?)
+}
+
+/// Removes a revocation (done or given up).
+pub async fn delete_revocation(
+    executor: impl PgExecutor<'_>,
+    id: sqlx::types::Uuid,
+) -> Result<(), StoreError> {
+    sqlx::query("DELETE FROM oauth_token_revocations WHERE id = $1")
+        .bind(id)
+        .execute(executor)
+        .await?;
+    Ok(())
+}
+
+/// Schedules the next attempt of a revocation.
+pub async fn reschedule_revocation(
+    executor: impl PgExecutor<'_>,
+    id: sqlx::types::Uuid,
+    next_attempt_at: OffsetDateTime,
+) -> Result<(), StoreError> {
+    sqlx::query("UPDATE oauth_token_revocations SET next_attempt_at = $2 WHERE id = $1")
+        .bind(id)
+        .bind(next_attempt_at)
+        .execute(executor)
+        .await?;
+    Ok(())
 }

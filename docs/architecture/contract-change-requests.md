@@ -164,7 +164,7 @@ Dalga A'nın tüm talepleri işlendi; her kaydın **Durum** satırı güncellend
 - **Gerekçe:** (1) Temizlik işleri aday satırları tek sorguda, çoklu instance güvenli seçmeli: `SELECT id FROM users WHERE status='pending_verification' AND email_verified_at IS NULL AND created_at < $1 … FOR UPDATE SKIP LOCKED` (ACC-05) ve `… WHERE status='locked' AND locked_until <= $1 … FOR UPDATE SKIP LOCKED` (ACC-06). Yazma yine `UserRepository` (`update_status`, `delete`) ile yapılır. (2) Dışa aktarma, `one_time_tokens`'tan **yalnızca account purpose'larının** aktif satırlarını (hash hariç) okur. (3) E-posta adresi değiştiğinde / geri alındığında, kullanıcının adresine gönderilmiş **tüm** token'lar `OneTimeTokenRepository::revoke_for_user` ile iptal edilir: `password_reset`, `password_reset_code`, `magic_link`, `login_code`, `not_me`, `mfa_email_otp` dahil (`authn_account::ADDRESS_BOUND_PURPOSES`). Aksi hâlde eski adrese (veya geri almada saldırganın adresine) gönderilmiş bir şifre sıfırlama linki hesabı yeniden ele geçirmeye yarar. İptal yalnızca erişimi kaldırır, hiçbir şey vermez.
 - **Önerilen değişiklik:** (1) için authn-store'a `UserRepository::claim_by_status(conn, status, before, skip) -> Option<UserId>` eklenirse account ona geçer. (3) için contracts §5'e not: "adres değişikliği, adrese gönderilmiş tüm purpose'ları iptal eder (authn-account)".
 - **Geriye uyumluluk:** Etkisi yok.
-- **Durum:** Uygulandı (2026-11-01, mimar): (1) `UserRepository::claim_next(conn, UserClaim::{UnverifiedCreatedBefore(t), LockExpiredAt(t)}, skip: &[UserId]) -> Option<UserRecord>` — aynı koşullar ve sıralama, `FOR UPDATE SKIP LOCKED`, `users_locked_until_idx` (0014); (2) `OneTimeTokenRepository::active_for_user(executor, user, purposes, now)` (hash hariç; dışa aktarma kendi purpose'larını verir); (3) contracts §5 "yalnızca iptal" istisnaları (adrese bağlı purpose'lar; password/session'ın `email_change*` iptali). Testler `acc_05_claim_next_returns_only_expired_unverified_accounts`, `acc_06_claim_next_is_exclusive_across_instances`, `acc_10_active_for_user_lists_only_usable_tokens_of_the_given_purposes`. authn-account `SharedReads`'i bunlara geçirebilir (davranış aynı)
+- **Durum:** Uygulandı (2026-11-01, mimar): (1) `UserRepository::claim_next(conn, UserClaim::{UnverifiedCreatedBefore(t), LockExpiredAt(t)}, skip: &[UserId]) -> Option<UserRecord>` — aynı koşullar ve sıralama, `FOR UPDATE SKIP LOCKED`, `users_locked_until_idx` (0014); (2) `OneTimeTokenRepository::active_for_user(executor, user, purposes, now)` (hash hariç; dışa aktarma kendi purpose'larını verir); (3) contracts §5 "yalnızca iptal" istisnaları (adrese bağlı purpose'lar; password/session'ın `email_change*` iptali). Testler `acc_05_claim_next_returns_only_expired_unverified_accounts`, `acc_06_claim_next_is_exclusive_across_instances`, `acc_10_active_for_user_lists_only_usable_tokens_of_the_given_purposes`. Uygulandı (wave 2A, K-41): authn-account kilit açma işinde `claim_next(LockExpiredAt)`, dışa aktarmada `active_for_user(ACCOUNT_TOKEN_PURPOSES)` kullanıyor; ACC-05 temizliği kendi sorgusunu bilinçli olarak koruyor (canlı `pending_registrations` satırı olan hesapları da atlar — `claim_next` bunu ifade edemez, davranış aynı olmazdı)
 
 ### 2026-11-01 — `RegistrationAttempt` bildirimi ve olası yeni bildirim türleri
 - **Talep eden:** authn-account
@@ -173,7 +173,7 @@ Dalga A'nın tüm talepleri işlendi; her kaydın **Durum** satırı güncellend
 - **Gerekçe:** `RegistrationAttempt` iki durumda gönderilir: kayıtlı adresle kayıt denemesi ve e-posta değişikliğinde başka bir hesabın adresinin istenmesi. Geri alma sonrası "şifrenizi sıfırlayın" uyarısı için tür yok.
 - **Önerilen değişiklik:** Şablon metni genel olsun ("Bu adres bir hesap için kullanılmak istendi; siz değilseniz bir şey yapmanıza gerek yok"). İsteğe bağlı yeni tür: `EmailChangeReverted { at }` (account geri almada gönderir).
 - **Geriye uyumluluk:** Şablon metni; yeni tür ekleme.
-- **Durum:** Uygulandı (wave 1) — `registration_attempt` metni (TR/EN, konu dahil) kayıt ve e-posta değişikliği girişimlerini kapsıyor; `NotificationKind::EmailChangeReverted { at }` + şablonlar. Açık: authn-account geri almada göndermesi (wave 2).
+- **Durum:** Uygulandı (wave 1) — `registration_attempt` metni (TR/EN, konu dahil) kayıt ve e-posta değişikliği girişimlerini kapsıyor; `NotificationKind::EmailChangeReverted { at }` + şablonlar. Uygulandı (wave 2A) — authn-account geri almada geri yüklenen adrese aynı transaction'da `notify_in_tx` (K-40; `acc_07_revert_notifies_the_restored_address`).
 
 ### 2026-11-01 — Server / Dalga B bağlama notları
 - **Talep eden:** authn-account
@@ -191,7 +191,7 @@ Dalga A'nın tüm talepleri işlendi; her kaydın **Durum** satırı güncellend
 - **Gerekçe:** Geri alma, kendisinden **sonra** verilmiş geri alma linklerini iptal etmeli, öncekileri korumalı (aksi hâlde ara adresi kontrol eden saldırgan, sahibin geri alma linkini iptal edebiliyordu). `OneTimeTokenRepository::revoke_for_user` purpose'un tüm satırlarını iptal eder; zamana göre süzme yok.
 - **Önerilen değişiklik:** (uygulandı, `crates/authn-account/src/repo.rs` `RevertLinkRepository`) `UPDATE one_time_tokens SET revoked_at = $5 WHERE user_id = $1 AND purpose = 'email_change_revert' AND consumed_at IS NULL AND revoked_at IS NULL AND (created_at, id) >= ($3, $4)` ve aynı purpose'un aktif satırlarının `target`/`expires_at` okuması. authn-store'a `revoke_for_user_since(conn, user, purposes, since: (OffsetDateTime, OneTimeTokenId), now)` eklenirse account ona geçer. Ayrıca `change_status` / `change_status_in_tx` artık `pending_deletion` ve `deleted` hedeflerini reddeder (authn-admin bilgi notu: silme yalnızca silme akışıyla).
 - **Geriye uyumluluk:** Yalnızca account'un kendi purpose'u; şema değişikliği yok.
-- **Durum:** Uygulandı (2026-11-01, mimar: `OneTimeTokenRepository::revoke_for_user_since(conn, user, purposes, (created_at, id), now)` ve `active_for_user` — `crates/authn-store/src/one_time_tokens.rs`; test `acc_07_revoke_since_cancels_later_links_but_keeps_earlier_ones`). authn-account `RevertLinkRepository`'yi bunlara geçirebilir
+- **Durum:** Uygulandı (2026-11-01, mimar: `OneTimeTokenRepository::revoke_for_user_since(conn, user, purposes, (created_at, id), now)` ve `active_for_user` — `crates/authn-store/src/one_time_tokens.rs`; test `acc_07_revoke_since_cancels_later_links_but_keeps_earlier_ones`). Uygulandı (wave 2A, K-41): `RevertLinkRepository` kaldırıldı; geri alma bu iki API'yi kullanıyor (ACC-07 testleri değişmeden yeşil)
 
 ### 2026-11-01 — Kayıtta ön-ele geçirme savunması (ADR 0002): `pending_registrations`, `SessionRevoker` dekoratörü, oturuma bağlı e-posta değişikliği onayı
 - **Talep eden:** authn-account
@@ -200,7 +200,7 @@ Dalga A'nın tüm talepleri işlendi; her kaydın **Durum** satırı güncellend
 - **Gerekçe:** "Son kayıt olan kazanır" ve "link tek başına hesabı doğrular" kuralları saldırgan ikinci / saldırgan önce ön-ele geçirmeye izin veriyordu; e-posta değişikliği linki de aynı sınıftaydı (ADR 0002).
 - **Önerilen değişiklik:** (authn-account'ta uygulandı) (1) Yeni tablo `pending_registrations` (migration `1201`, account'a ait): §5 account satırına ve ER diyagramına `users ||--o{ pending_registrations` eklenmesi. (2) `authn_account::AccountAwareSessionRevoker::new(inner, account)` — `SessionRevoker` dekoratörü; server sarılmış portu tüm modüllere verir, `AccountServiceDeps::sessions`'a iç revoker'ı verir. Toplu iptallerde (`Logout`, `UserRequest`, `PasswordChanged`, `PasswordReset`, `EmailChangeReverted`, `NotMe`, `RefreshTokenReuse`, `AccountSuspended`, `AdminAction`, `Emergency`) bekleyen `email_change` / `email_change_code` iptal edilir (§5'teki "password/session iptal edebilir" notu böylece kendiliğinden sağlanır); `PasswordReset` doğrulanmamış hesabı posta kutusu sahibi için doğrular. Sözleşme kuralı: `RevocationReason::PasswordReset` yalnızca e-postayla gelen sıfırlamanın tamamlanmasında kullanılır. (3) `POST /v1/email/change/confirm` hesap sahibinin oturumunu ister: server oturum (ve CSRF) katmanını bu yola da uygular; `POST /v1/email/verify` isteğe bağlı `Principal` okur. (4) `POST /v1/signup` yanıtı `{status, registration}` + `Set-Cookie: __Host-authn_registration` (`HttpOnly; Secure; SameSite=Strict; Path=/`); `POST /v1/email/verify` gövdesi `token` [+ `password` | `new_password` + `accepted_terms`] veya `code` + `registration` (ya da çerez); yeni hata kodları `registration_confirmation_required`, `registration_password_mismatch` (403). (5) Posta kutusu kanıtları: authn-session magic link / giriş kodu ile doğrulanmamış hesaba oturum açmadan önce ve authn-oidc-client sağlayıcının doğruladığı e-postayla doğrulanmamış hesaba bağlamadan önce `AccountService::confirm_mailbox_control_in_tx(conn, ctx, user, MailboxProof::Passwordless)`; authn-admin "e-posta doğrulandı" (ADM-03) için `MailboxProof::Administrator { admin }`. (6) Kural: hiçbir modül `pending_verification` bir hesaba kimlik bilgisi (sosyal kimlik, passkey) eklemez.
 - **Geriye uyumluluk:** Kayıt ve doğrulama HTTP sözleşmesi değişti (henüz istemci yok): `{email, code}` tutamaçsız artık doğrulamaz; yalnızca link, kaydı yapan tarayıcı dışında `403 registration_confirmation_required` döner; e-posta değişikliği linki oturum ister. Kayıtla oluşan doğrulanmamış hesapların şifresi yoktur (doğrulanana kadar şifreyle giriş ve sıfırlama yok). `AccountService::signup` artık `RegistrationReceipt` döner; `verify_email_link` / `verify_email_code` / `resend_verification` / `confirm_email_change_link` imzaları genişledi (Dalga B'de çağıran yok).
-- **Durum:** Açık — mimar (§5, §15, ER), authn-server (dekoratör, oturum katmanı), authn-session / authn-oidc-client / authn-admin (`MailboxProof` çağrıları)
+- **Durum:** Açık — mimar (§5, §15, ER), authn-server (dekoratör, oturum katmanı), authn-session / authn-admin (`MailboxProof` çağrıları). authn-oidc-client tarafı uygulandı (otomatik bağlamada `MailboxProof::Passwordless`, kimlik asla `pending_verification` hesaba eklenmez).
 
 ## authn-mfa
 
@@ -313,7 +313,7 @@ Dalga A'nın tüm talepleri işlendi; her kaydın **Durum** satırı güncellend
 - **Gerekçe:** Passkey ekleme/kaldırma bildirimleri şimdilik `MfaFactorAdded/MfaFactorRemoved { factor: FactorKind::Webauthn }` ile gönderiliyor (NTF-01 "MFA eklendi/kaldırıldı" kapsamında). Şablonda "passkey" ifadesi ve şüpheli klon (PKY-05) için ayrı bir uyarı e-postası kullanıcı deneyimini iyileştirir.
 - **Önerilen değişiklik:** İsteğe bağlı: `NotificationKind::PasskeyCloneSuspected { at }` ve şablonları; eklenirse authn-webauthn klon tespitinde kullanıcıyı da bilgilendirir.
 - **Geriye uyumluluk:** Yeni varyant (tam eşleşme yapan tüketiciler için kırıcı olabilir, §13).
-- **Durum:** Uygulandı (wave 1) — `NotificationKind::PasskeyCloneSuspected { at }` + TR/EN şablonlar (alıcı başına limitli). Açık: authn-webauthn klon tespitinde göndermesi (wave 2).
+- **Durum:** Uygulandı (wave 1) — `NotificationKind::PasskeyCloneSuspected { at }` + TR/EN şablonlar (alıcı başına limitli). Uygulandı (wave 2B): authn-webauthn klon tespitinde (`flag_clone`, passkey'in ilk tespitinde) aynı transaction'da `notify_in_tx` ile gönderir; test `pky_05_clone_suspicion_notifies_the_owner_once`.
 
 ### 2026-11-01 — Güvenlik incelemesi: `PasskeyPolicySource` her kimlik doğrulamada, impersonation kaydı yasak (bilgi)
 - **Talep eden:** authn-webauthn
@@ -361,7 +361,7 @@ Dalga A'nın tüm talepleri işlendi; her kaydın **Durum** satırı güncellend
 - **Gerekçe:** Rol düşürme, özel rolden izin çıkarma ve sahiplik devrinde eski sahibin düşürülmesi oturumları kapatır; şu an en yakın neden `MembershipRemoved` kullanılıyor.
 - **Önerilen değişiklik:** `RevocationReason::MembershipChanged => "membership_changed"` eklenmesi; eklenirse authn-org ona geçer.
 - **Geriye uyumluluk:** Ekleme (yeni enum varyantı; `match` yapan tüketici yok).
-- **Durum:** Uygulandı (2026-11-01, mimar: `RevocationReason::MembershipChanged => "membership_changed"` — `crates/authn-core/src/ports/session_revoker.rs`; migration gerekmez (`sessions_revoked_reason_check` biçim kısıtıdır); test `ses_15_membership_changed_is_a_distinct_revocation_reason`). authn-org ona geçebilir
+- **Durum:** Uygulandı (2026-11-01, mimar: `RevocationReason::MembershipChanged => "membership_changed"` — `crates/authn-core/src/ports/session_revoker.rs`; migration gerekmez (`sessions_revoked_reason_check` biçim kısıtıdır); test `ses_15_membership_changed_is_a_distinct_revocation_reason`). Uygulandı (wave 2B): authn-org rol düşürme, özel rolden izin çıkarma ve devirde eski sahip için `MembershipChanged` kullanır (askıya alma/çıkarma `MembershipRemoved` kalır); testler `changed_in_org`
 
 ### 2026-11-01 — Audit olay türleri: domain ekleme, silme iptali, devir iptali
 - **Talep eden:** authn-org
@@ -379,7 +379,7 @@ Dalga A'nın tüm talepleri işlendi; her kaydın **Durum** satırı güncellend
 - **Gerekçe:** Üye listesi e-posta adreslerini satır başına `find_by_id` ile okur (sayfa ≤ 100 sorgu); `users` tablosuna doğrudan SQL yazılmadı.
 - **Önerilen değişiklik:** `UserRepository::find_many(executor, &[UserId]) -> Vec<UserRecord>` (`WHERE id = ANY($1)`).
 - **Geriye uyumluluk:** Ekleme.
-- **Durum:** Uygulandı (2026-11-01, mimar: `UserRepository::find_many(executor, &[UserId]) -> Vec<UserRecord>` — `WHERE id = ANY($1) ORDER BY id`, bilinmeyenler atlanır, tekrarlar bir kez döner; `crates/authn-store/src/users.rs`; test `org_02_find_many_loads_a_page_in_one_query`)
+- **Durum:** Uygulandı (2026-11-01, mimar: `UserRepository::find_many(executor, &[UserId]) -> Vec<UserRecord>` — `WHERE id = ANY($1) ORDER BY id`, bilinmeyenler atlanır, tekrarlar bir kez döner; `crates/authn-store/src/users.rs`; test `org_02_find_many_loads_a_page_in_one_query`). Uygulandı (wave 2B): authn-org üye listesi sayfası adresleri tek `find_many` sorgusuyla okur (K-41)
 
 ### 2026-11-01 — `org_ownership_transfer` token'larında `group_id` sözleşmesi ve fuzz kilidi (bilgi)
 - **Talep eden:** authn-org
@@ -612,6 +612,15 @@ Dalga A'nın tüm talepleri işlendi; her kaydın **Durum** satırı güncellend
 - **Geriye uyumluluk:** `SessionServiceDeps` yapı literal'i değişti (tek kullanıcı: authn-server; testler güncellendi). Federe girişte (`SessionIssuer`) güvenilir cihaz token'ı port üzerinden taşınmadığından sosyal girişte MFA-09 atlaması yoktur (güvenli taraf); gerekirse `PrimaryAuthentication`'a alan eklemek bir port değişikliğidir.
 - **Durum:** Uygulandı (2026-11-03). Server bağlaması: uygulandı (`crates/authn-server/src/services.rs`).
 
+### 2026-11-04 — Wave 2B: `revoke_everything_except`, `impersonation_response`, impersonation başlığı, `is_session_active_in`
+- **Talep eden:** authn-session (wave 2B; K-03, K-10, K-12)
+- **Etkilenen dosya / sahip:** `crates/authn-core/src/ports/session_revoker.rs`, `session_issuer.rs` / authn-session; `crates/authn-account/src/service/revocation.rs` (`AccountAwareSessionRevoker`) / authn-account; CORS yapılandırması / authn-server
+- **Gereksinim:** ADM-04, ADM-06, SOC-06
+- **Gerekçe:** Acil "tüm oturumları kapat" çağıran adminin oturumunu da kapatıyordu (K-10); web impersonation adminin oturum çerezini eziyordu (K-12); kimlik bağlama callback'i başlatan oturumu kendi transaction'ında doğrulayabilmeli (K-03, wave 2A).
+- **Önerilen değişiklik:** (uygulandı) (1) Port: varsayılan gövdeli `SessionRevoker::revoke_everything_except(conn, keep, reason) -> u64` (varsayılan **reddeder**); `PgSessionRevoker` uygular. **authn-account:** `AccountAwareSessionRevoker` bunu iletip bekleyen e-posta değişikliklerini de kapatmalı — wave 2A ile kararlaştırıldı ve eklendi (`acc_07_emergency_revoke_except_caller_ends_pending_email_changes`). (2) Port: varsayılan gövdeli `SessionIssuer::impersonation_response(issued)` — web'de `Set-Cookie` yok, gövdede `impersonation_token` + `token_header: "x-impersonation-session"`; native'de token gövdesi. authn-session ara katmanı `x-impersonation-session` başlığını yalnızca canlı impersonation web oturumları için kabul eder. **authn-server:** CORS izinli başlıklarına `x-impersonation-session`. (3) `authn_session::is_session_active_in(conn, session, user, now) -> bool` (yalnızca verilen bağlantı; wave 2A ile kararlaştırıldı) — sunucu `authn_oidc_client::SessionLiveness` adaptörünü buna bağlar. Testler: `adm_06_revoke_everything_except_keeps_exactly_one_session`, `adm_04_web_impersonation_keeps_the_admin_session_cookie`, `soc_06_k03_session_liveness_on_the_callers_connection`.
+- **Geriye uyumluluk:** Ekleme (varsayılan gövdeli metotlar). `revoke_everything_except`'i uygulamayan revoker'lar acil iptalde `internal_error` verir (güvenli taraf; testkit `RecordingSessionRevoker` da varsayılanı kullanır — gerekirse mimar ekler).
+- **Durum:** Uygulandı (wave 2B). Açık — **authn-server:** CORS başlığı, `SessionLiveness` adaptörü (K-51/wave 3)
+
 ## authn-oidc-client
 
 ### 2026-11-04 — Hata kodlarının `error/codes/oidc_client.rs`'e taşınması
@@ -638,7 +647,7 @@ Dalga A'nın tüm talepleri işlendi; her kaydın **Durum** satırı güncellend
 - **Gereksinim:** SES-06, SES-07 (sosyal web girişi)
 - **Önerilen değişiklik:** `ALTER TABLE oauth_states ADD COLUMN remember_me boolean NOT NULL DEFAULT false, ADD COLUMN shared_device boolean NOT NULL DEFAULT false;` ve `GET /v1/oauth/{provider}/start?remember_me=&shared_device=`.
 - **Geriye uyumluluk:** Ekleme.
-- **Durum:** Açık — authn-oidc-client (bu görevde kök `migrations/` değiştirilmedi; web sosyal girişi şimdilik varsayılan oturum ömrünü kullanır)
+- **Durum:** Uygulandı (wave 2A, K-32) — `migrations/2100_oauth_state_login_options.sql` (+ yalnızca `login` akışında doğru olabilen CHECK); `GET /v1/oauth/{provider}/start?remember_me=&shared_device=` → callback `PrimaryAuthentication`'a iletir; `SessionIssuer` değişmedi. Test `ses_06_web_social_login_carries_remember_me_and_shared_device`.
 
 ### 2026-11-04 — authn-account: adres rezervasyonu sorgusu ve sosyal hesap sağlama
 - **Talep eden:** authn-oidc-client
@@ -647,7 +656,7 @@ Dalga A'nın tüm talepleri işlendi; her kaydın **Durum** satırı güncellend
 - **Gerekçe:** Sosyal girişle yeni hesap açarken e-posta değişikliğinin geri alma süresinde ayrılmış eski adres yeni hesaba verilmemeli; `ReservationRepository` `pub(crate)`. Ayrıca yeni sosyal hesabın `user_profiles` satırı (görünen ad, dil) account'un tablosu.
 - **Önerilen değişiklik:** (1) `AccountService::is_address_reserved_in(conn, &EmailAddress) -> Result<bool, AuthError>` (verilen bağlantıyla, salt okuma). Server bunu `authn_oidc_client::AddressReservations` adaptörüyle bağlar. (2) İsteğe bağlı: `AccountService::provision_verified_user_in_tx(conn, ctx, email, display_name, locale) -> Result<ProvisionOutcome, AuthError>` (rezervasyon, disposable alan adı politikası, profil, `user.created`/`account.registered`); authn-oidc-client şu an `UserRepository::create` + `mark_email_verified` ve kendi audit/olay kayıtlarını kullanıyor.
 - **Geriye uyumluluk:** Ekleme.
-- **Durum:** Açık — authn-account, authn-server (adaptör)
+- **Durum:** Uygulandı (wave 2A, K-02 / K-33) — authn-account: `AccountService::is_address_reserved_in(conn, &EmailAddress)`, `provision_verified_user_in_tx(conn, ctx, VerifiedUserProvision { email, display_name, locale, method, provider }) -> ProvisionOutcome::{Created, Existing, Reserved, Conflict}` (adres kilidi, rezervasyon, ACC-12, profil, `user.created` / `account.registered`) ve `notification_recipient_in(conn, user, locale)`. authn-oidc-client hesabı yalnızca bununla açar. **Talepten fark:** sunucu adaptörü gerekmiyor — `AddressReservations` kancası ve `NoReservations` **kaldırıldı**: bu crate zaten authn-account'a bağımlı, rezervasyon kontrolü sağlama API'sinin içinde; böylece üretimde fail-open bir kanca bağlanması imkânsız. Testler `soc_05_reserved_address_gets_no_new_account` (gerçek e-posta değişikliği rezervasyonu), `soc_05_expired_reservation_no_longer_blocks_sign_up`, `soc_05_new_social_account_gets_a_profile`, authn-account `provisioning.rs`.
 
 ### 2026-11-04 — authn-notify: kimlik bağlandı / ayrıldı bildirimi
 - **Talep eden:** authn-oidc-client
@@ -655,7 +664,7 @@ Dalga A'nın tüm talepleri işlendi; her kaydın **Durum** satırı güncellend
 - **Gereksinim:** SOC-06 (hesap ele geçirme tespiti)
 - **Önerilen değişiklik:** `NotificationKind::IdentityLinked { provider, at }` ve `IdentityUnlinked { provider, at }`; authn-oidc-client bağlama/ayırma transaction'ında `notify_in_tx` çağırır.
 - **Geriye uyumluluk:** Ekleme (yeni enum varyantı).
-- **Durum:** Uygulandı (wave 1) — `NotificationKind::IdentityLinked/IdentityUnlinked { provider, at }` + TR/EN şablonlar (notify tarafı). Açık: authn-oidc-client'ın bağlama/ayırma transaction'ında `notify_in_tx` çağırması (wave 2).
+- **Durum:** Uygulandı (wave 1) — `NotificationKind::IdentityLinked/IdentityUnlinked { provider, at }` + TR/EN şablonlar (notify tarafı). Uygulandı (wave 2A, K-18) — açık bağlama, otomatik bağlama ve ayırma transaction'larında `notify_in_tx` (`OidcClientServiceDeps.notifier`); testler `soc_06_link_and_unlink_notify_the_account_owner`, `soc_06_auto_link_is_announced_but_sign_up_is_not`.
 
 ### 2026-11-04 — PWD-11 kullanıcı satırı kilidi (bilgi)
 - **Talep eden:** authn-oidc-client
@@ -670,7 +679,7 @@ Dalga A'nın tüm talepleri işlendi; her kaydın **Durum** satırı güncellend
 - **Gerekçe:** Step-up yalnızca `POST /v1/me/identities/link`'te kontrol ediliyor; `oauth_states` yalnızca `user_id` taşıdığı için başlatan oturum `state_ttl` (10 dk) içinde iptal edilse de (çıkış, şifre sıfırlama, "tümünü kapat") aynı tarayıcı callback'i tamamlayıp kimliği bağlayabilir (README kabul edilen risk 9). Apple `form_post`'unda oturum çerezi gelmediğinden callback'te `Principal` istemek çözüm değil.
 - **Önerilen değişiklik:** `ALTER TABLE oauth_states ADD COLUMN session_id uuid` (bağlama akışında zorunlu, `CHECK (flow <> 'link' OR session_id IS NOT NULL)`); bu crate'te `trait SessionLiveness { async fn is_active(&self, conn, session: SessionId, user: UserId) -> Result<bool, AuthError>; }` — server authn-session ile uygular; callback bağlamadan önce kullanıcı satırı kilitliyken çağırır, `false` ise `oauth_state_invalid`.
 - **Geriye uyumluluk:** Ekleme (yeni nullable kolon, yeni kanca).
-- **Durum:** Açık — authn-oidc-client, authn-session, authn-server
+- **Durum:** Uygulandı (wave 2A, K-03; oidc-client tarafı) — migration `2101_oauth_state_session.sql` (`session_id` + CHECK; yarıda kalan bağlama akışları silinir), `authn_oidc_client::SessionLiveness::is_active(conn, session, user, now)` (varsayılanı yok), callback kullanıcı satırı kilitliyken çağırır, `false` → `oauth_state_invalid`. Wave 2B ile kararlaştırılan uygulayıcı: `authn_session::is_session_active_in(conn, session, user, now)`; sunucu adaptörü (K-51) açık. Testler `soc_06_link_callback_rejects_revoked_session`, `soc_06_link_callback_rejects_a_session_of_another_user`, `soc_06_link_callback_with_live_session_links`.
 
 ### 2026-11-04 — Genel sağlayıcı başına `trust_email_verified` (bağımsız denetim)
 - **Talep eden:** authn-oidc-client (bağımsız denetçi)
@@ -680,6 +689,22 @@ Dalga A'nın tüm talepleri işlendi; her kaydın **Durum** satırı güncellend
 - **Önerilen değişiklik:** `GenericOidcProvider.trust_email_verified: bool` (varsayılan `true` — mevcut davranış); `false` ise `identity::from_id_claims` e-postayı hiçbir zaman doğrulanmış saymaz (yeni hesap ve otomatik bağlama yok; yalnızca giriş yapmış kullanıcının açık bağlaması).
 - **Geriye uyumluluk:** Varsayılanlı ekleme.
 - **Durum:** Uygulandı (wave 1) — **varsayılan `false`** (talepteki `true` yerine; proje sahibinin K-04 kararı: genel sağlayıcı için güvenli taraf) ve davranış bağlandı (`identity::from_id_claims`); testler `soc_05_generic_provider_email_is_unverified_unless_trusted`, `soc_05_untrusted_providers_never_create_accounts`.
+
+### 2026-11-04 — Migration `2102`, Apple token iptali ve hesap silme kancası (wave 2A, K-34 / K-35)
+- **Talep eden:** authn-oidc-client (+ authn-account)
+- **Etkilenen dosya / sahip:** `migrations/2102_provider_token_revocations.sql` (authn-oidc-client aralığı); `crates/authn-core/src/config/oidc_client.rs` (`apple.private_key_ciphertext`, `apple.revoke_tokens_on_deletion`, `error_redirect`) ve `config/example.toml`; `crates/authn-account/src/hooks.rs` (`AccountErasureHook`); `docs/compliance/kvkk-gdpr.md` (`oauth_token_revocations`); contracts §5/§6 (mimar)
+- **Gereksinim:** SOC-07, SOC-08, ACC-09, PRT-10 (K-36)
+- **Gerekçe:** Apple, hesap silmeyi sunan uygulamalardan token iptali ister; Apple anahtarı için zarf şifreli değer (SOC-07); callback hataları için yapılandırılabilir hata sayfası.
+- **Önerilen değişiklik:** (uygulandı) `identities.token_client_id`, yeni tablo `oauth_token_revocations` (kullanıcı kimliği yok; AAD satıra bağlı zarf şifreli token; sınırlı yeniden deneme); authn-account `AccountErasureHook` + `AccountService::register_erasure_hook` (silme transaction'ında, `users` silinmeden önce); `OidcClientService::{erasure_hook, process_token_revocations, build}`; `apple::{seal_private_key, resolve_private_key}` (sabit bağlam `oidc_client`/`apple_private_key`/`apple`). Mimar için: contracts §5'e `oauth_token_revocations` → oidc-client, §6 tablosuna `2100`/`2101`/`2102` satırları, §15.5'e `process_token_revocations` işi, §15.6'ya Apple anahtarı CLI'ı ve `rotate-kek` kapsamına `identities.refresh_token_ciphertext` / `oauth_token_revocations.token_ciphertext` / `apple.private_key_ciphertext`.
+- **Geriye uyumluluk:** Ekleme. `OidcClientServiceDeps`: `reservations` kaldırıldı, `session_liveness` ve `notifier` eklendi; `with_registry` artık `Result` döner (sunucu henüz bağlamadığı için kırıcı değil).
+- **Durum:** Uygulandı (wave 2A) — authn-oidc-client / authn-account / migration / kvkk. Açık: mimar (contracts §5/§6/§15, K-54), authn-server (servis `build`, kanca kaydı, iş, CLI; K-51).
+
+### 2026-11-04 — Kullanılmayan bağımlılıklar (wave 2A, K-37)
+- **Talep eden:** authn-oidc-client
+- **Etkilenen dosya / sahip:** `crates/authn-oidc-client/Cargo.toml`, `Cargo.lock`
+- **Gereksinim:** LIC-01
+- **Önerilen değişiklik:** `oauth2`, `subtle`, `axum-extra`, `reqwest`, `uuid`, `thiserror` kaldırıldı (hiçbiri kodda kullanılmıyordu); test için `authn-audit` dev-dependency eklendi (Dalga B → Dalga A, izinli).
+- **Durum:** Uygulandı (wave 2A) — `THIRD_PARTY_LICENSES.txt` yeniden üretildi (crate'ler workspace grafiğinde kaldığı için değişiklik yok/raporda belirtildi).
 
 ## authn-admin
 
@@ -708,7 +733,7 @@ Dalga A'nın tüm talepleri işlendi; her kaydın **Durum** satırı güncellend
 - **Gerekçe:** (1) `start_impersonation_with` `admin.impersonation_started` olayını kendisi yazar (doğru), ancak olay gerekçe içermez ve port olay kimliğini döndürmez; authn-admin gerekçeyi olaya ancak commit'ten sonra `audit_events`'te arayarak bağlayabiliyor (ayrı transaction; başarısızlıkta yalnızca log). (2) Break-glass hesabıyla **giriş** (oturum açılması) yüksek öncelikli olay üretmiyor; authn-admin yalnızca admin API'sindeki her kullanımı `admin.break_glass_used` ile kaydedebiliyor.
 - **Önerilen değişiklik:** (1) Varsayılan gövdeli yeni port metodu `start_impersonation_audited(ctx, request, client, admin_session, event_id: EventId) -> IssuedSession` (session `admin.impersonation_started` olayını verilen kimlikle yazar; authn-admin gerekçe satırını önceden bilinen kimlikle yazabilir) **veya** `IssuedSession`'a dokunmadan `start_impersonation_with` sonucu yanında olay kimliğini döndüren bir varyant. (2) Giriş akışında `UserRecord.is_break_glass` olan hesap için oturum açılınca `SecurityEventKind::BreakGlassUsed` (`priority: high`, `surface: login`) kaydı.
 - **Geriye uyumluluk:** Yeni varsayılan gövdeli metot / yeni olay; kırıcı değil.
-- **Durum:** Kısmen uygulandı (wave 1) — (1) `SessionIssuer::start_impersonation_audited(conn, ctx, request, client, admin_session, event_id)`: talepten farkı **çağıranın bağlantısı** (`conn`) — gerekçe ancak böyle olayla atomik yazılır; authn-session uygular, authn-admin kullanır (`adm_08_impersonation_reason_and_event_commit_atomically`). (2) break-glass girişinde `admin.break_glass_used` **açık** (K-05, wave 2).
+- **Durum:** Kısmen uygulandı (wave 1) — (1) `SessionIssuer::start_impersonation_audited(conn, ctx, request, client, admin_session, event_id)`: talepten farkı **çağıranın bağlantısı** (`conn`) — gerekçe ancak böyle olayla atomik yazılır; authn-session uygular, authn-admin kullanır (`adm_08_impersonation_reason_and_event_commit_atomically`). (2) Uygulandı (wave 2B, K-05): break-glass hesabına oturum kuran her giriş (boru hattı + challenge tamamlama) aynı transaction'da `admin.break_glass_used` (`priority: high`, `surface: login`) yazar; test `adm_05_break_glass_login_emits_high_priority_event`. **Durum: Uygulandı (wave 2B).**
 
 ### 2026-11-04 — Personel kimliği ve redakte edilen metadata anahtarları (bilgi)
 - **Talep eden:** authn-admin
@@ -717,7 +742,7 @@ Dalga A'nın tüm talepleri işlendi; her kaydın **Durum** satırı güncellend
 - **Gerekçe:** (1) `confirm_mailbox_control_in_tx(…, MailboxProof::Administrator { admin })` `account.email_verified` olayını `Actor::User(admin)` ile yazıyor; authn-audit personel kimliğini yalnızca `admin.*` ve impersonation olaylarında gizlediği için adminin kullanıcı kimliği kullanıcının kendi güvenlik olaylarında görünebilir. authn-admin aynı transaction'da `admin.action` (`mark_email_verified`) yazıyor. (2) Testlerde sink'in şu anahtarları `[REDACTED]` yaptığı görüldü (yasaklı segment): `account.email_verified.password_removed`, `password.reset_requested.code_issued`, `password.change_required_set.must_change_password`.
 - **Önerilen değişiklik:** (1) Administrator kanıtında aktör `Actor::System` (gerçek aktör admin olayında) veya `impersonator` alanı. (2) Anahtarları yasaklı segment içermeyen adlara çevirmek (ör. `credential_removed`, `reset_link_issued`, `must_change`).
 - **Geriye uyumluluk:** Yalnızca audit içeriği değişir.
-- **Durum:** Kısmen uygulandı (wave 1) — (2) anahtar yeniden adlandırmak yerine authn-audit sanitizer'ı yasaklı kelimeli anahtarlarda **boolean** değerleri korur (K-15; boolean olmayanlar yine redakte). (1) `Actor::User(admin)` → **açık** (K-14, authn-account).
+- **Durum:** Uygulandı — (2) wave 1: anahtar yeniden adlandırmak yerine authn-audit sanitizer'ı yasaklı kelimeli anahtarlarda **boolean** değerleri korur (K-15; boolean olmayanlar yine redakte). (1) wave 2A (K-14): `MailboxProof::Administrator` olayları `Actor::System`, adminin IP/UA'sı yok (yalnızca `request_id`); testler `adm_08_admin_mailbox_proof_shows_no_staff_identity_to_the_user` (authn-account), `adm_03_admin_verification_shows_no_staff_identity_in_the_users_view` (authn-oidc-client, gerçek authn-audit sink + kullanıcı görünümü).
 
 ### 2026-11-04 — Sunucu bağlaması (bilgi)
 - **Talep eden:** authn-admin
@@ -737,6 +762,15 @@ Dalga A'nın tüm talepleri işlendi; her kaydın **Durum** satırı güncellend
 - **Geriye uyumluluk:** Yalnızca ekleme.
 - **Durum:** Uygulandı (wave 1) — `WebauthnService::remove_all_passkeys_in_tx(conn, ctx, user) -> u32` (talep edilen imza); authn-admin `AdminServiceDeps.webauthn` ile aynı transaction'da çağırır; testler `pky_04_remove_all_passkeys_in_tx_for_admin_reset`, `adm_03_reset_mfa_removes_passkeys_and_they_no_longer_authenticate`. Sunucu `AdminServiceDeps`'e `webauthn` vermeli (K-50).
 
+
+### 2026-11-04 — Wave 2B: migration `2201`, yeni tablolar, `AdminServiceDeps.rate_limiter`, dışa aktarma bölümü
+- **Talep eden:** authn-admin (wave 2B; K-07, K-08, K-09, K-11, K-39)
+- **Etkilenen dosya / sahip:** `migrations/2201_admin_hardening.sql` / authn-admin; `migrations/1401_webauthn_enrollment_binding.sql` / authn-webauthn; `docs/compliance/kvkk-gdpr.md` §2.6, §5 (wave 2B ekledi); contracts §5, §6, `overview.md` ER / mimar; `crates/authn-server` (CLI, router, `AccountServiceDeps.exporters`) / authn-server
+- **Gereksinim:** ADM-05, ADM-06, ADM-07, ADM-08, ACC-10
+- **Gerekçe:** Break-glass passkey kayıt bağlantısı (K-11), küme genelinde tek zincir doğrulaması (K-09), gerekçelerin yasal kısıtlaması (K-39) kendi tablolarını gerektirir; acil/admin hedefli limitler (K-08) `RateLimiter` portunu.
+- **Önerilen değişiklik:** (uygulandı) Tablolar `admin_passkey_enrollments`, `admin_operation_leases`, `admin_reason_restrictions` (ekleme-yalnızca trigger). Migration `1401` (webauthn): kayıt seremonisi oturum **veya** bağlantı hash'ine bağlı olabilir (tam olarak biri). `AdminServiceDeps.rate_limiter`. Yeni API: `create_break_glass_admin_with_passkey_link`, `AdminService::{start,finish}_break_glass_enrollment`, `enrollment_router`/`AdminEnrollmentApi` (`passkey` özelliği), `operations::{OfflineOperator, OfflineTarget}` + `suspend_admin_offline`, `unsuspend_admin_offline`, `revoke_admin_sessions_offline`, `issue_break_glass_enrollment_link_offline`, `restrict_justification`, `AdminActionsDataExporter` (bölüm `admin_actions`). **Mimar için:** contracts §5'e üç tablo → authn-admin, §6'ya `2201` (admin) ve `1401` (webauthn) satırları, ER diyagramı. **authn-server için:** CLI `create-admin --passkey-link`, `suspend-admin`, `unsuspend-admin`, `revoke-admin-sessions`; `enrollment_router` bağlama; `exporters`'a `AdminActionsDataExporter`; en az yetki: kısıtlama tablosunda `SELECT, INSERT`.
+- **Geriye uyumluluk:** `AdminServiceDeps` yapı literal'ine `rate_limiter` alanı (tek kullanıcı: authn-server, henüz bağlamadı). `revoke_all_sessions(…, include_own_session)` imzası değişti (crate içi + router).
+- **Durum:** Uygulandı (wave 2B). Açık — **mimar** (contracts §5/§6, ER), **authn-server** (bağlama, K-50)
 
 ## authn-server
 

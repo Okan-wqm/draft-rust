@@ -268,7 +268,7 @@ impl OrgService {
             .await?;
         self.deps()
             .session_revoker
-            .revoke_for_user_in_org(&mut tx, from, org, RevocationReason::MembershipRemoved)
+            .revoke_for_user_in_org(&mut tx, from, org, RevocationReason::MembershipChanged)
             .await?;
         for (member, role) in [(user, OWNER_ROLE_ID), (from, ADMIN_ROLE_ID)] {
             self.publish(

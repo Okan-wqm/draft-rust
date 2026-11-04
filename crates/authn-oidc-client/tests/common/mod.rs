@@ -3,9 +3,14 @@
 //! wiremock server playing every provider.
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+use async_trait::async_trait;
+use authn_core::error::AuthError;
+use sqlx::PgConnection;
+use time::OffsetDateTime;
 
 use authn_account::{AccountService, AccountServiceDeps, AccountServiceSettings, NoOrganizations};
 use authn_core::config::AppConfig;
@@ -19,9 +24,9 @@ use authn_core::ports::{Clock, OutboundTarget};
 use authn_core::secret::SecretString;
 use authn_crypto::CryptoServices;
 use authn_oidc_client::{
-    Endpoints, IssuerRule, LoginMethodInventory, NoReservations, OidcClientService,
-    OidcClientServiceDeps, OidcClientSettings, PasswordOnlyInventory, ProviderRegistry,
-    TenantPolicy, TokenAuthMethod, router,
+    Endpoints, IssuerRule, LoginMethodInventory, OidcClientService, OidcClientServiceDeps,
+    OidcClientSettings, PasswordOnlyInventory, ProviderRegistry, SessionLiveness, TenantPolicy,
+    TokenAuthMethod, router,
 };
 use authn_store::{NewUser, UserRepository};
 use authn_testkit::TestPorts;
@@ -123,6 +128,7 @@ impl FakeIdp {
             token: self.url(&format!("{prefix}/token")),
             jwks: Some(self.url(&format!("{prefix}/jwks"))),
             api_base: Some(self.url(&format!("{prefix}/api/"))),
+            revocation: Some(self.url(&format!("{prefix}/revoke"))),
             token_auth: TokenAuthMethod::ClientSecretPost,
             target: OutboundTarget::Trusted,
         }
@@ -181,6 +187,49 @@ pub fn unsigned(kid: &str, claims: &Value) -> String {
     )
 }
 
+/// `SessionLiveness` fake (K-03): every session is active unless revoked;
+/// a session with a registered owner is active only for that owner.
+#[derive(Default)]
+pub struct FakeLiveness {
+    pub revoked: Mutex<HashSet<SessionId>>,
+    pub owners: Mutex<HashMap<SessionId, UserId>>,
+    pub calls: Mutex<Vec<(SessionId, UserId)>>,
+}
+
+impl FakeLiveness {
+    pub fn revoke(&self, session: SessionId) {
+        self.revoked.lock().unwrap().insert(session);
+    }
+
+    pub fn own(&self, session: SessionId, user: UserId) {
+        self.owners.lock().unwrap().insert(session, user);
+    }
+}
+
+#[async_trait]
+impl SessionLiveness for FakeLiveness {
+    async fn is_active(
+        &self,
+        conn: &mut PgConnection,
+        session: SessionId,
+        user: UserId,
+        _now: OffsetDateTime,
+    ) -> Result<bool, AuthError> {
+        // Runs on the caller's connection (inside the link transaction).
+        sqlx::query("SELECT 1").execute(&mut *conn).await.unwrap();
+        self.calls.lock().unwrap().push((session, user));
+        if self.revoked.lock().unwrap().contains(&session) {
+            return Ok(false);
+        }
+        Ok(self
+            .owners
+            .lock()
+            .unwrap()
+            .get(&session)
+            .is_none_or(|owner| *owner == user))
+    }
+}
+
 pub struct Harness {
     pub pool: PgPool,
     pub ports: TestPorts,
@@ -191,6 +240,7 @@ pub struct Harness {
     pub service: OidcClientService,
     pub crypto: CryptoServices,
     pub deps: OidcClientServiceDeps,
+    pub liveness: Arc<FakeLiveness>,
 }
 
 pub struct Options {
@@ -245,7 +295,9 @@ impl Harness {
             key_id: "APPLEKEY01".to_owned(),
             private_key_pem: Some(SecretString::from(EC_KEY.to_owned())),
             private_key_file: None,
+            private_key_ciphertext: None,
             native_client_ids: vec![APPLE_NATIVE.to_owned()],
+            revoke_tokens_on_deletion: true,
         });
         config.oidc_client.github = Some(client(GITHUB_WEB, &[]));
         config.oidc_client.generic = vec![GenericOidcProvider {
@@ -309,6 +361,7 @@ impl Harness {
         .unwrap();
         let http =
             authn_protect::outbound::SsrfSafeHttpClient::new(&config.protect.outbound).unwrap();
+        let liveness = Arc::new(FakeLiveness::default());
         let deps = OidcClientServiceDeps {
             pool: pool.clone(),
             clock: ports.clock.clone(),
@@ -320,9 +373,11 @@ impl Harness {
             sessions: ports.session_issuer.clone(),
             accounts: accounts.clone(),
             login_methods: options.inventory,
-            reservations: Arc::new(NoReservations),
+            session_liveness: liveness.clone(),
+            notifier: ports.notifier.clone(),
         };
-        let service = OidcClientService::with_registry(deps.clone(), settings.clone(), registry);
+        let service =
+            OidcClientService::with_registry(deps.clone(), settings.clone(), registry).unwrap();
         for prefix in ["/google", "/apple", "/ms", "/acme"] {
             idp.mount_jwks(prefix, &[(KEY_A, "key-a")]).await;
         }
@@ -346,6 +401,7 @@ impl Harness {
             service,
             crypto,
             deps,
+            liveness,
         }
     }
 
@@ -400,6 +456,69 @@ impl Harness {
                 .unwrap();
         }
         id
+    }
+
+    /// Changes `user`'s address to `to` through authn-account (link
+    /// confirmation by the signed-in user); the old address becomes
+    /// reserved (ACC-07). Returns the revert token sent to the old address.
+    pub async fn change_email(&self, user: UserId, to: &str) -> String {
+        use authn_core::ports::NotificationKind;
+        let principal = self.fresh(user);
+        self.accounts
+            .request_email_change(&principal, &self.ctx(), to)
+            .await
+            .unwrap();
+        self.accounts.drain_background_jobs().await;
+        let token = self
+            .ports
+            .notifier
+            .with_template("email_change_verification")
+            .into_iter()
+            .rev()
+            .find_map(|n| match n.kind {
+                NotificationKind::EmailChangeVerification { token, .. } => {
+                    Some(token.expose().to_owned())
+                }
+                _ => None,
+            })
+            .unwrap();
+        self.accounts
+            .confirm_email_change_link(Some(&principal), &self.ctx(), &SecretString::from(token))
+            .await
+            .unwrap();
+        self.ports
+            .notifier
+            .with_template("email_changed")
+            .into_iter()
+            .rev()
+            .find_map(|n| match n.kind {
+                NotificationKind::EmailChanged { revert_token, .. } => {
+                    Some(revert_token.expose().to_owned())
+                }
+                _ => None,
+            })
+            .unwrap()
+    }
+
+    /// Gives `user` a (fake-hashed) password, i.e. another login method.
+    pub async fn user_password(&self, user: UserId) {
+        let hash = authn_core::secret::SensitiveString::new(
+            "$argon2id$v=19$m=19456,t=2,p=1$c2FsdHNhbHQ$aGFzaGhhc2hoYXNo",
+        );
+        let mut conn = self.pool.acquire().await.unwrap();
+        UserRepository::set_password(
+            &mut conn,
+            user,
+            &authn_store::NewPasswordHash {
+                password_hash: &hash,
+                algorithm: "argon2id",
+                pepper_version: Some(1),
+            },
+            false,
+            self.ports.clock.now(),
+        )
+        .await
+        .unwrap();
     }
 
     pub fn principal(&self, user: UserId, auth_age: Duration) -> Principal {

@@ -85,17 +85,37 @@ pub struct AppleProvider {
     /// Key id of the Sign in with Apple private key.
     pub key_id: String,
     /// PKCS#8 PEM private key (ES256) used to sign the `client_secret` JWT,
-    /// inline. Exactly one of `private_key_pem` and `private_key_file` must
-    /// be set (SOC-07).
+    /// inline. Exactly one of `private_key_pem`, `private_key_file` and
+    /// `private_key_ciphertext` must be set (SOC-07).
     #[serde(default)]
     pub private_key_pem: Option<SecretString>,
     /// Path of a file holding the PKCS#8 PEM private key (SOC-07 "or a
     /// file"; e.g. a mounted secret). Read once at start-up.
     #[serde(default)]
     pub private_key_file: Option<PathBuf>,
+    /// The PKCS#8 PEM private key **envelope encrypted** with the `[crypto]`
+    /// KEK (SOC-07 "envelope encrypted", K-34): standard base64 of an
+    /// authn-crypto envelope sealed for the fixed context
+    /// `oidc_client` / `apple_private_key` / `apple`. Decrypted once at
+    /// start-up (authn-oidc-client `OidcClientService::build`); produce it
+    /// with `authn_oidc_client::apple::seal_private_key`.
+    #[serde(default)]
+    pub private_key_ciphertext: Option<SecretString>,
     /// Bundle ids accepted as `aud` for native ID tokens (SOC-04).
     #[serde(default)]
     pub native_client_ids: Vec<String>,
+    /// Keep the user's Sign in with Apple refresh token (envelope
+    /// encrypted, SOC-08) so it can be revoked at Apple when the account
+    /// is deleted or Apple is unlinked (K-35). Apple requires apps that
+    /// offer account deletion to revoke the user's tokens. Default `true`;
+    /// with `false` no Apple token is kept (unless `store_provider_tokens`)
+    /// and nothing can be revoked.
+    #[serde(default = "default_true")]
+    pub revoke_tokens_on_deletion: bool,
+}
+
+const fn default_true() -> bool {
+    true
 }
 
 /// A generic OIDC provider using discovery.
@@ -177,6 +197,13 @@ pub struct OidcClientConfig {
     /// Web callbacks per client IP (PRT-02), checked before the state
     /// lookup. Default 60 / 10 min.
     pub callback_per_ip: RateLimitPolicy,
+    /// Where the browser is sent when a web callback fails (K-36): a
+    /// same-origin path (`/login/error`) or an absolute URL that is in
+    /// `protect.redirect_allow_list` / `allowed_return_to` (checked at
+    /// start-up with authn-protect's redirect validator; no open redirect).
+    /// The stable error code is appended as `error=<code>`. Default none:
+    /// callback errors are answered with the JSON error envelope.
+    pub error_redirect: Option<String>,
 }
 
 impl Default for OidcClientConfig {
@@ -199,6 +226,7 @@ impl Default for OidcClientConfig {
             start_per_ip: RateLimitPolicy::new(60, mins(10)),
             native_per_ip: RateLimitPolicy::new(60, mins(10)),
             callback_per_ip: RateLimitPolicy::new(60, mins(10)),
+            error_redirect: None,
         }
     }
 }
@@ -227,10 +255,15 @@ impl MicrosoftProvider {
 
 impl AppleProvider {
     fn validate(&self, p: &mut ConfigProblems) {
+        let sources = [
+            self.private_key_pem.is_some(),
+            self.private_key_file.is_some(),
+            self.private_key_ciphertext.is_some(),
+        ];
         p.require(
-            self.private_key_pem.is_some() != self.private_key_file.is_some(),
+            sources.iter().filter(|set| **set).count() == 1,
             "oidc_client.apple.private_key_pem",
-            "exactly one of private_key_pem and private_key_file must be set",
+            "exactly one of private_key_pem, private_key_file and private_key_ciphertext must be set",
         );
         if let Some(path) = &self.private_key_file {
             p.require(
@@ -293,6 +326,17 @@ impl OidcClientConfig {
                 provider.issuer_url.starts_with("https://"),
                 &format!("{key}.issuer_url"),
                 "must be https",
+            );
+        }
+        if let Some(target) = &self.error_redirect {
+            let relative =
+                target.starts_with('/') && !target.starts_with("//") && !target.starts_with("/\\");
+            p.require(
+                !target.is_empty()
+                    && target.len() <= 2048
+                    && (relative || target.starts_with("https://")),
+                "oidc_client.error_redirect",
+                "must be a same-origin path or an https URL (allow-listed)",
             );
         }
         p.require(
@@ -477,10 +521,14 @@ mod tests {
         let ms = c.microsoft.as_ref().unwrap();
         assert!(ms.allowed_tenants.is_empty() && !ms.trust_personal_account_email);
         assert!(!c.generic[0].trust_email_verified);
-        // The example shows both Apple key sources; exactly one is allowed.
+        // The example shows every Apple key source; exactly one is allowed.
         if let Some(apple) = c.apple.as_mut() {
+            assert!(apple.private_key_ciphertext.is_some());
+            assert!(apple.revoke_tokens_on_deletion);
             apple.private_key_pem = None;
+            apple.private_key_ciphertext = None;
         }
+        assert_eq!(c.error_redirect.as_deref(), Some("/login/error"));
         assert!(problems(&c).is_empty(), "{:?}", problems(&c));
     }
 
@@ -496,5 +544,60 @@ mod tests {
             "#,
         );
         assert!(!format!("{c:?}").contains("TOPSECRET"));
+    }
+
+    #[test]
+    fn soc_07_apple_key_ciphertext_is_a_third_exclusive_source() {
+        let mut c = parse(
+            r#"
+            [apple]
+            client_id = "com.example.web"
+            team_id = "TEAM"
+            key_id = "KEY"
+            private_key_ciphertext = "AAAA-sealed-TOPSECRET"
+            "#,
+        );
+        assert!(problems(&c).is_empty(), "{:?}", problems(&c));
+        let apple = c.apple.as_ref().unwrap();
+        assert!(apple.revoke_tokens_on_deletion, "default on (K-35)");
+        assert!(!format!("{c:?}").contains("TOPSECRET"));
+        if let Some(apple) = c.apple.as_mut() {
+            apple.private_key_file = Some(PathBuf::from("/k.p8"));
+        }
+        assert!(
+            problems(&c)
+                .iter()
+                .any(|p| p.starts_with("oidc_client.apple.private_key_pem: exactly one"))
+        );
+    }
+
+    #[test]
+    fn soc_02_error_redirect_must_be_a_path_or_https() {
+        for ok in ["/login/error", "https://app.example.com/oops"] {
+            let c = OidcClientConfig {
+                error_redirect: Some(ok.to_owned()),
+                ..OidcClientConfig::default()
+            };
+            assert!(problems(&c).is_empty(), "{ok}: {:?}", problems(&c));
+        }
+        for bad in [
+            "",
+            "//evil.example",
+            "/\\evil.example",
+            "http://app.example.com/oops",
+            "javascript:alert(1)",
+            "evil.example/x",
+        ] {
+            let c = OidcClientConfig {
+                error_redirect: Some(bad.to_owned()),
+                ..OidcClientConfig::default()
+            };
+            assert!(
+                problems(&c)
+                    .iter()
+                    .any(|p| p.starts_with("oidc_client.error_redirect")),
+                "{bad:?} accepted"
+            );
+        }
     }
 }

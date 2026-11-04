@@ -208,6 +208,10 @@ pub struct IdClaims {
     pub is_private_email: bool,
     /// `amr`.
     pub amr: Vec<String>,
+    /// The accepted client id the token was issued to: `azp`, or the only
+    /// `aud` (K-35: a native Apple code is exchanged — and its tokens
+    /// revoked — under this client id).
+    pub client_id: String,
 }
 
 fn string_claim(claims: &Map<String, Value>, name: &str) -> Option<String> {
@@ -305,16 +309,20 @@ pub fn validate(
     if !audiences.iter().all(|a| accepted(a)) {
         return Err(invalid("audience mismatch"));
     }
-    match claims.get("azp") {
+    let client_id = match claims.get("azp") {
         Some(Value::String(azp)) => {
             if !accepted(azp) {
                 return Err(invalid("azp mismatch"));
             }
+            azp.clone()
         }
         Some(_) => return Err(invalid("malformed azp")),
         None if audiences.len() > 1 => return Err(invalid("azp required with several audiences")),
-        None => {}
-    }
+        None => audiences
+            .first()
+            .map(|a| (*a).to_owned())
+            .ok_or_else(|| invalid("empty aud"))?,
+    };
 
     let now = expect.now.unix_timestamp();
     let leeway = leeway_secs(expect.leeway);
@@ -366,6 +374,7 @@ pub fn validate(
         email_domain_verified: bool_claim(claims, "xms_edov"),
         is_private_email: bool_claim(claims, "is_private_email"),
         amr,
+        client_id,
     })
 }
 

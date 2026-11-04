@@ -161,12 +161,17 @@ impl WebauthnService {
             return Ok(0);
         }
         for id in &removed {
-            let event = self
+            let mut event = self
                 .event(SecurityEventKind::PasskeyRemoved, ctx, user, None)
                 .with_actor(Actor::System)
                 .with_resource("passkey", *id)
                 .with_meta("reason", "admin_reset")
                 .with_meta("remaining", 0_u32);
+            // Staff request: keep only the request id (correlation with the
+            // admin's own `admin.action`); the admin's IP and user agent
+            // must not appear among the user's security events (K-14).
+            event.ip = None;
+            event.user_agent = None;
             self.deps().audit.record_in_tx(&mut *conn, event).await?;
             metrics::passkey_removed();
         }

@@ -320,6 +320,7 @@ async fn soc_05_unverified_email_answer_does_not_reveal_accounts(pool: PgPool) {
         shared_device: false,
         given_name: None,
         family_name: None,
+        authorization_code: None,
     };
     let report = compare_timings(
         25,
@@ -861,42 +862,27 @@ async fn soc_05_generic_identity_is_bound_to_its_issuer(pool: PgPool) {
         .assert_error(StatusCode::UNAUTHORIZED, "oauth_token_invalid");
 }
 
-/// Coverage added in review: a reserved address (ACC-07 revert period) gets
-/// no new account through social login; the same answer as an existing
-/// account (`oauth_link_required`), and nothing is created.
+/// K-02 (ACC-07): an address reserved by a real e-mail change (the revert
+/// period of its previous owner) gets no new account through social login
+/// — the reservation is read through authn-account on the login
+/// transaction, there is no hook that could be wired fail-open. Same answer
+/// as an existing account (`oauth_link_required`), nothing is created, and
+/// the owner's revert still works afterwards. Once the revert period is
+/// over the address is free again.
 #[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
 async fn soc_05_reserved_address_gets_no_new_account(pool: PgPool) {
-    struct Reserved;
-    #[async_trait::async_trait]
-    impl authn_oidc_client::AddressReservations for Reserved {
-        async fn is_reserved(
-            &self,
-            _conn: &mut sqlx::PgConnection,
-            email: &authn_core::domain::EmailAddress,
-        ) -> Result<bool, authn_core::error::AuthError> {
-            Ok(email.normalized() == "reserved@example.com")
-        }
-    }
     let h = Harness::new(pool).await;
-    let mut deps = h.service_deps();
-    deps.reservations = Arc::new(Reserved);
-    let registry = authn_oidc_client::ProviderRegistry::from_settings(&h.settings).unwrap();
-    let mut registry = registry;
-    let _ = registry.override_endpoints(
-        "google",
-        h.idp.endpoints("/google"),
-        Some(authn_oidc_client::IssuerRule::Exact(vec![
-            h.idp.issuer("/google"),
-        ])),
-    );
-    let service = OidcClientService::with_registry(deps, h.settings.clone(), registry);
+    let owner = h
+        .user("reserved@example.com", AccountStatus::Active, true)
+        .await;
+    let revert = h.change_email(owner, "moved@example.com").await;
+
     let login = |sub: &'static str, email: &'static str| {
-        let service = service.clone();
         let h = &h;
         async move {
             let nonce = h.native_nonce("google").await;
             let claims = h.claims(&h.idp.issuer("/google"), GOOGLE_NATIVE, sub, &nonce, email);
-            service
+            h.service
                 .native_login(
                     &h.ctx(),
                     "google",
@@ -914,17 +900,52 @@ async fn soc_05_reserved_address_gets_no_new_account(pool: PgPool) {
         "{err:?}"
     );
     assert_eq!(h.identity_count().await, 0);
+    let reserved = authn_core::domain::EmailAddress::parse("reserved@example.com").unwrap();
     assert!(
-        UserRepository::find_by_email(
-            &h.pool,
-            &authn_core::domain::EmailAddress::parse("reserved@example.com").unwrap()
-        )
-        .await
-        .unwrap()
-        .is_none()
+        UserRepository::find_by_email(&h.pool, &reserved)
+            .await
+            .unwrap()
+            .is_none()
     );
     // Other addresses are unaffected.
     login("r-2", "free@example.com").await.unwrap();
+    // The previous owner can still revert (the address was not taken).
+    h.accounts
+        .revert_email_change(&h.ctx(), &authn_core::secret::SecretString::from(revert))
+        .await
+        .unwrap();
+    assert_eq!(
+        UserRepository::find_by_email(&h.pool, &reserved)
+            .await
+            .unwrap()
+            .map(|u| u.id),
+        Some(owner)
+    );
+}
+
+/// K-02: after the revert period the reservation no longer blocks a new
+/// social account for the old address.
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn soc_05_expired_reservation_no_longer_blocks_sign_up(pool: PgPool) {
+    let h = Harness::new(pool).await;
+    let owner = h.user("old@example.com", AccountStatus::Active, true).await;
+    h.change_email(owner, "new@example.com").await;
+    h.ports
+        .clock
+        .advance(std::time::Duration::from_secs(7 * 86_400 + 1));
+    let nonce = h.native_nonce("google").await;
+    let claims = h.claims(
+        &h.idp.issuer("/google"),
+        GOOGLE_NATIVE,
+        "after-expiry",
+        &nonce,
+        "old@example.com",
+    );
+    h.native("google", &sign_rs256(KEY_A, "key-a", &claims))
+        .await
+        .assert_status(StatusCode::OK);
+    let created = h.identity_owner("google", "after-expiry").await.unwrap();
+    assert_ne!(created, owner);
 }
 
 /// K-04 / K-17: with the safe defaults (`trust_email_verified = false` for
@@ -1030,4 +1051,84 @@ async fn soc_05_untrusted_providers_keep_linked_identities_and_reveal_no_account
     assert_eq!(a["error"]["message"], b["error"]["message"]);
     assert_eq!(a["error"]["code"], "oauth_email_not_verified");
     assert_eq!(h.identity_count().await, 2);
+}
+
+/// Audit finding (wave 2A audit): with the address lock of K-02 / K-33 a
+/// first sign-in that loses the race against a concurrent first sign-in of
+/// the **same** identity (double submit, app retry) waited on the lock,
+/// then found the winner's account and answered `oauth_link_required` —
+/// the user's own identity was refused. Under the lock the identity must
+/// be looked up again: it is now linked, so the loser signs in to it.
+/// Deterministic: the "winner" holds the address lock in its transaction
+/// until the login is waiting on it, then commits account + identity.
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn soc_05_concurrent_first_sign_in_of_the_same_identity_signs_in(pool: PgPool) {
+    let h = Harness::new(pool).await;
+    let nonce = h.native_nonce("google").await;
+    let issuer = h.idp.issuer("/google");
+    let claims = h.claims(
+        &issuer,
+        GOOGLE_NATIVE,
+        "race-sub",
+        &nonce,
+        "race@example.com",
+    );
+    let token = sign_rs256(KEY_A, "key-a", &claims);
+
+    let mut winner = h.pool.begin().await.unwrap();
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind("authn:account:email:race@example.com")
+        .execute(&mut *winner)
+        .await
+        .unwrap();
+    let winner_user = UserId::generate();
+    let pool = h.pool.clone();
+    let now = h.ports.clock.now();
+    let concurrent = async move {
+        // Wait until the login is blocked on the address lock.
+        loop {
+            let waiting: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            if waiting > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        UserRepository::create(
+            &mut winner,
+            &authn_store::NewUser {
+                id: winner_user,
+                email: authn_core::domain::EmailAddress::parse("race@example.com").unwrap(),
+                status: AccountStatus::Active,
+                created_at: now,
+            },
+        )
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO identities (id, user_id, provider, subject, issuer, email, \
+             email_verified, created_at) VALUES ($1, $2, 'google', 'race-sub', $3, \
+             'race@example.com', true, $4)",
+        )
+        .bind(IdentityId::generate())
+        .bind(winner_user)
+        .bind(&issuer)
+        .bind(now)
+        .execute(&mut *winner)
+        .await
+        .unwrap();
+        winner.commit().await.unwrap();
+    };
+    let (res, ()) = tokio::join!(h.native("google", &token), concurrent);
+    assert_eq!(res.status, StatusCode::OK, "{}", res.text());
+    let login = h.ports.session_issuer.logins().pop().unwrap();
+    assert_eq!(
+        login.user_id, winner_user,
+        "signed in to the linked identity"
+    );
+    assert_eq!(h.identity_count().await, 1);
 }

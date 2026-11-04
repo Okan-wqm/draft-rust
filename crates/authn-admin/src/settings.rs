@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use authn_core::config::AppConfig;
 use authn_core::config::admin::AdminConfig;
+use authn_core::ports::RateLimitPolicy;
 use ipnet::IpNet;
 
 /// Settings of [`crate::AdminService`].
@@ -24,7 +25,37 @@ pub struct AdminSettings {
     /// Accounts processed per transaction by the bulk "force password
     /// reset" emergency operation (ADM-06).
     pub bulk_batch_size: u32,
+    /// Emergency operations per admin (K-08; default 3 per hour).
+    pub emergency_per_admin: RateLimitPolicy,
+    /// Emergency operations of all admins together, break-glass accounts
+    /// excepted (K-08; default 6 per hour).
+    pub emergency_global: RateLimitPolicy,
+    /// Minimum time between two runs of the **same** emergency operation by
+    /// any admin, break-glass accounts excepted (K-08; default 5 minutes).
+    pub emergency_cooldown: Duration,
+    /// Actions on another platform admin (suspend, revoke sessions, unlock)
+    /// per acting admin (K-08; default 3 per hour).
+    pub admin_target_per_admin: RateLimitPolicy,
+    /// Actions on platform admins by all admins together, break-glass
+    /// accounts excepted (K-08; default 10 per hour).
+    pub admin_target_global: RateLimitPolicy,
+    /// Audit chain verifications per admin (K-09; default 5 per hour).
+    pub audit_verify_per_admin: RateLimitPolicy,
+    /// Longest time one chain verification holds the single cluster-wide
+    /// slot if its instance dies (K-09; default 15 minutes).
+    pub audit_verify_lease: Duration,
+    /// Lifetime of a break-glass passkey enrollment link (K-11; default 30
+    /// minutes, at most [`ENROLLMENT_LINK_HARD_CAP`]).
+    pub enrollment_link_ttl: Duration,
+    /// Enrollment-link requests (options / verify) per client IP (K-11;
+    /// default 20 per 15 minutes).
+    pub enrollment_per_ip: RateLimitPolicy,
 }
+
+/// Longest lifetime of a break-glass passkey enrollment link (K-11).
+pub const ENROLLMENT_LINK_HARD_CAP: Duration = Duration::from_secs(24 * 60 * 60);
+
+const HOUR: Duration = Duration::from_secs(60 * 60);
 
 /// Hard cap of an impersonation (ADM-04): never longer than 60 minutes,
 /// whatever the configuration says.
@@ -42,6 +73,15 @@ impl AdminSettings {
             impersonation_max_ttl: max,
             audit_export_max_events: 5_000,
             bulk_batch_size: 500,
+            emergency_per_admin: RateLimitPolicy::new(3, HOUR),
+            emergency_global: RateLimitPolicy::new(6, HOUR),
+            emergency_cooldown: Duration::from_secs(5 * 60),
+            admin_target_per_admin: RateLimitPolicy::new(3, HOUR),
+            admin_target_global: RateLimitPolicy::new(10, HOUR),
+            audit_verify_per_admin: RateLimitPolicy::new(5, HOUR),
+            audit_verify_lease: Duration::from_secs(15 * 60),
+            enrollment_link_ttl: Duration::from_secs(30 * 60),
+            enrollment_per_ip: RateLimitPolicy::new(20, Duration::from_secs(15 * 60)),
         }
     }
 

@@ -42,6 +42,8 @@ use sqlx::{PgConnection, PgPool};
 use time::OffsetDateTime;
 
 #[cfg(feature = "passkey")]
+pub use self::registration::VerifiedEnrollment;
+#[cfg(feature = "passkey")]
 pub use self::types::{
     AuthenticatedPasskey, AuthenticationFinish, AuthenticationStart, AuthenticationTarget,
     RegistrationIntent, RegistrationOptionsRequest, RegistrationStart, RegistrationVerifyRequest,
@@ -299,6 +301,45 @@ impl WebauthnService {
                     },
                     locale: ctx.locale,
                     kind,
+                },
+            )
+            .await
+    }
+
+    /// Enqueues the "possibly cloned passkey" e-mail in the caller's
+    /// transaction (PKY-05, K-19). The outbox notifier applies the
+    /// per-recipient limit of this kind. Accounts without a deliverable
+    /// address are skipped (logged).
+    #[cfg_attr(not(feature = "passkey"), allow(dead_code))]
+    async fn notify_clone_suspected(
+        &self,
+        conn: &mut PgConnection,
+        ctx: &RequestContext,
+        user: UserId,
+    ) -> Result<(), AuthError> {
+        let account = authn_store::UserRepository::find_by_id(&mut *conn, user).await?;
+        let Some((account, email)) = account.and_then(|a| {
+            let email = a
+                .email
+                .as_deref()
+                .and_then(|e| EmailAddress::parse(e).ok())?;
+            Some((a, email))
+        }) else {
+            tracing::warn!(user = %user, "clone notification skipped: no deliverable address");
+            return Ok(());
+        };
+        self.deps()
+            .notifier
+            .notify_in_tx(
+                conn,
+                Notification {
+                    recipient: Recipient {
+                        email,
+                        user_id: Some(account.id),
+                        display_name: None,
+                    },
+                    locale: ctx.locale,
+                    kind: NotificationKind::PasskeyCloneSuspected { at: self.now() },
                 },
             )
             .await

@@ -72,7 +72,7 @@ async fn mfa_04_recovery_code_is_single_use_and_notifies(pool: sqlx::PgPool) {
     assert_eq!(ok.kind, FactorKind::RecoveryCode);
     assert_eq!(ok.amr, vec![AuthMethodRef::Kba]);
     assert_eq!(ok.recovery_codes_remaining, Some(9));
-    let notices = h.notifier.email.with_template("recovery_code_used");
+    let notices = h.notifier.with_template("recovery_code_used");
     assert_eq!(notices.len(), 1);
     assert!(matches!(
         notices[0].kind,

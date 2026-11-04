@@ -4,7 +4,9 @@
 //! * Web: `Set-Cookie: __Host-authn_session=…` (browser-session cookie
 //!   unless "remember me"), the pre-session login-CSRF cookie is deleted,
 //!   a device id cookie is set when the browser had none, and the body
-//!   carries the new CSRF token. The session token never appears in a body.
+//!   carries the new CSRF token. The session token never appears in a body,
+//!   except for a web impersonation authenticated by the
+//!   `x-impersonation-session` header (K-12), which never gets a cookie.
 //! * Native: access + refresh token in the JSON body.
 //! * Every response is `Cache-Control: no-store`.
 
@@ -186,6 +188,45 @@ pub fn credentials_response(
     for cookie in cookies_to_set {
         response.headers_mut().append(SET_COOKIE, cookie);
     }
+    no_store(&mut response);
+    response
+}
+
+/// Rotated credentials of a **web impersonation** session that the
+/// request authenticated with the `x-impersonation-session` header (ADM-04,
+/// K-12): the new token goes back in the body as `impersonation_token`, and
+/// no cookie is ever set — a `Set-Cookie` would replace the admin's own
+/// session cookie in the same browser. Native credentials keep the regular
+/// token body.
+#[must_use]
+pub fn impersonation_credentials_response(
+    record: &SessionRecord,
+    credentials: IssuedCredentials,
+    now: OffsetDateTime,
+) -> Response {
+    let session_token = match credentials {
+        IssuedCredentials::Web { session_token, .. } => session_token,
+        native @ IssuedCredentials::Native { .. } => {
+            let (body, _) = credentials_parts(record, native, now);
+            let mut response = (StatusCode::OK, axum::Json(body)).into_response();
+            no_store(&mut response);
+            return response;
+        }
+    };
+    let body = serde_json::json!({
+        "status": "impersonating",
+        "session_id": record.id,
+        "user_id": record.user_id,
+        "client_kind": record.client_kind,
+        "active_org_id": record.active_org_id,
+        "expires_at": record
+            .absolute_expires_at
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap_or_default(),
+        "impersonation_token": session_token.expose(),
+        "token_header": crate::middleware::IMPERSONATION_SESSION_HEADER,
+    });
+    let mut response = (StatusCode::OK, axum::Json(body)).into_response();
     no_store(&mut response);
     response
 }

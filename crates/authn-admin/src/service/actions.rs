@@ -72,6 +72,18 @@ pub struct ForcedReset {
     pub reset_email_queued: bool,
 }
 
+/// Marks an action on another platform admin as high priority (K-08).
+fn with_admin_target(
+    mut metadata: serde_json::Map<String, Value>,
+    admin_target: bool,
+) -> serde_json::Map<String, Value> {
+    if admin_target {
+        metadata.insert("target_is_admin".to_owned(), Value::from(true));
+        metadata.insert("priority".to_owned(), Value::from("high"));
+    }
+    metadata
+}
+
 fn outcome(
     action: &str,
     user: UserId,
@@ -99,6 +111,7 @@ impl AdminService {
         reason: &Justification,
     ) -> Result<ActionOutcome, AuthError> {
         const ACTION: &str = "suspend_user";
+        let admin_target = self.guard_admin_target(caller, ctx, user, ACTION).await?;
         let mut tx = self.begin().await?;
         let target = self
             .lock_target(&mut tx, caller, user, TargetPolicy::NotBreakGlass)
@@ -132,11 +145,14 @@ impl AdminService {
                 ACTION,
                 Some(user),
                 Some(reason),
-                meta([
-                    ("from", Value::from(target.status.as_str())),
-                    ("to", Value::from(transition.to.as_str())),
-                    ("sessions_revoked", Value::from(revoked)),
-                ]),
+                with_admin_target(
+                    meta([
+                        ("from", Value::from(target.status.as_str())),
+                        ("to", Value::from(transition.to.as_str())),
+                        ("sessions_revoked", Value::from(revoked)),
+                    ]),
+                    admin_target || target.is_platform_admin,
+                ),
             )
             .await?;
         authn_store::commit(tx).await?;
@@ -204,6 +220,7 @@ impl AdminService {
         reason: &Justification,
     ) -> Result<ActionOutcome, AuthError> {
         const ACTION: &str = "unlock_user";
+        let admin_target = self.guard_admin_target(caller, ctx, user, ACTION).await?;
         // Read before the transaction: never wait for a second pooled
         // connection while holding one.
         let soft_locked = self.deps().protection.locked_until(user).await?.is_some();
@@ -232,10 +249,13 @@ impl AdminService {
                 ACTION,
                 Some(user),
                 Some(reason),
-                meta([
-                    ("account_unlocked", Value::from(status_unlocked)),
-                    ("soft_lock_cleared", Value::from(soft_locked)),
-                ]),
+                with_admin_target(
+                    meta([
+                        ("account_unlocked", Value::from(status_unlocked)),
+                        ("soft_lock_cleared", Value::from(soft_locked)),
+                    ]),
+                    admin_target || target.is_platform_admin,
+                ),
             )
             .await?;
         authn_store::commit(tx).await?;
@@ -261,8 +281,10 @@ impl AdminService {
         reason: &Justification,
     ) -> Result<ActionOutcome, AuthError> {
         const ACTION: &str = "revoke_user_sessions";
+        let admin_target = self.guard_admin_target(caller, ctx, user, ACTION).await?;
         let mut tx = self.begin().await?;
-        self.lock_target(&mut tx, caller, user, TargetPolicy::NotBreakGlass)
+        let target = self
+            .lock_target(&mut tx, caller, user, TargetPolicy::NotBreakGlass)
             .await?;
         let revoked = self
             .deps()
@@ -278,7 +300,10 @@ impl AdminService {
                 ACTION,
                 Some(user),
                 Some(reason),
-                meta([("sessions_revoked", Value::from(revoked))]),
+                with_admin_target(
+                    meta([("sessions_revoked", Value::from(revoked))]),
+                    admin_target || target.is_platform_admin,
+                ),
             )
             .await?;
         authn_store::commit(tx).await?;

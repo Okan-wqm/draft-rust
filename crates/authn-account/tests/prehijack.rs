@@ -908,3 +908,103 @@ async fn acc_11_new_password_on_the_link_page_needs_its_own_terms_acceptance(poo
     assert_eq!(rows, vec![(Some("owner-browser/1.0".to_owned()),)]);
     assert!(h.password_matches(user, OWNER).await);
 }
+
+/// Inner revoker that supports `revoke_everything_except` (authn-session's
+/// does; the testkit fake keeps the port's refusing default).
+struct ExceptRevoker {
+    kept: std::sync::Mutex<Vec<authn_core::id::SessionId>>,
+}
+
+#[async_trait::async_trait]
+impl authn_core::ports::SessionRevoker for ExceptRevoker {
+    async fn revoke_session(
+        &self,
+        _conn: &mut sqlx::PgConnection,
+        _session: authn_core::id::SessionId,
+        _reason: RevocationReason,
+    ) -> Result<bool, authn_core::error::AuthError> {
+        Ok(false)
+    }
+    async fn revoke_all_for_user(
+        &self,
+        _conn: &mut sqlx::PgConnection,
+        _user: authn_core::id::UserId,
+        _reason: RevocationReason,
+        _options: RevokeOptions,
+    ) -> Result<u64, authn_core::error::AuthError> {
+        Ok(0)
+    }
+    async fn revoke_all_except(
+        &self,
+        _conn: &mut sqlx::PgConnection,
+        _user: authn_core::id::UserId,
+        _keep: authn_core::id::SessionId,
+        _reason: RevocationReason,
+        _options: RevokeOptions,
+    ) -> Result<u64, authn_core::error::AuthError> {
+        Ok(0)
+    }
+    async fn revoke_for_user_in_org(
+        &self,
+        _conn: &mut sqlx::PgConnection,
+        _user: authn_core::id::UserId,
+        _org: authn_core::id::OrgId,
+        _reason: RevocationReason,
+    ) -> Result<u64, authn_core::error::AuthError> {
+        Ok(0)
+    }
+    async fn revoke_all_for_org(
+        &self,
+        _conn: &mut sqlx::PgConnection,
+        _org: authn_core::id::OrgId,
+        _reason: RevocationReason,
+    ) -> Result<u64, authn_core::error::AuthError> {
+        Ok(0)
+    }
+    async fn revoke_everything(
+        &self,
+        _conn: &mut sqlx::PgConnection,
+        _reason: RevocationReason,
+    ) -> Result<u64, authn_core::error::AuthError> {
+        Ok(0)
+    }
+    async fn revoke_everything_except(
+        &self,
+        _conn: &mut sqlx::PgConnection,
+        keep: authn_core::id::SessionId,
+        _reason: RevocationReason,
+    ) -> Result<u64, authn_core::error::AuthError> {
+        self.kept.lock().unwrap().push(keep);
+        Ok(7)
+    }
+}
+
+/// K-10 (ADM-06): the emergency "revoke every session except the
+/// caller's" goes through the account-aware revoker with the same account
+/// consequence as `revoke_everything` (every pending e-mail change ends)
+/// instead of failing with the port's refusing default.
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn acc_07_emergency_revoke_except_caller_ends_pending_email_changes(pool: PgPool) {
+    let h = Harness::new(pool).await;
+    let user = h.active_user("owner@example.com").await;
+    h.service
+        .request_email_change(&h.fresh(user), &h.ctx(), "attacker@evil.example")
+        .await
+        .unwrap();
+    h.drain().await;
+    assert_eq!(pending_change_tokens(&h, user).await, 2);
+    let inner = std::sync::Arc::new(ExceptRevoker {
+        kept: std::sync::Mutex::new(Vec::new()),
+    });
+    let revoker = AccountAwareSessionRevoker::new(inner.clone(), h.service.clone());
+    let keep = authn_core::id::SessionId::generate();
+    let mut tx = h.pool.begin().await.unwrap();
+    let revoked = revoker
+        .revoke_everything_except(&mut tx, keep, RevocationReason::Emergency)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(revoked, 7, "the inner revoker's count is returned");
+    assert_eq!(inner.kept.lock().unwrap().as_slice(), &[keep]);
+    assert_eq!(pending_change_tokens(&h, user).await, 0);
+}

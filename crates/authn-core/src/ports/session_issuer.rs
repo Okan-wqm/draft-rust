@@ -23,6 +23,15 @@ use crate::http::RequestContext;
 use crate::id::{ChallengeId, EventId, OrgId, SessionId, UserId};
 use crate::secret::SensitiveString;
 
+/// Request header that carries the token of a **web** impersonation
+/// session (ADM-04, K-12). The impersonation token is returned in the body
+/// of the impersonation response instead of a `Set-Cookie`, so the admin's
+/// own session cookie is never replaced; the admin console sends it back in
+/// this header. A custom header is never attached by a browser to a
+/// cross-site request, so no CSRF token is needed for it. (authn-session
+/// exports the same name as `authn_session::IMPERSONATION_SESSION_HEADER`.)
+const IMPERSONATION_SESSION_HEADER: &str = "x-impersonation-session";
+
 /// Runs the post-identification login pipeline.
 #[async_trait]
 pub trait SessionIssuer: Send + Sync {
@@ -40,6 +49,42 @@ pub trait SessionIssuer: Send + Sync {
     /// (SES-05). For web redirects, `return_to` must already be validated
     /// against the redirect allow-list (PRT-10).
     fn login_response(&self, outcome: LoginOutcome, return_to: Option<&str>) -> Response;
+
+    /// Renders a new impersonation session (ADM-04, K-12) **without**
+    /// touching the admin's own session cookie:
+    ///
+    /// * web: `200` JSON body with the impersonation session token
+    ///   (`impersonation_token`) to send back in the request header named
+    ///   by `token_header` (`x-impersonation-session`); no `Set-Cookie`;
+    /// * native: the token body of [`SessionIssuer::login_response`]
+    ///   (access token with the RFC 8693 `act` claim, refresh token).
+    ///
+    /// Every response is `Cache-Control: no-store`. The default
+    /// implementation is complete; implementations normally keep it.
+    fn impersonation_response(&self, issued: IssuedSession) -> Response {
+        use axum::response::IntoResponse;
+        if issued.client == ClientKind::Native {
+            let mut response = self.login_response(LoginOutcome::Authenticated(issued), None);
+            response
+                .headers_mut()
+                .remove(axum::http::header::SET_COOKIE);
+            return no_store(response);
+        }
+        let expires_at = issued
+            .absolute_expires_at
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap_or_default();
+        let body = serde_json::json!({
+            "status": "impersonating",
+            "session_id": issued.session_id,
+            "user_id": issued.user_id,
+            "client_kind": issued.client.as_str(),
+            "expires_at": expires_at,
+            "impersonation_token": issued.session_token.as_ref().map(SensitiveString::expose),
+            "token_header": IMPERSONATION_SESSION_HEADER,
+        });
+        no_store(axum::Json(body).into_response())
+    }
 
     /// Starts an impersonation session for a platform admin (ADM-04). The
     /// caller (authn-admin) has already checked the admin's authority,
@@ -104,6 +149,14 @@ pub trait SessionIssuer: Send + Sync {
             "transactional impersonation is not supported by this issuer",
         ))
     }
+}
+
+fn no_store(mut response: Response) -> Response {
+    response.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-store"),
+    );
+    response
 }
 
 /// Proof of a successful primary authentication.

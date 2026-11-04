@@ -110,6 +110,7 @@ pub fn parse_document(body: &[u8], issuer: &str) -> Result<Endpoints, AuthError>
         token: endpoint(&doc.token_endpoint, &issuer_url)?,
         jwks: Some(endpoint(&doc.jwks_uri, &issuer_url)?),
         api_base: None,
+        revocation: None,
         token_auth,
         target: OutboundTarget::UserSupplied,
     })

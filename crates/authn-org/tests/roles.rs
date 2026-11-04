@@ -108,7 +108,11 @@ async fn org_03_custom_roles_drive_authorization(pool: PgPool) {
         )
         .await
         .unwrap();
-    assert!(h.revoked_in_org(bob, org));
+    assert!(h.changed_in_org(bob, org));
+    assert!(
+        !h.revoked_in_org(bob, org),
+        "K-41: a role change is not a removal"
+    );
     let err = h
         .service
         .authorize(&h.ctx(), &h.fresh(bob), Permission::AuditRead, org)

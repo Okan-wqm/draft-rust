@@ -8,11 +8,11 @@ Passkey / WebAuthn: kayıt ve doğrulama seremonileri, kimlik bilgisi yönetimi,
 
 | Kimlik | Durum | Nerede |
 |--------|-------|--------|
-| PKY-01 | Uygulandı | `service/registration.rs`, `service/authentication.rs`, `store/ceremonies.rs` — sunucu tarafı durum, `webauthn.ceremony_ttl` (5 dk), tek kullanım (atomik `UPDATE … RETURNING`), kullanıcı/oturum/challenge/bağlama token'ına bağlı |
+| PKY-01 | Uygulandı | `service/registration.rs`, `service/authentication.rs`, `store/ceremonies.rs` — sunucu tarafı durum, `webauthn.ceremony_ttl` (5 dk), tek kullanım (atomik `UPDATE … RETURNING`), kullanıcı/oturum/challenge/bağlama token'ına bağlı. Wave 2B (K-11): oturumsuz **kayıt bağlantısı** seremonisi — kullanıcıya ve bağlantı token'ının SHA-256'sına bağlı (`start_enrollment_registration`, `verify_enrollment_registration`, `store_enrollment_in_tx`; migration `1401`) |
 | PKY-02 | Uygulandı | Passkey hem birincil (kullanıcı adısız, conditional UI) hem ikinci faktör; discoverable credential tercih edilir (`residentKey: "preferred"`); UV birincil giriş ve step-up için `required`, ikinci faktör için `preferred` |
 | PKY-03 | Uygulandı | `store/handles.rs` — 16 bayt CSPRNG kullanıcı tanıtıcısı, e-postadan ve kullanıcı kimliğinden bağımsız |
 | PKY-04 | Uygulandı | `service/manage.rs` — liste (ad, oluşturulma, son kullanım, yedeklenebilir/yedeklenmiş, UV, keşfedilebilirlik, attestation, klon şüphesi), yeniden adlandırma, silme (step-up; son giriş yöntemi / zorunlu son MFA faktörü engellenir), ekleme/kaldırma bildirimi |
-| PKY-05 | Uygulandı | `webauthn-rs` sayaç ve yedekleme tutarlılığı kontrolü + satır kilitli güncel sayaçla ikinci karşılaştırma; **imzası doğrulanmış** bir onaydaki sayaç gerilemesi `passkey.clone_suspected` olayı, `clone_suspected_at` işareti ve giriş reddi üretir |
+| PKY-05 | Uygulandı | `webauthn-rs` sayaç ve yedekleme tutarlılığı kontrolü + satır kilitli güncel sayaçla ikinci karşılaştırma; **imzası doğrulanmış** bir onaydaki sayaç gerilemesi `passkey.clone_suspected` olayı, `clone_suspected_at` işareti, giriş reddi ve (passkey'in ilk tespitinde, aynı transaction'da) sahibine `passkey_clone_suspected` e-postası (wave 2B, K-19) üretir |
 | PKY-06 | Uygulandı | `rp.rs` + `authn_core::config::webauthn` — `rp_id`, tam eşleşen origin listesi (web + `android:apk-key-hash:`), fail-fast doğrulama |
 | PKY-07 | Uygulandı | `well_known.rs` — `/.well-known/apple-app-site-association`, `/.well-known/assetlinks.json`, `/.well-known/webauthn` |
 | PKY-08 | Uygulandı | `policy.rs` — attestation varsayılan `none`; kuruluş AAGUID izin listesi (`PasskeyPolicy`, girdi yapısı) yalnızca **doğrulanmış** attestation ile; `PasskeyPolicySource` kayıtta ve **her** kimlik doğrulamada uygulanır |
@@ -134,7 +134,7 @@ Düzeltilen bulgular (her biri, düzeltme olmadan başarısız olan bir regresyo
 
 Kabul edilen riskler (gerekçeli; düzeltme gerektirmez):
 
-- **Klon şüpheli passkey kullanılmaya devam eder.** İşaret + audit olayı + listede gösterim; passkey'i kaldırma kararı kullanıcıdadır (WebAuthn bu kararı RP'ye bırakır). Otomatik devre dışı bırakma gerçek authenticator'ı da kilitleyebilirdi. İşaret artık yalnızca imzalı kanıttan üretildiği için session/risk katmanı onu güvenle kullanabilir.
+- **Klon şüpheli passkey kullanılmaya devam eder.** İşaret + audit olayı + listede gösterim + kullanıcıya e-posta (wave 2B, K-19: passkey başına yalnızca ilk tespitte, outbox alıcı başına limitli; tekrarlayan tespitler yalnızca audit olayı üretir); passkey'i kaldırma kararı kullanıcıdadır (WebAuthn bu kararı RP'ye bırakır). Otomatik devre dışı bırakma gerçek authenticator'ı da kilitleyebilirdi. İşaret artık yalnızca imzalı kanıttan üretildiği için session/risk katmanı onu güvenle kullanabilir.
 - **"Giriş yapabilen" passkey sayımı keşfedilebilirliğe bakmaz.** `passkey_count_in(.., true)` ve son giriş yöntemi kuralı UV ile kaydedilmiş (`usage = both`) tüm passkey'leri sayar; `credProps.rk` istemci beyanıdır (imzasız, çoğu zaman yok) ve güvenlik kararında kullanılamaz. Resident olmayan bir anahtar tek giriş yöntemi kalırsa kullanıcı adısız giriş onu bulamaz; kurtarma e-posta ile şifre sıfırlamadır.
 - **`second_factor` niyetiyle kaydedilen ama UV yapan bir anahtar `both` olur** (şifresiz girişte de kullanılabilir). UV kayıtta kanıtlanmıştır ve şifresiz giriş/step-up'ta `webauthn-rs` UV'yi zorunlu kılar; anahtar iki faktörlü bir authenticator'dır.
 - **Bağlama token'ı karşılaştırması SQL'de** (`binding_hash IS NOT DISTINCT FROM $n`) yapılır, sabit zamanlı değildir. Karşılaştırılan değer 256 bit rastgele token'ın SHA-256'sıdır; zamanlamadan hash öneki öğrenmek token hakkında bilgi vermez (depodaki tüm token aramalarıyla aynı desen).
@@ -151,6 +151,7 @@ Kabul edilen riskler (gerekçeli; düzeltme gerektirmez):
 Kabul edilen riskler:
 
 - **Son giriş yöntemi kuralı bilinçli olarak uygulanmaz.** Yalnızca passkey'le giren (şifresiz, sosyal kimliği olmayan) bir hesapta sıfırlamadan sonra passkey ve şifre kalmaz. Hesap kullanılamaz hâle gelmez: e-posta adresine sahip olan kullanıcı magic link / e-posta koduyla (SES-18/19) girer, ardından zorunlu adımlar (SES-22) yeni passkey veya MFA kaydını ister; kullanıcıya hem `mfa_reset` hem `mfa_factor_removed` bildirimi gider. Kuralı uygulamak, saldırganın eklediği passkey'i korumak demek olurdu (K-01'in kendisi).
+- **Personel IP'si kullanıcı olaylarında görünmez (wave 2B):** `remove_all_passkeys_in_tx`'in `passkey.removed` olayları `Actor::System` ile yazılır ve yalnızca istek kimliğini taşır; adminin IP'si / user-agent'ı kullanıcının güvenlik olayları listesine girmez (K-14 ile aynı kural).
 - **`access_token_session_check = false` iken** iptal edilmiş oturumun access token'ı `access_token_ttl` (varsayılan 10 dk) boyunca kabul edildiğinden, o token'ı elinde tutan biri sıfırlamadan sonra **yeni** bir kayıt seremonisi başlatıp ilk passkey'i ekleyebilir (`step_up_for_first_passkey = false` ise step-up da gerekmez). Bu, oturum katmanının belgelenmiş ödünleşimidir (authn-session README); yüksek güvenlik gereken kurulumlarda kontrol açık kalmalıdır (varsayılan).
 
 ## authn-server / Dalga B'nin bağlaması gerekenler
@@ -161,6 +162,7 @@ Kabul edilen riskler:
 4. Arka plan işi: `purge_expired_ceremonies()`.
 5. authn-account dışa aktarma toplayıcısına `PasskeyDataExporter`.
 6. authn-mfa `MfaPolicySource::webauthn_factor_count` ve authn-password `LoginMethodInventory` için `passkey_count_in`.
+8. Wave 2B (K-11): `start_enrollment_registration` / `verify_enrollment_registration` / `store_enrollment_in_tx` yalnızca authn-admin'in break-glass kayıt bağlantısı akışı içindir (bağlantı token'ını o doğrular ve tüketir); migration `1401` gömülü migrator ile gelir.
 7. authn-session: passkey girişi/ikinci faktör/step-up uç noktaları `start_authentication` / `finish_authentication` ile; `binding_token` web'de `HttpOnly; Secure; SameSite=Strict` kısa ömürlü çerezde, native'de gövdede; `AuthenticationTarget` istemciden değil session'ın kendi kaydından kurulur; başarıdan sonra hesap durumu, challenge/oturum geçerliliği, audit (`login.*`, `mfa.*`, `step_up.*`) ve AMR birleştirmesi session'dadır.
 
 Ayrıntılı talepler: `docs/architecture/contract-change-requests.md` → `## authn-webauthn`.
@@ -169,7 +171,7 @@ Ayrıntılı talepler: `docs/architecture/contract-change-requests.md` → `## a
 
 - `/.well-known/webauthn` (MAY) uygulandı; boş yapılandırmada `404`.
 - PKY-08 (opsiyonel) uygulandı; FIDO MDS entegrasyonu yok — güvenilir kökler konfigürasyondan gelir.
-- Passkey'e özel bildirim şablonları yok; ekleme/kaldırma `MfaFactorAdded/Removed { factor: webauthn }` ile gider (authn-notify'a öneri: §13 kaydı). Klon şüphesi için kullanıcı e-postası henüz yok (audit olayı + listede işaret var).
+- Ekleme/kaldırma `MfaFactorAdded/Removed { factor: webauthn }` ile gider (admin MFA sıfırlamasında passkey sayısından bağımsız **tek** `mfa_factor_removed`; test: authn-admin `adm_03_mfa_reset_sends_one_notice_not_one_per_passkey`). Klon şüphesi `NotificationKind::PasskeyCloneSuspected` ile (wave 2B, K-19; `pky_05_clone_suspicion_notifies_the_owner_once`).
 
 ## Testler
 

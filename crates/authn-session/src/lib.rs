@@ -50,13 +50,13 @@ pub use claims::AccessTokenClaims;
 pub use csrf::{CSRF_HEADER, CsrfProtector, LoginCsrfVerified};
 pub use export::SessionDataExporter;
 pub use login::routes::LoginApi;
-pub use middleware::authenticate;
+pub use middleware::{IMPERSONATION_SESSION_HEADER, authenticate};
 pub use model::{CurrentSession, DeviceInfo, EstablishedSession, IssuedCredentials, SessionRecord};
 pub use routes::{SessionApi, router};
 pub use service::{
     Authenticated, ChallengeKind, ChallengeProgress, ChallengeState, ClientChannel,
     EstablishSession, IntrospectionResponse, IssuedChallenge, MeResponse, NewChallenge, OrgSwitch,
     PgSessionRevoker, PurgeReport, RefreshedTokens, SessionService, SessionServiceDeps,
-    SessionSummary, StepUpProof, VerifiedAccessToken, VerifiedOrg,
+    SessionSummary, StepUpProof, VerifiedAccessToken, VerifiedOrg, is_session_active_in,
 };
 pub use settings::{SessionSettings, SessionShape};

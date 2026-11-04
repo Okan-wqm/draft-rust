@@ -356,6 +356,8 @@ pub(crate) enum Target {
     UserInOrg(UserId, OrgId),
     Org(OrgId),
     Everything,
+    /// Every session but one (K-10: the emergency caller's own session).
+    EverythingExcept(SessionId),
 }
 
 /// Revokes the targeted unrevoked sessions and their refresh-token families
@@ -419,6 +421,13 @@ pub(crate) async fn revoke(
         )
         .bind(now)
         .bind(reason),
+        Target::EverythingExcept(keep) => sqlx::query_as::<_, Revoked>(
+            "UPDATE sessions SET revoked_at = $1, revoked_reason = $2, token_hash = NULL \
+             WHERE revoked_at IS NULL AND id <> $3 RETURNING id, user_id, active_org_id",
+        )
+        .bind(now)
+        .bind(reason)
+        .bind(keep),
     };
     let revoked = query.fetch_all(&mut *conn).await?;
     if !revoked.is_empty() {

@@ -529,3 +529,131 @@ async fn ses_15_user_wide_revocation_closes_pending_logins(pool: PgPool) {
     // Other users are untouched.
     assert!(h.challenge_open(&theirs, ChallengeKind::Login).await);
 }
+
+/// ADM-06 / K-10: the emergency revocation can keep one session (the
+/// calling admin's); everything else — other users, the admin's other
+/// sessions, impersonations started from the kept session, pending logins —
+/// ends in the caller's transaction.
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn adm_06_revoke_everything_except_keeps_exactly_one_session(pool: PgPool) {
+    let h = Harness::new(pool).await;
+    let admin = h.user("admin@example.com").await;
+    let alice = h.user("alice@example.com").await;
+    let kept = h.web_login(admin).await;
+    let other_admin_session = h.native_login(admin).await;
+    let alice_web = h.web_login(alice).await;
+    let alice_native = h.native_login(alice).await;
+
+    // Rolled back: nothing changes.
+    let mut tx = h.service.begin().await.unwrap();
+    let n = h
+        .revoker
+        .revoke_everything_except(&mut tx, kept.session_id, RevocationReason::Emergency)
+        .await
+        .unwrap();
+    assert_eq!(n, 3);
+    tx.rollback().await.unwrap();
+    assert!(live(&h, alice_web.session_id).await);
+
+    let mut tx = h.service.begin().await.unwrap();
+    h.revoker
+        .revoke_everything_except(&mut tx, kept.session_id, RevocationReason::Emergency)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert!(live(&h, kept.session_id).await);
+    for gone in [
+        other_admin_session.session_id,
+        alice_web.session_id,
+        alice_native.session_id,
+    ] {
+        assert!(!live(&h, gone).await);
+        assert_eq!(h.revoked_reason(gone).await.as_deref(), Some("emergency"));
+    }
+    // The kept cookie still authenticates.
+    h.send(TestRequest::get("/v1/me").cookie(SESSION_COOKIE, &kept.cookie))
+        .await
+        .assert_status(StatusCode::OK);
+    h.send(TestRequest::get("/v1/me").cookie(SESSION_COOKIE, &alice_web.cookie))
+        .await
+        .assert_error(StatusCode::UNAUTHORIZED, "unauthenticated");
+}
+
+/// K-03 support (SOC-06): `is_session_active_in` answers on the caller's
+/// connection — live own session yes; another user's, revoked, expired,
+/// impersonation and suspended-owner sessions no.
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn soc_06_k03_session_liveness_on_the_callers_connection(pool: PgPool) {
+    let h = Harness::new(pool).await;
+    let alice = h.user("alice@example.com").await;
+    let bob = h.user("bob@example.com").await;
+    let web = h.web_login(alice).await;
+    let other = h.web_login(alice).await;
+    let mut tx = h.service.begin().await.unwrap();
+    let now = h.now();
+    assert!(
+        authn_session::is_session_active_in(&mut tx, web.session_id, alice, now)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !authn_session::is_session_active_in(&mut tx, web.session_id, bob, now)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !authn_session::is_session_active_in(&mut tx, SessionId::generate(), alice, now)
+            .await
+            .unwrap()
+    );
+    h.revoker
+        .revoke_session(&mut tx, other.session_id, RevocationReason::Logout)
+        .await
+        .unwrap();
+    assert!(
+        !authn_session::is_session_active_in(&mut tx, other.session_id, alice, now)
+            .await
+            .unwrap()
+    );
+    sqlx::query("UPDATE users SET status = 'suspended' WHERE id = $1")
+        .bind(alice)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    assert!(
+        !authn_session::is_session_active_in(&mut tx, web.session_id, alice, now)
+            .await
+            .unwrap()
+    );
+    tx.rollback().await.unwrap();
+    // Expired.
+    h.advance(std::time::Duration::from_secs(40 * 24 * 3600));
+    let mut conn = h.pool.acquire().await.unwrap();
+    assert!(
+        !authn_session::is_session_active_in(&mut conn, web.session_id, alice, h.now())
+            .await
+            .unwrap()
+    );
+    // Impersonation sessions never count.
+    let admin = h.user("admin@example.com").await;
+    h.make_admin(admin).await;
+    h.establish(h.request(admin, h.web_channel())).await;
+    let issued = authn_core::ports::SessionIssuer::start_impersonation(
+        &h.service,
+        &h.ctx(),
+        authn_core::ports::ImpersonationRequest {
+            admin_user_id: admin,
+            target_user_id: bob,
+            read_only: true,
+            ttl: std::time::Duration::from_secs(600),
+            reason: "Support".into(),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        !authn_session::is_session_active_in(&mut conn, issued.session_id, bob, h.now())
+            .await
+            .unwrap()
+    );
+}

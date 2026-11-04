@@ -28,6 +28,14 @@
 //!    runs. An unknown / expired cookie simply yields no principal (the
 //!    cookie is not cleared: a concurrent rotation may have replaced it).
 //!
+//! 0. **Web impersonation header** `x-impersonation-session` (K-12),
+//!    checked first: the token of a live *impersonation* web session,
+//!    returned in the body of the impersonation response instead of a
+//!    cookie so the admin's own session cookie survives. Exactly one value,
+//!    never together with `Authorization`; anything else is `401`, and the
+//!    session cookie is then ignored. No CSRF token is needed: browsers
+//!    never attach a custom header to a cross-site request.
+//!
 //! Finally, a **read-only impersonation** principal (ADM-04) may not use
 //! any state-changing method except `POST /v1/logout` — enforced here for
 //! every route of every module, on top of `Principal::require_writable`.
@@ -50,6 +58,11 @@ use crate::csrf::is_state_changing;
 use crate::metrics;
 use crate::model::CurrentSession;
 use crate::service::{Authenticated, SessionService};
+
+/// Request header carrying a web impersonation session token (ADM-04,
+/// K-12); the same name the `SessionIssuer::impersonation_response` body
+/// announces as `token_header`.
+pub const IMPERSONATION_SESSION_HEADER: &str = "x-impersonation-session";
 
 /// Path that a read-only impersonation may still `POST` to.
 pub const LOGOUT_PATH: &str = "/v1/logout";
@@ -118,6 +131,39 @@ pub async fn authenticate(
             return next.run(request).await;
         }
         ApiKeyCredential::None => {}
+    }
+
+    // K-12: a web impersonation session travels in its own header so that
+    // the admin's session cookie is never replaced. Exactly one value, never
+    // together with `Authorization`; an invalid token is `401` (never a
+    // silent fall-back to the admin's cookie).
+    let impersonation_headers = request
+        .headers()
+        .get_all(IMPERSONATION_SESSION_HEADER)
+        .iter()
+        .count();
+    if impersonation_headers > 0 {
+        let ambiguous = impersonation_headers > 1 || request.headers().contains_key(AUTHORIZATION);
+        let token = request
+            .headers()
+            .get(IMPERSONATION_SESSION_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
+        let (false, Some(token)) = (ambiguous, token) else {
+            return AuthError::new(codes::common::UNAUTHENTICATED)
+                .with_context("ambiguous impersonation credentials")
+                .into_response();
+        };
+        match service.authenticate_impersonation_token(&ctx, &token).await {
+            Ok(Some(authenticated)) => insert(&mut request, authenticated),
+            Ok(None) => {
+                return AuthError::new(codes::common::UNAUTHENTICATED)
+                    .with_context("impersonation session not valid")
+                    .into_response();
+            }
+            Err(err) => return err.into_response(),
+        }
+        return enforce_read_only(request, next, state_changing).await;
     }
 
     if let Some(value) = request.headers().get(AUTHORIZATION) {

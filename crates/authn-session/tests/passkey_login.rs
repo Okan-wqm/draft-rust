@@ -354,3 +354,136 @@ async fn ses_02_passkey_options_need_an_allowed_passkey_step(pool: PgPool) {
     let _ = status_of(&r);
     let _ = TestRequest::get("/");
 }
+
+async fn make_break_glass(h: &Harness, user: UserId) {
+    sqlx::query("UPDATE users SET is_platform_admin = true, is_break_glass = true WHERE id = $1")
+        .bind(user)
+        .execute(&h.pool)
+        .await
+        .unwrap();
+}
+
+fn break_glass_events(h: &Harness) -> Vec<authn_core::ports::SecurityEvent> {
+    h.ports
+        .audit
+        .of_kind(authn_core::ports::SecurityEventKind::BreakGlassUsed)
+}
+
+/// ADM-05 / K-05: a session established for a break-glass account records a
+/// high-priority `admin.break_glass_used` (`surface: login`) in the login
+/// transaction — both straight from the pipeline (passkey login) and when a
+/// challenge completes (password + passkey second factor). Regular
+/// accounts produce no such event.
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn adm_05_break_glass_login_emits_high_priority_event(pool: PgPool) {
+    let h = Harness::new(pool).await;
+    // A regular user: no event.
+    let alice = h.user("alice@example.com").await;
+    let mut alice_key = SoftPasskey::new(true);
+    let alice_passkey = register(&h, &mut alice_key, alice, RegistrationIntent::Passwordless).await;
+    let options: Value = h
+        .send(native("/v1/login/passkey/options", &json!({})))
+        .await
+        .json();
+    let credential = assert_discoverable(&mut alice_key, &options["options"], &alice_passkey);
+    let done: Value = h
+        .send(native(
+            "/v1/login/passkey",
+            &json!({"ceremony_id": options["ceremony_id"],
+                    "binding_token": options["binding_token"], "credential": credential}),
+        ))
+        .await
+        .json();
+    assert_eq!(done["status"], "authenticated", "{done}");
+    assert!(break_glass_events(&h).is_empty());
+
+    // The break-glass account, pipeline path.
+    let bg = h.user("breakglass@example.com").await;
+    let mut key = SoftPasskey::new(true);
+    let passkey = register(&h, &mut key, bg, RegistrationIntent::Passwordless).await;
+    make_break_glass(&h, bg).await;
+    let options: Value = h
+        .send(native("/v1/login/passkey/options", &json!({})))
+        .await
+        .json();
+    let credential = assert_discoverable(&mut key, &options["options"], &passkey);
+    let done: Value = h
+        .send(native(
+            "/v1/login/passkey",
+            &json!({"ceremony_id": options["ceremony_id"],
+                    "binding_token": options["binding_token"], "credential": credential}),
+        ))
+        .await
+        .json();
+    assert_eq!(done["status"], "authenticated", "{done}");
+    let events = break_glass_events(&h);
+    assert_eq!(events.len(), 1);
+    let event = &events[0];
+    assert_eq!(event.subject_user, Some(bg));
+    assert_eq!(event.actor, authn_core::ports::Actor::User(bg));
+    assert_eq!(event.metadata["priority"], "high");
+    assert_eq!(event.metadata["surface"], "login");
+    assert_eq!(event.metadata["method"], "passkey");
+    assert_eq!(
+        event.resource.as_ref().unwrap().id,
+        done["session_id"].as_str().unwrap()
+    );
+
+    // Challenge path: a pending password login finished with the passkey.
+    let token = {
+        let mut tx = h.service.begin().await.unwrap();
+        let issued = h
+            .service
+            .create_challenge(
+                &mut tx,
+                &h.ctx(),
+                authn_session::NewChallenge {
+                    kind: authn_session::ChallengeKind::Login,
+                    user_id: bg,
+                    client_kind: ClientKind::Native,
+                    primary_method: Some(LoginMethod::Password),
+                    amr: vec![AuthMethodRef::Pwd],
+                    first_factor_at: Some(h.now()),
+                    allowed_factors: vec![FactorKind::Webauthn],
+                    required_actions: vec![RequiredAction::VerifyMfa],
+                    remember_me: false,
+                    shared_device: false,
+                    requested_org: None,
+                    risk_level: None,
+                    session_id: None,
+                    metadata: serde_json::Map::new(),
+                },
+            )
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        issued.token.expose().to_owned()
+    };
+    let options: Value = h
+        .send(native_challenge(
+            "/v1/login/challenge/passkey/options",
+            &json!({}),
+            &token,
+        ))
+        .await
+        .json();
+    let credential = assert_with_allow_list(&mut key, &options["options"]);
+    let done: Value = h
+        .send(native_challenge(
+            "/v1/login/challenge/verify",
+            &json!({
+                "method": "passkey",
+                "ceremony_id": options["ceremony_id"],
+                "binding_token": options["binding_token"],
+                "credential": credential,
+            }),
+            &token,
+        ))
+        .await
+        .json();
+    assert_eq!(done["status"], "authenticated", "{done}");
+    let events = break_glass_events(&h);
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[1].metadata["method"], "password");
+    assert_eq!(events[1].metadata["surface"], "login");
+}

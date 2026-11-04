@@ -13,6 +13,8 @@
 //! | [`OidcClientService::stored_provider_tokens`] | SOC-08 | server / applications |
 //! | [`OidcClientService::linked_identity_count_in`] | PWD-11, PKY-04 | authn-server (`LoginMethodInventory` / `AccountMethodsSource` adapters of other modules) |
 //! | [`OidcClientService::purge_expired_states`] | OPS-06 | authn-server background job |
+//! | [`OidcClientService::process_token_revocations`] | SOC-07, ACC-09 (K-35) | authn-server background job |
+//! | [`OidcClientService::erasure_hook`] | ACC-09 (K-35) | authn-server: `AccountService::register_erasure_hook` |
 //!
 //! Sessions are never created here: a verified identity becomes a
 //! `PrimaryAuthentication { method: Social, amr: [fed] }` for the
@@ -23,6 +25,7 @@
 
 mod accounts;
 mod native;
+mod revocation;
 mod web;
 
 use std::sync::Arc;
@@ -33,7 +36,7 @@ use authn_core::error::{AuthError, codes as common_codes};
 use authn_core::http::RequestContext;
 use authn_core::id::UserId;
 use authn_core::ports::{
-    Actor, AuditSink, Clock, EventPublisher, HttpClient, RateLimitKey, RateLimitPolicy,
+    Actor, AuditSink, Clock, EventPublisher, HttpClient, Notifier, RateLimitKey, RateLimitPolicy,
     RateLimiter, SecurityEvent, SecurityEventKind, SessionIssuer,
 };
 use authn_core::secret::ExposeSecret as _;
@@ -47,10 +50,13 @@ use url::Url;
 
 pub use self::accounts::{IdentitySummary, StoredProviderTokens};
 pub use self::native::{NativeLoginRequest, NativeNonce};
-pub use self::web::{CallbackParams, CallbackResult, WebStart};
+pub use self::revocation::{
+    MAX_REVOCATION_ATTEMPTS, ProviderTokenErasureHook, RevocationReport, revocation_backoff,
+};
+pub use self::web::{CallbackParams, CallbackResult, WebLoginOptions, WebStart};
 use crate::codes;
 use crate::discovery::DiscoveryCache;
-use crate::hooks::{AddressReservations, LoginMethodInventory};
+use crate::hooks::{LoginMethodInventory, SessionLiveness};
 use crate::id_token::{self, Expectations, IdClaims, invalid};
 use crate::identity::ProviderTokens;
 use crate::jwks::JwksCache;
@@ -90,13 +96,18 @@ pub struct OidcClientServiceDeps {
     pub events: Arc<dyn EventPublisher>,
     /// The login pipeline (authn-session's `SessionService`).
     pub sessions: Arc<dyn SessionIssuer>,
-    /// authn-account: mailbox proofs for provider-verified addresses
-    /// (`confirm_mailbox_control_in_tx`, ADR 0002).
+    /// authn-account: account provisioning with the ACC-07 reservation
+    /// check (K-02, K-33), mailbox proofs for provider-verified addresses
+    /// (`confirm_mailbox_control_in_tx`, ADR 0002), notice recipients.
     pub accounts: AccountService,
     /// Other login methods (SOC-06 last-method rule).
     pub login_methods: Arc<dyn LoginMethodInventory>,
-    /// Reserved addresses (ACC-07).
-    pub reservations: Arc<dyn AddressReservations>,
+    /// Whether the session that started a link flow is still valid (K-03;
+    /// authn-session through authn-server).
+    pub session_liveness: Arc<dyn SessionLiveness>,
+    /// Security notices (identity linked / unlinked, K-18) — authn-notify's
+    /// outbox notifier, used in the link / unlink transactions.
+    pub notifier: Arc<dyn Notifier>,
 }
 
 struct Inner {
@@ -106,6 +117,8 @@ struct Inner {
     redirects: RedirectValidator,
     jwks: JwksCache,
     discovery: DiscoveryCache,
+    /// Validated absolute target for failed web callbacks (K-36).
+    error_redirect: Option<Url>,
 }
 
 /// The social-login service. Cheap to clone; handlers obtain it through
@@ -153,41 +166,68 @@ struct TokenResponse {
 }
 
 impl OidcClientService {
-    /// Builds the service and its provider registry from the settings.
+    /// Builds the service at start-up: decrypts an envelope-encrypted
+    /// Apple key (`oidc_client.apple.private_key_ciphertext`, K-34) with
+    /// the deps' envelope cipher, then [`OidcClientService::new`]. The
+    /// server uses this constructor.
+    pub async fn build(
+        deps: OidcClientServiceDeps,
+        mut settings: OidcClientSettings,
+    ) -> Result<Self, AuthError> {
+        if let Some(apple) = settings.config.apple.as_mut() {
+            crate::apple::resolve_private_key(apple, &deps.envelopes).await?;
+        }
+        Self::new(deps, settings)
+    }
+
+    /// Builds the service and its provider registry from the settings
+    /// (an envelope-encrypted Apple key must have been decrypted: use
+    /// [`OidcClientService::build`]).
     pub fn new(
         deps: OidcClientServiceDeps,
         settings: OidcClientSettings,
     ) -> Result<Self, AuthError> {
         let registry = ProviderRegistry::from_settings(&settings)?;
-        Ok(Self::with_registry(deps, settings, registry))
+        Self::with_registry(deps, settings, registry)
     }
 
     /// Builds the service with an explicit registry (tests against fake
-    /// providers: [`ProviderRegistry::override_endpoints`]).
-    #[must_use]
+    /// providers: [`ProviderRegistry::override_endpoints`]). Fails fast
+    /// when `oidc_client.error_redirect` is not an allowed redirect target
+    /// (K-36).
     pub fn with_registry(
         deps: OidcClientServiceDeps,
         settings: OidcClientSettings,
         registry: ProviderRegistry,
-    ) -> Self {
+    ) -> Result<Self, AuthError> {
         authn_core::tls::install_crypto_provider();
-        if !deps.reservations.enforced() {
-            tracing::warn!(
-                "social login without e-mail address reservations (NoReservations): \
-                 a sign-up during an e-mail change's revert period can take the old \
-                 address (ACC-07); wire the authn-account adapter in production"
-            );
-        }
         let redirects = RedirectValidator::new(
             settings.redirect_allow_list.clone(),
             settings.public_base_url.clone(),
         );
+        let error_redirect =
+            match settings.config.error_redirect.as_deref() {
+                None => None,
+                Some(target) => {
+                    let absolute = absolute_redirect(&redirects, &settings.public_base_url, target)
+                        .map_err(|_| {
+                            AuthError::internal(
+                                "oidc_client.error_redirect is not an allowed redirect target \
+                             (same-origin path or protect.redirect_allow_list / \
+                             oidc_client.allowed_return_to entry)",
+                            )
+                        })?;
+                    Some(Url::parse(&absolute).map_err(|_| {
+                        AuthError::internal("oidc_client.error_redirect is not a URL")
+                    })?)
+                }
+            };
         let jwks = JwksCache::new(
             settings.config.jwks_cache_ttl,
             settings.jwks_refresh_min_interval,
         );
         let discovery = DiscoveryCache::new(settings.config.jwks_cache_ttl);
-        Self {
+        Ok(Self {
             inner: Arc::new(Inner {
                 deps,
                 settings,
@@ -195,8 +235,21 @@ impl OidcClientService {
                 redirects,
                 jwks,
                 discovery,
+                error_redirect,
             }),
-        }
+        })
+    }
+
+    /// Where to send the browser after a failed web callback (K-36):
+    /// the configured, start-up-validated target with `error=<code>`
+    /// appended (only the stable error code, never details). `None` when
+    /// not configured — the error is answered as JSON.
+    #[must_use]
+    pub fn error_redirect_location(&self, err: &AuthError) -> Option<String> {
+        let mut url = self.inner.error_redirect.clone()?;
+        url.query_pairs_mut()
+            .append_pair("error", err.code().code());
+        Some(url.into())
     }
 
     pub(crate) fn deps(&self) -> &OidcClientServiceDeps {
@@ -223,6 +276,11 @@ impl OidcClientService {
                 native: p.supports_native(),
             })
             .collect()
+    }
+
+    /// The provider whose storage id (`identities.provider`) is `id`.
+    pub(crate) fn provider_by_storage_id(&self, id: &str) -> Option<&Provider> {
+        self.inner.registry.by_storage_id(id)
     }
 
     pub(crate) fn provider(&self, slug: &str) -> Result<&Provider, AuthError> {
@@ -260,25 +318,18 @@ impl OidcClientService {
 
     /// Validates a `return_to` (PRT-10) and returns the absolute target.
     pub(crate) fn validate_return_to(&self, value: Option<&str>) -> Result<String, AuthError> {
-        let target = match value {
-            None | Some("") => RedirectTarget::Relative("/".to_owned()),
-            Some(v) => self.inner.redirects.validate(v)?,
-        };
-        let absolute = match target {
-            RedirectTarget::Absolute(url) => url,
-            RedirectTarget::Relative(path) => self
-                .inner
-                .settings
-                .public_base_url
-                .join(&path)
-                .map(|u| u.to_string())
-                .map_err(|_| AuthError::internal("cannot resolve return_to"))?,
-        };
-        // `oauth_states.return_to` holds at most 2048 characters.
-        if absolute.len() > authn_protect::web::MAX_REDIRECT_LEN {
-            return Err(AuthError::new(common_codes::protect::INVALID_REDIRECT));
+        match value {
+            None | Some("") => absolute_redirect(
+                &self.inner.redirects,
+                &self.inner.settings.public_base_url,
+                "/",
+            ),
+            Some(v) => absolute_redirect(
+                &self.inner.redirects,
+                &self.inner.settings.public_base_url,
+                v,
+            ),
         }
-        Ok(absolute)
     }
 
     /// `redirect_uri` of `provider`, built from `server.public_base_url`.
@@ -354,27 +405,48 @@ impl OidcClientService {
         verifier: &str,
     ) -> Result<(Option<String>, Option<ProviderTokens>), AuthError> {
         let redirect_uri = self.redirect_uri(provider)?;
-        let secret = match &provider.credential {
-            ClientCredential::Secret(s) => {
-                authn_core::secret::SensitiveString::new(s.expose_secret())
-            }
-            ClientCredential::Apple(apple) => apple.current(self.now())?,
-        };
-        let mut form: Vec<(&str, &str)> = vec![
+        let form: Vec<(&str, &str)> = vec![
             ("grant_type", "authorization_code"),
             ("code", code),
             ("redirect_uri", redirect_uri.as_str()),
             ("code_verifier", verifier),
         ];
+        self.token_request(provider, endpoints, &provider.client_id, form)
+            .await
+    }
+
+    /// The client secret of `provider` for `client_id` (Apple: an ES256 JWT
+    /// whose `sub` is that client id, K-35).
+    pub(crate) fn client_secret(
+        &self,
+        provider: &Provider,
+        client_id: &str,
+    ) -> Result<authn_core::secret::SensitiveString, AuthError> {
+        match &provider.credential {
+            ClientCredential::Secret(s) => {
+                Ok(authn_core::secret::SensitiveString::new(s.expose_secret()))
+            }
+            ClientCredential::Apple(apple) => apple.current_for(client_id, self.now()),
+        }
+    }
+
+    /// A token-endpoint request authenticated as `client_id`; returns the
+    /// ID token and the provider tokens of the answer.
+    pub(crate) async fn token_request(
+        &self,
+        provider: &Provider,
+        endpoints: &Endpoints,
+        client_id: &str,
+        mut form: Vec<(&str, &str)>,
+    ) -> Result<(Option<String>, Option<ProviderTokens>), AuthError> {
+        let secret = self.client_secret(provider, client_id)?;
         let basic = match endpoints.token_auth {
             TokenAuthMethod::ClientSecretPost => {
-                form.push(("client_id", &provider.client_id));
+                form.push(("client_id", client_id));
                 form.push(("client_secret", secret.expose()));
                 None
             }
-            TokenAuthMethod::ClientSecretBasic => {
-                Some((provider.client_id.as_str(), secret.expose()))
-            }
+            TokenAuthMethod::ClientSecretBasic => Some((client_id, secret.expose())),
         };
         let response = outbound::post_form(
             self.inner.deps.http.as_ref(),
@@ -468,6 +540,28 @@ impl OidcClientService {
     pub(crate) fn token() -> Result<OpaqueToken, AuthError> {
         Ok(OpaqueToken::generate()?)
     }
+}
+
+/// Validates a redirect target with authn-protect's validator (PRT-10:
+/// same-origin path or an exact allow-list entry) and returns it absolute
+/// (relative paths are joined to `server.public_base_url`).
+fn absolute_redirect(
+    redirects: &RedirectValidator,
+    base: &Url,
+    value: &str,
+) -> Result<String, AuthError> {
+    let absolute = match redirects.validate(value)? {
+        RedirectTarget::Absolute(url) => url,
+        RedirectTarget::Relative(path) => base
+            .join(&path)
+            .map(|u| u.to_string())
+            .map_err(|_| AuthError::internal("cannot resolve return_to"))?,
+    };
+    // `oauth_states.return_to` holds at most 2048 characters.
+    if absolute.len() > authn_protect::web::MAX_REDIRECT_LEN {
+        return Err(AuthError::new(common_codes::protect::INVALID_REDIRECT));
+    }
+    Ok(absolute)
 }
 
 /// `BASE64URL(SHA-256(verifier))` (RFC 7636 S256).

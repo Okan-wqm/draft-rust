@@ -56,6 +56,7 @@ pub use routes::{WebauthnApi, router};
 pub use service::{
     AuthenticatedPasskey, AuthenticationFinish, AuthenticationStart, AuthenticationTarget,
     RegistrationIntent, RegistrationOptionsRequest, RegistrationStart, RegistrationVerifyRequest,
+    VerifiedEnrollment,
 };
 pub use service::{
     AuthenticationPurpose, PasskeySummary, PasskeyUsage, WebauthnService, WebauthnServiceDeps,

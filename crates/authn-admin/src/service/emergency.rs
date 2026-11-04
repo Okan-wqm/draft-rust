@@ -1,9 +1,16 @@
 //! Emergency operations (ADM-06), audited as `admin.emergency_action`
 //! with the justification (ADM-08).
 //!
-//! * **Revoke every session of every user** — one transaction
-//!   (`SessionRevoker::revoke_everything`, reason `emergency`). The calling
-//!   admin's own session ends too.
+//! * **Revoke every session of every user** — one transaction, reason
+//!   `emergency`. By default the calling admin's own session is kept
+//!   (`SessionRevoker::revoke_everything_except`, K-10) so the operator can
+//!   continue the incident response; `include_own_session` revokes it too
+//!   (`revoke_everything`). The admin's impersonation sessions end either
+//!   way.
+//!
+//! Every emergency operation first passes the blast-radius limits of
+//! [`super::limits`] (K-08: per-admin and global budgets, cool-down between
+//! two runs of the same operation).
 //! * **Emergency signing key rotation** — `SigningKeyRepository::
 //!   emergency_rotate` revokes the active key and activates a fresh one in
 //!   the same transaction as the audit event; afterwards the in-process key
@@ -70,20 +77,28 @@ pub struct BulkResetOutcome {
 }
 
 impl AdminService {
-    /// Revokes every session of every user (ADM-06).
+    /// Revokes every session of every user (ADM-06). The caller's own
+    /// session survives unless `include_own_session` (K-10).
     pub async fn revoke_all_sessions(
         &self,
         caller: &AdminCaller,
         ctx: &RequestContext,
         reason: &Justification,
+        include_own_session: bool,
     ) -> Result<EmergencyOutcome, AuthError> {
         const ACTION: &str = "revoke_all_sessions";
+        self.check_emergency(caller, ctx, ACTION).await?;
         let mut tx = self.begin().await?;
-        let revoked = self
-            .deps()
-            .sessions
-            .revoke_everything(&mut tx, RevocationReason::Emergency)
-            .await?;
+        let sessions = &self.deps().sessions;
+        let revoked = if include_own_session {
+            sessions
+                .revoke_everything(&mut tx, RevocationReason::Emergency)
+                .await?
+        } else {
+            sessions
+                .revoke_everything_except(&mut tx, caller.session_id(), RevocationReason::Emergency)
+                .await?
+        };
         let event = self
             .record_action(
                 &mut tx,
@@ -95,6 +110,7 @@ impl AdminService {
                 Some(reason),
                 meta([
                     ("sessions_revoked", Value::from(revoked)),
+                    ("own_session_kept", Value::from(!include_own_session)),
                     ("priority", Value::from("high")),
                 ]),
             )
@@ -116,6 +132,7 @@ impl AdminService {
         reason: &Justification,
     ) -> Result<KeyRotationOutcome, AuthError> {
         const ACTION: &str = "rotate_signing_key";
+        self.check_emergency(caller, ctx, ACTION).await?;
         let mut tx = self.begin().await?;
         let key =
             SigningKeyRepository::emergency_rotate(&mut tx, &self.deps().envelopes, self.now())
@@ -163,6 +180,7 @@ impl AdminService {
             return Err(AuthError::new(codes::common::VALIDATION_FAILED)
                 .with_details(serde_json::json!({ "field": "changed_before" })));
         }
+        self.check_emergency(caller, ctx, ACTION).await?;
         let batch = i64::from(self.settings().bulk_batch_size.max(1));
         let mut cursor: Option<UserId> = None;
         let mut updated: u64 = 0;

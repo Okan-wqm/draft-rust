@@ -668,3 +668,177 @@ async fn ses_15_audited_impersonation_runs_in_the_callers_transaction(pool: PgPo
         Some(issued.session_id.to_string())
     );
 }
+
+/// ADM-04 / K-12: a web impersonation does not replace the admin's session
+/// cookie. The impersonation token comes back in the body (no
+/// `Set-Cookie`), authenticates only through `x-impersonation-session`, and
+/// ending it leaves the admin's own session valid.
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn adm_04_web_impersonation_keeps_the_admin_session_cookie(pool: PgPool) {
+    let h = Harness::new(pool).await;
+    let admin = h.user("admin@example.com").await;
+    h.make_admin(admin).await;
+    let target = h.user("alice@example.com").await;
+    let mut admin_login = h.request(admin, h.web_channel());
+    admin_login.amr = vec![AuthMethodRef::Hwk, AuthMethodRef::User, AuthMethodRef::Mfa];
+    let admin_web = common::web_of(h.establish(admin_login).await);
+    let target_own = h.web_login(target).await;
+
+    let issuer: &dyn SessionIssuer = &h.service;
+    let issued = issuer
+        .start_impersonation_with(
+            &h.ctx(),
+            impersonation(admin, target, true),
+            ClientKind::Web,
+            Some(admin_web.session_id),
+        )
+        .await
+        .unwrap();
+    let response = issuer.impersonation_response(issued);
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        response.headers().get(http::header::SET_COOKIE).is_none(),
+        "the admin's session cookie must not be replaced"
+    );
+    assert_eq!(
+        response.headers().get(http::header::CACHE_CONTROL).unwrap(),
+        "no-store"
+    );
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(body["status"], "impersonating");
+    assert_eq!(
+        body["token_header"],
+        authn_session::IMPERSONATION_SESSION_HEADER
+    );
+    let token = body["impersonation_token"].as_str().unwrap().to_owned();
+    let header = authn_session::IMPERSONATION_SESSION_HEADER;
+
+    // The header authenticates as the impersonated user — and wins over
+    // the admin cookie the same browser also sends.
+    for request in [
+        TestRequest::get("/v1/me").header(header, &token),
+        TestRequest::get("/v1/me")
+            .header(header, &token)
+            .cookie(SESSION_COOKIE, &admin_web.cookie),
+    ] {
+        let me: serde_json::Value = h.send(request).await.json();
+        assert_eq!(me["user_id"], target.to_string());
+        assert_eq!(me["session"]["impersonation"]["read_only"], true);
+    }
+    // The admin session is untouched.
+    let me: serde_json::Value = h
+        .send(TestRequest::get("/v1/me").cookie(SESSION_COOKIE, &admin_web.cookie))
+        .await
+        .json();
+    assert_eq!(me["user_id"], admin.to_string());
+    // Read-only is enforced on the header path too.
+    h.send(
+        TestRequest::post("/v1/probe")
+            .header(header, &token)
+            .json(&serde_json::json!({})),
+    )
+    .await
+    .assert_error(StatusCode::FORBIDDEN, "forbidden");
+    // A regular session token is never accepted in the header (no CSRF
+    // bypass for normal sessions), nor is garbage, nor two values, nor the
+    // header together with Authorization: all 401, no fall-back to cookies.
+    for request in [
+        TestRequest::get("/v1/me").header(header, &target_own.cookie),
+        TestRequest::get("/v1/me")
+            .header(header, "not-a-token")
+            .cookie(SESSION_COOKIE, &admin_web.cookie),
+        TestRequest::get("/v1/me")
+            .header(header, &token)
+            .header(header, &token),
+        TestRequest::get("/v1/me")
+            .header(header, &token)
+            .bearer("abc"),
+    ] {
+        h.send(request)
+            .await
+            .assert_error(StatusCode::UNAUTHORIZED, "unauthenticated");
+    }
+    // Ending the impersonation clears no cookie (no Clear-Site-Data) and
+    // the admin session is still valid afterwards.
+    let out = h
+        .send(TestRequest::post("/v1/logout").header(header, &token))
+        .await;
+    out.assert_status(StatusCode::NO_CONTENT);
+    assert!(out.set_cookies().is_empty());
+    assert!(out.header("clear-site-data").is_none());
+    h.send(TestRequest::get("/v1/me").header(header, &token))
+        .await
+        .assert_error(StatusCode::UNAUTHORIZED, "unauthenticated");
+    assert_eq!(me_status(&h, &admin_web.cookie).await, StatusCode::OK);
+    assert_eq!(me_status(&h, &target_own.cookie).await, StatusCode::OK);
+}
+
+/// ADM-04 / K-12 (audit): a **writable** web impersonation authenticated by
+/// the `x-impersonation-session` header must never get a `Set-Cookie` from
+/// an endpoint that rotates the session (`POST /v1/session/org`): the
+/// browser would replace the admin's own session cookie with the
+/// impersonation token. The rotated token comes back in the body instead
+/// and the old header token stops working.
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn adm_04_header_impersonation_rotation_never_sets_a_cookie(pool: PgPool) {
+    let h = Harness::new(pool).await;
+    let admin = h.user("admin@example.com").await;
+    h.make_admin(admin).await;
+    let target = h.user("alice@example.com").await;
+    let owner = h.user("owner@example.com").await;
+    let org = h.org(owner, "acme").await;
+    h.add_member(org, target).await;
+    let mut admin_login = h.request(admin, h.web_channel());
+    admin_login.amr = vec![AuthMethodRef::Hwk, AuthMethodRef::User, AuthMethodRef::Mfa];
+    let admin_web = common::web_of(h.establish(admin_login).await);
+
+    let issuer: &dyn SessionIssuer = &h.service;
+    let issued = issuer
+        .start_impersonation_with(
+            &h.ctx(),
+            impersonation(admin, target, false),
+            ClientKind::Web,
+            Some(admin_web.session_id),
+        )
+        .await
+        .unwrap();
+    let response = issuer.impersonation_response(issued);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let token = body["impersonation_token"].as_str().unwrap().to_owned();
+    let header = authn_session::IMPERSONATION_SESSION_HEADER;
+
+    let res = h
+        .send(
+            TestRequest::post("/v1/session/org")
+                .header(header, &token)
+                .cookie(SESSION_COOKIE, &admin_web.cookie)
+                .json(&serde_json::json!({ "org_id": org.to_string() })),
+        )
+        .await;
+    res.assert_status(StatusCode::OK);
+    assert!(
+        res.set_cookies().is_empty(),
+        "a header-authenticated impersonation must not set the session cookie"
+    );
+    let body: serde_json::Value = res.json();
+    assert_eq!(body["active_org_id"], org.to_string());
+    assert_eq!(body["token_header"], header);
+    let rotated = body["impersonation_token"].as_str().unwrap().to_owned();
+    assert_ne!(rotated, token);
+    // Old header token dead, new one works; the admin cookie is untouched.
+    h.send(TestRequest::get("/v1/me").header(header, &token))
+        .await
+        .assert_error(StatusCode::UNAUTHORIZED, "unauthenticated");
+    let me: serde_json::Value = h
+        .send(TestRequest::get("/v1/me").header(header, &rotated))
+        .await
+        .json();
+    assert_eq!(me["user_id"], target.to_string());
+    let me: serde_json::Value = h
+        .send(TestRequest::get("/v1/me").cookie(SESSION_COOKIE, &admin_web.cookie))
+        .await
+        .json();
+    assert_eq!(me["user_id"], admin.to_string());
+}

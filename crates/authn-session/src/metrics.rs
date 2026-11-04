@@ -24,6 +24,9 @@ pub const LOGINS: &str = "authn_logins_total";
 pub const LOGIN_FAILURES: &str = "authn_login_failures_total";
 /// Second-factor verifications at login, by factor and outcome.
 pub const LOGIN_FACTORS: &str = "authn_login_factor_total";
+/// Sessions established for break-glass accounts (ADM-05, K-05; alert on
+/// any increase).
+pub const BREAK_GLASS_LOGINS: &str = "authn_break_glass_logins_total";
 
 pub(crate) fn sessions_created(client: &'static str) {
     metrics::counter!(SESSIONS_CREATED, "client" => client).increment(1);
@@ -42,6 +45,10 @@ pub(crate) fn refresh(outcome: &'static str) {
 
 pub(crate) fn refresh_reuse() {
     metrics::counter!(REFRESH_REUSE).increment(1);
+}
+
+pub(crate) fn break_glass_login() {
+    metrics::counter!(BREAK_GLASS_LOGINS).increment(1);
 }
 
 pub(crate) fn csrf_rejected() {

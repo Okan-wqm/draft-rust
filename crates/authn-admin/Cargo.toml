@@ -11,6 +11,12 @@ readme = "README.md"
 [lints]
 workspace = true
 
+[features]
+# Break-glass passkey enrollment links (K-11) need WebAuthn registration;
+# authn-server enables it together with `authn-webauthn/passkey` (ARC-11).
+default = ["passkey"]
+passkey = ["authn-webauthn/passkey"]
+
 [dependencies]
 authn-core.workspace = true
 authn-crypto.workspace = true
@@ -50,3 +56,8 @@ http.workspace = true
 http-body-util.workspace = true
 serde_json.workspace = true
 proptest.workspace = true
+
+# Break-glass enrollment links (K-11) need the `passkey` feature.
+[[test]]
+name = "hardening"
+required-features = ["passkey"]

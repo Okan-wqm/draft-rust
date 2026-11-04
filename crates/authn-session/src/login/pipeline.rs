@@ -433,6 +433,10 @@ impl SessionService {
             UserRepository::record_login(&mut tx, user.id, now).await?;
             let event = self.login_succeeded_event(ctx, &established, auth.method);
             self.deps().audit.record_in_tx(&mut tx, event).await?;
+            if user.is_break_glass {
+                self.record_break_glass_login(&mut tx, ctx, &established, auth.method)
+                    .await?;
+            }
             authn_store::commit(tx).await?;
             self.after_login(
                 ctx,
@@ -486,6 +490,25 @@ impl SessionService {
         authn_store::commit(tx).await?;
         crate::metrics::login("challenge");
         Ok(PipelineOutcome::Challenge(Box::new(issued)))
+    }
+
+    /// Records `admin.break_glass_used` (high priority, `surface: login`)
+    /// in the establishing transaction (ADM-05, K-05).
+    pub(crate) async fn record_break_glass_login(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        ctx: &RequestContext,
+        established: &EstablishedSession,
+        method: LoginMethod,
+    ) -> Result<(), AuthError> {
+        crate::metrics::break_glass_login();
+        tracing::warn!(
+            user = %established.session.user_id,
+            session = %established.session.id,
+            "break-glass account signed in (high priority)"
+        );
+        let event = self.break_glass_login_event(ctx, established, method);
+        self.deps().audit.record_in_tx(conn, event).await
     }
 
     /// RSK-03 `high`: audit, notify the user (throttled) and answer

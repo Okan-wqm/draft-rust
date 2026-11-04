@@ -684,3 +684,116 @@ async fn pky_01_impersonation_never_registers_a_passkey(pool: PgPool) {
     // The refused attempt did not burn the user's own ceremony.
     verify(user).await.unwrap();
 }
+
+fn verify_request(
+    start: &authn_webauthn::RegistrationStart,
+    credential: &webauthn_rs::prelude::RegisterPublicKeyCredential,
+) -> authn_webauthn::RegistrationVerifyRequest {
+    authn_webauthn::RegistrationVerifyRequest {
+        ceremony_id: start.ceremony_id,
+        credential: serde_json::to_value(credential).unwrap(),
+        name: None,
+    }
+}
+
+/// PKY-01 / ADM-05 / K-11: a session-less enrollment ceremony is bound to
+/// the user and to the SHA-256 of the enrollment link token. A different
+/// hash, another user or the session-bound finish cannot consume it; the
+/// right hash verifies, and the passkey exists only once the caller's
+/// transaction commits.
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn pky_01_enrollment_ceremony_is_bound_to_the_link_hash(pool: PgPool) {
+    let h = Harness::new(pool).await;
+    let alice = h.account("alice@example.com").await;
+    let mallory = h.account("mallory@example.com").await;
+    let link = [7u8; 32];
+    let mut authenticator = SoftPasskey::new(true);
+
+    // Wrong hash / wrong user / the session-bound finish: burned, refused.
+    for attempt in 0..3 {
+        let start = h
+            .service
+            .start_enrollment_registration(&h.ctx(), alice.user, link)
+            .await
+            .unwrap();
+        let credential = create(&mut authenticator, &start.options, ORIGIN);
+        let err = match attempt {
+            0 => h
+                .service
+                .verify_enrollment_registration(
+                    &h.ctx(),
+                    alice.user,
+                    [8u8; 32],
+                    verify_request(&start, &credential),
+                )
+                .await
+                .unwrap_err(),
+            1 => h
+                .service
+                .verify_enrollment_registration(
+                    &h.ctx(),
+                    mallory.user,
+                    link,
+                    verify_request(&start, &credential),
+                )
+                .await
+                .unwrap_err(),
+            _ => h
+                .finish_registration(&h.fresh(alice), &start, &credential)
+                .await
+                .unwrap_err(),
+        };
+        assert_eq!(err.code(), codes::webauthn::PASSKEY_CEREMONY_INVALID);
+    }
+
+    let start = h
+        .service
+        .start_enrollment_registration(&h.ctx(), alice.user, link)
+        .await
+        .unwrap();
+    let credential = create(&mut authenticator, &start.options, ORIGIN);
+    let verified = h
+        .service
+        .verify_enrollment_registration(
+            &h.ctx(),
+            alice.user,
+            link,
+            verify_request(&start, &credential),
+        )
+        .await
+        .unwrap();
+    assert_eq!(verified.user_id(), alice.user);
+    // Single use: the same ceremony cannot be verified twice.
+    let err = h
+        .service
+        .verify_enrollment_registration(
+            &h.ctx(),
+            alice.user,
+            link,
+            verify_request(&start, &credential),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), codes::webauthn::PASSKEY_CEREMONY_INVALID);
+    // Stored in (and committed with) the caller's transaction.
+    let mut tx = h.pool.begin().await.unwrap();
+    let summary = h
+        .service
+        .store_enrollment_in_tx(&mut tx, &h.ctx(), verified)
+        .await
+        .unwrap();
+    assert_eq!(summary.usage, PasskeyUsage::Both);
+    tx.commit().await.unwrap();
+    let list = h.service.list_passkeys(&h.fresh(alice)).await.unwrap();
+    assert_eq!(list.len(), 1);
+    let registered = h.ports.audit.of_kind(SecurityEventKind::PasskeyRegistered);
+    let last = registered.last().unwrap();
+    assert_eq!(last.outcome, EventOutcome::Success);
+    assert_eq!(last.metadata["enrollment"], "link");
+    assert_eq!(last.actor, authn_core::ports::Actor::User(alice.user));
+    assert!(h.ports.notifier.recorded().iter().any(|n| matches!(
+        n.kind,
+        NotificationKind::MfaFactorAdded { .. }
+    ) && n.recipient.user_id
+        == Some(alice.user)));
+}

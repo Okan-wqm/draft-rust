@@ -29,3 +29,19 @@ pub(crate) fn login(provider: &str, outcome: &'static str) {
 pub(crate) fn account_created(provider: &str) {
     metrics::counter!(ACCOUNTS_CREATED, "provider" => provider_label(provider)).increment(1);
 }
+
+/// Provider token revocations (K-35), by `provider` and `outcome`
+/// (`revoked`, `already_invalid`, `retry`, `abandoned`, `unreadable`).
+pub const TOKEN_REVOCATIONS: &str = "authn_social_token_revocations_total";
+/// JWKS downloads that failed (K-16), by `host`-independent label
+/// `outcome` (`failed`, `backoff` = refused without a request).
+pub const JWKS_FAILURES: &str = "authn_social_jwks_failures_total";
+
+pub(crate) fn token_revocation(provider: &str, outcome: &'static str) {
+    metrics::counter!(TOKEN_REVOCATIONS, "provider" => provider_label(provider), "outcome" => outcome)
+        .increment(1);
+}
+
+pub(crate) fn jwks_failure(outcome: &'static str) {
+    metrics::counter!(JWKS_FAILURES, "outcome" => outcome).increment(1);
+}

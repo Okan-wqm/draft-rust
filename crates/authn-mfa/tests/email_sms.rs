@@ -271,7 +271,7 @@ async fn mfa_06_numbers_are_strict_e164_from_allowed_countries(pool: sqlx::PgPoo
         .await
         .unwrap_err();
     assert_eq!(err.code(), codes::mfa::MFA_PHONE_COUNTRY_NOT_ALLOWED);
-    assert!(h.notifier.sms().is_empty(), "nothing was sent");
+    assert!(h.notifier.recorded_sms().is_empty(), "nothing was sent");
     assert_eq!(
         h.count("SELECT count(*) FROM mfa_factors WHERE user_id = $1", user)
             .await,
@@ -364,7 +364,7 @@ async fn mfa_06_pumping_protection_per_number_ip_and_global_budget(pool: sqlx::P
     .unwrap_err();
     assert_eq!(err.code(), codes::common::RATE_LIMITED);
     assert!(err.retry_after().is_some());
-    assert_eq!(h.notifier.sms().len(), 5);
+    assert_eq!(h.notifier.recorded_sms().len(), 5);
     // Refused requests left no pending factor behind.
     assert_eq!(
         h.count(
@@ -492,5 +492,5 @@ async fn mfa_06_refused_enrollment_consumes_no_sms_budget(pool: sqlx::PgPool) {
     ] {
         assert_eq!(limiter.used(&key), 0, "{key:?}");
     }
-    assert!(h.notifier.sms().is_empty());
+    assert!(h.notifier.recorded_sms().is_empty());
 }

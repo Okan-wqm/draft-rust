@@ -13,15 +13,29 @@
 //!   the address always comes from the verified ID token.
 //! * Private relay addresses (`…@privaterelay.appleid.com`) are ordinary
 //!   verified addresses; `is_private_email` is kept for the identity.
+//! * The **private key** comes from exactly one of `private_key_pem`,
+//!   `private_key_file` or `private_key_ciphertext` (K-34): the latter is
+//!   an authn-crypto envelope sealed with the `[crypto]` KEK for the fixed
+//!   context [`private_key_context`], decrypted once at start-up
+//!   ([`resolve_private_key`], called by `OidcClientService::build`) and
+//!   produced with [`seal_private_key`]. Key material never appears in
+//!   `Debug` output, logs or error messages.
+//! * Client secrets are signed per **client id** (K-35): the web flow uses
+//!   the services id, a native authorization-code exchange or a token
+//!   revocation for a native token uses the app's bundle id (Apple checks
+//!   that `sub` equals the `client_id` of the request). Only configured
+//!   client ids can be signed for.
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use authn_core::config::oidc_client::AppleProvider;
 use authn_core::error::AuthError;
-use authn_core::secret::{ExposeSecret, SensitiveString};
+use authn_core::secret::{ExposeSecret, SecretString, SensitiveString};
+use authn_crypto::envelope::{EnvelopeCipher, EnvelopeContext};
 use base64::Engine as _;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use p256::ecdsa::signature::Signer as _;
 use p256::ecdsa::{Signature, SigningKey};
 use p256::pkcs8::DecodePrivateKey as _;
@@ -44,9 +58,13 @@ struct Inner {
     key: SigningKey,
     team_id: String,
     key_id: String,
+    /// The web services id (`client_id` of the browser flow).
     client_id: String,
+    /// Every client id a secret may be signed for: the services id and the
+    /// native bundle ids.
+    client_ids: Vec<String>,
     ttl: Duration,
-    cache: Mutex<Option<Cached>>,
+    cache: Mutex<HashMap<String, Cached>>,
 }
 
 /// Generates and caches Apple `client_secret` JWTs. Cheap to clone.
@@ -74,25 +92,49 @@ impl AppleClientSecret {
     /// Parses the configured PKCS#8 PEM key — inline
     /// (`private_key_pem`) or from `private_key_file` (SOC-07) — and fails
     /// fast at start-up. The file's content and path never appear in errors.
+    ///
+    /// An envelope-encrypted key (`private_key_ciphertext`) must have been
+    /// decrypted first ([`resolve_private_key`]); otherwise this fails.
     pub fn from_config(config: &AppleProvider, ttl: Duration) -> Result<Self, AuthError> {
-        let pem = match (&config.private_key_pem, &config.private_key_file) {
-            (Some(inline), None) => Zeroizing::new(inline.expose_secret().to_owned()),
-            (None, Some(path)) => Zeroizing::new(std::fs::read_to_string(path).map_err(|_| {
-                AuthError::internal("oidc_client.apple.private_key_file could not be read")
-            })?),
+        let pem = match (
+            &config.private_key_pem,
+            &config.private_key_file,
+            &config.private_key_ciphertext,
+        ) {
+            (Some(inline), None, None) => Zeroizing::new(inline.expose_secret().to_owned()),
+            (None, Some(path), None) => {
+                Zeroizing::new(std::fs::read_to_string(path).map_err(|_| {
+                    AuthError::internal("oidc_client.apple.private_key_file could not be read")
+                })?)
+            }
+            (None, None, Some(_)) => {
+                return Err(AuthError::internal(
+                    "oidc_client.apple.private_key_ciphertext must be decrypted at start-up \
+                     (OidcClientService::build)",
+                ));
+            }
             _ => {
                 return Err(AuthError::internal(
-                    "exactly one of oidc_client.apple.private_key_pem and private_key_file must be set",
+                    "exactly one of oidc_client.apple.private_key_pem, private_key_file and \
+                     private_key_ciphertext must be set",
                 ));
             }
         };
-        Self::new(
+        let mut secret = Self::new(
             &pem,
             &config.team_id,
             &config.key_id,
             &config.client_id,
             ttl,
-        )
+        )?;
+        if let Some(inner) = Arc::get_mut(&mut secret.inner) {
+            for id in &config.native_client_ids {
+                if !inner.client_ids.contains(id) {
+                    inner.client_ids.push(id.clone());
+                }
+            }
+        }
+        Ok(secret)
     }
 
     /// A generator from explicit values.
@@ -117,37 +159,56 @@ impl AppleClientSecret {
                 team_id: team_id.to_owned(),
                 key_id: key_id.to_owned(),
                 client_id: client_id.to_owned(),
+                client_ids: vec![client_id.to_owned()],
                 ttl,
-                cache: Mutex::new(None),
+                cache: Mutex::new(HashMap::new()),
             }),
         })
     }
 
-    /// The current client secret; a new one is signed when none is cached
-    /// or less than a quarter of the lifetime is left.
+    /// The current client secret of the web services id; a new one is
+    /// signed when none is cached or less than a quarter of the lifetime is
+    /// left.
     pub fn current(&self, now: OffsetDateTime) -> Result<SensitiveString, AuthError> {
+        self.current_for(&self.inner.client_id, now)
+    }
+
+    /// The current client secret for `client_id` (the services id or a
+    /// configured native bundle id; anything else is refused).
+    pub fn current_for(
+        &self,
+        client_id: &str,
+        now: OffsetDateTime,
+    ) -> Result<SensitiveString, AuthError> {
         let inner = &self.inner;
+        if !inner.client_ids.iter().any(|id| id == client_id) {
+            return Err(AuthError::internal("apple client id is not configured"));
+        }
         let refresh_margin = inner.ttl / 4;
         let mut cache = inner
             .cache
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(cached) = cache.as_ref()
+        if let Some(cached) = cache.get(client_id)
             && cached.expires_at - now > refresh_margin
         {
             return Ok(cached.jwt.clone());
         }
         let expires_at = now + inner.ttl;
-        let jwt = self.sign(now, expires_at)?;
-        *cache = Some(Cached {
-            jwt: jwt.clone(),
-            expires_at,
-        });
+        let jwt = self.sign(client_id, now, expires_at)?;
+        cache.insert(
+            client_id.to_owned(),
+            Cached {
+                jwt: jwt.clone(),
+                expires_at,
+            },
+        );
         Ok(jwt)
     }
 
     fn sign(
         &self,
+        client_id: &str,
         now: OffsetDateTime,
         expires_at: OffsetDateTime,
     ) -> Result<SensitiveString, AuthError> {
@@ -158,7 +219,7 @@ impl AppleClientSecret {
             "iat": now.unix_timestamp(),
             "exp": expires_at.unix_timestamp(),
             "aud": APPLE_AUDIENCE,
-            "sub": inner.client_id,
+            "sub": client_id,
         });
         let signing_input = format!("{}.{}", b64_json(&header)?, b64_json(&claims)?);
         let signature: Signature = inner
@@ -168,6 +229,66 @@ impl AppleClientSecret {
         let encoded = URL_SAFE_NO_PAD.encode(signature.to_bytes());
         Ok(SensitiveString::new(format!("{signing_input}.{encoded}")))
     }
+}
+
+/// Envelope context (AAD) of `oidc_client.apple.private_key_ciphertext`:
+/// fixed, so the ciphertext cannot be swapped with any other envelope of
+/// the system (a stored token, a TOTP secret…) and decrypt.
+pub fn private_key_context() -> Result<EnvelopeContext, AuthError> {
+    Ok(EnvelopeContext::new(
+        "oidc_client",
+        "apple_private_key",
+        "apple",
+    )?)
+}
+
+/// Seals a PKCS#8 PEM Apple key for `oidc_client.apple.private_key_ciphertext`
+/// (standard base64 of the envelope) with the current `[crypto]` KEK. For
+/// operator tooling (authn-server CLI); the key is validated first.
+pub async fn seal_private_key(
+    envelopes: &EnvelopeCipher,
+    pem: &SecretString,
+) -> Result<SecretString, AuthError> {
+    SigningKey::from_pkcs8_pem(pem.expose_secret().trim())
+        .map_err(|_| AuthError::internal("apple private key is not a PKCS#8 P-256 key"))?;
+    let sealed = envelopes
+        .seal(pem.expose_secret().as_bytes(), &private_key_context()?)
+        .await?;
+    Ok(SecretString::from(STANDARD.encode(sealed)))
+}
+
+/// Replaces `private_key_ciphertext` by the decrypted PEM (K-34). Called
+/// once at start-up; a no-op for the other key sources. Failures name the
+/// setting, never its content.
+pub async fn resolve_private_key(
+    config: &mut AppleProvider,
+    envelopes: &EnvelopeCipher,
+) -> Result<(), AuthError> {
+    let Some(ciphertext) = config.private_key_ciphertext.take() else {
+        return Ok(());
+    };
+    if config.private_key_pem.is_some() || config.private_key_file.is_some() {
+        return Err(AuthError::internal(
+            "exactly one of oidc_client.apple.private_key_pem, private_key_file and \
+             private_key_ciphertext must be set",
+        ));
+    }
+    let envelope = Zeroizing::new(STANDARD.decode(ciphertext.expose_secret().trim()).map_err(
+        |_| AuthError::internal("oidc_client.apple.private_key_ciphertext is not base64"),
+    )?);
+    let opened = envelopes
+        .open(&envelope, &private_key_context()?)
+        .await
+        .map_err(|_| {
+            AuthError::internal(
+                "oidc_client.apple.private_key_ciphertext could not be decrypted with the \
+                 configured KEKs",
+            )
+        })?;
+    let pem = std::str::from_utf8(opened.expose())
+        .map_err(|_| AuthError::internal("oidc_client.apple.private_key_ciphertext is corrupt"))?;
+    config.private_key_pem = Some(SecretString::from(pem.to_owned()));
+    Ok(())
 }
 
 /// The display name from Apple's first-authorization `user` field, if the
@@ -214,7 +335,9 @@ mod tests {
             key_id: "KEYID12345".to_owned(),
             private_key_pem: pem.map(|p| authn_core::secret::SecretString::from(p.to_owned())),
             private_key_file: file,
-            native_client_ids: Vec::new(),
+            private_key_ciphertext: None,
+            native_client_ids: vec!["com.example.app".to_owned()],
+            revoke_tokens_on_deletion: true,
         }
     }
 
@@ -274,6 +397,84 @@ mod tests {
         verifying
             .verify(format!("{}.{}", parts[0], parts[1]).as_bytes(), &sig)
             .unwrap();
+    }
+
+    #[test]
+    fn soc_07_client_secret_is_signed_per_configured_client_id() {
+        let secret = AppleClientSecret::from_config(
+            &apple_config(Some(TEST_EC_KEY), None),
+            Duration::from_secs(3600),
+        )
+        .unwrap();
+        let now = OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap();
+        let web = secret.current(now).unwrap();
+        let native = secret.current_for("com.example.app", now).unwrap();
+        let sub =
+            |jwt: &SensitiveString| decode(jwt.expose().split('.').nth(1).unwrap())["sub"].clone();
+        assert_eq!(sub(&web), "com.example.web");
+        assert_eq!(sub(&native), "com.example.app");
+        assert!(secret.current_for("com.attacker.app", now).is_err());
+    }
+
+    async fn cipher() -> EnvelopeCipher {
+        let config = authn_testkit::config::TestConfigBuilder::new().build();
+        authn_crypto::CryptoServices::from_config(&config.crypto)
+            .await
+            .unwrap()
+            .envelopes
+    }
+
+    #[tokio::test]
+    async fn soc_07_envelope_encrypted_private_key_round_trip() {
+        let envelopes = cipher().await;
+        let sealed = seal_private_key(&envelopes, &SecretString::from(TEST_EC_KEY.to_owned()))
+            .await
+            .unwrap();
+        assert!(!sealed.expose_secret().contains("PRIVATE KEY"));
+        let mut config = apple_config(None, None);
+        config.private_key_ciphertext = Some(sealed.clone());
+        // Not decrypted yet: refused (fail fast), without the value.
+        let err = AppleClientSecret::from_config(&config, Duration::from_secs(3600)).unwrap_err();
+        assert!(!format!("{err:?}").contains(sealed.expose_secret()));
+        resolve_private_key(&mut config, &envelopes).await.unwrap();
+        assert!(config.private_key_ciphertext.is_none());
+        assert!(AppleClientSecret::from_config(&config, Duration::from_secs(3600)).is_ok());
+        // Debug output never shows the key material.
+        let debug = format!("{config:?}");
+        assert!(!debug.contains("PRIVATE KEY"), "{debug}");
+    }
+
+    #[tokio::test]
+    async fn soc_07_tampered_or_foreign_ciphertext_is_refused_without_detail() {
+        let envelopes = cipher().await;
+        // Sealed for another context (e.g. a stored token): cannot be
+        // swapped in.
+        let foreign = envelopes
+            .seal(
+                TEST_EC_KEY.as_bytes(),
+                &EnvelopeContext::new("identities", "refresh_token_ciphertext", "x").unwrap(),
+            )
+            .await
+            .unwrap();
+        for value in [
+            STANDARD.encode(&foreign),
+            "not base64 !!".to_owned(),
+            STANDARD.encode(b"garbage"),
+        ] {
+            let mut config = apple_config(None, None);
+            config.private_key_ciphertext = Some(SecretString::from(value.clone()));
+            let err = resolve_private_key(&mut config, &envelopes)
+                .await
+                .unwrap_err();
+            let text = format!("{err:?} {err}");
+            assert!(!text.contains(&value), "{text}");
+            assert!(!text.contains("PRIVATE KEY"), "{text}");
+            assert!(config.private_key_pem.is_none());
+        }
+        // Another source at the same time is refused.
+        let mut both = apple_config(Some(TEST_EC_KEY), None);
+        both.private_key_ciphertext = Some(SecretString::from("x".to_owned()));
+        assert!(resolve_private_key(&mut both, &envelopes).await.is_err());
     }
 
     #[test]

@@ -15,7 +15,8 @@
 //!   also clears the stored web token hash.
 //! * Domain events (`session.revoked`, AUD-07 webhooks) are published only
 //!   for sessions with an active organization (webhooks are per
-//!   organization), and not for [`SessionRevoker::revoke_everything`].
+//!   organization), and not for [`SessionRevoker::revoke_everything`] /
+//!   [`SessionRevoker::revoke_everything_except`].
 
 use std::sync::Arc;
 
@@ -101,7 +102,7 @@ impl PgSessionRevoker {
                 .revoke_trusted_devices_in_tx(&mut *conn, user, reason)
                 .await?;
         }
-        if !matches!(target, Target::Everything) {
+        if !matches!(target, Target::Everything | Target::EverythingExcept(_)) {
             for session in revoked.iter().filter(|s| s.active_org_id.is_some()) {
                 let mut event = DomainEvent::new(
                     DomainEventKind::SessionRevoked,
@@ -170,6 +171,7 @@ fn pending_logins_ended_by(
         Target::User(user) => Some((Some(user), None)),
         Target::UserExcept(user, keep) => Some((Some(user), Some(keep))),
         Target::Everything => Some((None, None)),
+        Target::EverythingExcept(keep) => Some((None, Some(keep))),
         Target::One(_) | Target::UserInOrg(..) | Target::Org(_) => None,
     }
 }
@@ -178,7 +180,7 @@ fn subject_of(target: Target, revoked: &[Revoked]) -> Option<UserId> {
     match target {
         Target::User(user) | Target::UserExcept(user, _) | Target::UserInOrg(user, _) => Some(user),
         Target::One(_) => revoked.first().map(|r| r.user_id),
-        Target::Org(_) | Target::Everything => None,
+        Target::Org(_) | Target::Everything | Target::EverythingExcept(_) => None,
     }
 }
 
@@ -268,6 +270,18 @@ impl SessionRevoker for PgSessionRevoker {
     ) -> Result<u64, AuthError> {
         let revoked = self
             .revoke(conn, Target::Everything, reason, None, None)
+            .await?;
+        Ok(count(&revoked))
+    }
+
+    async fn revoke_everything_except(
+        &self,
+        conn: &mut PgConnection,
+        keep: SessionId,
+        reason: RevocationReason,
+    ) -> Result<u64, AuthError> {
+        let revoked = self
+            .revoke(conn, Target::EverythingExcept(keep), reason, None, None)
             .await?;
         Ok(count(&revoked))
     }

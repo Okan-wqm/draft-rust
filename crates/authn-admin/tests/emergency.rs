@@ -39,6 +39,7 @@ async fn adm_06_revoke_all_sessions_requires_confirmation_and_is_audited(pool: s
             TestRequest::post(uri).json(&json!({
                 "reason": "Session store leaked (INC-7)",
                 "confirm": "revoke_all_sessions",
+                "include_own_session": true,
             })),
         )
         .await;
@@ -216,7 +217,22 @@ async fn adm_06_force_password_change_before_date_in_batches(pool: sqlx::PgPool)
         Some("Hash database leaked (INC-9)")
     );
 
-    // Re-running finds nothing left to do.
+    // Re-running at once hits the cool-down (K-08) …
+    let rerun = json!({
+        "reason": "again",
+        "confirm": "force_password_change",
+        "changed_before": cutoff.format(&Rfc3339).unwrap(),
+        "revoke_sessions": false,
+    });
+    h.send(
+        &admin,
+        TestRequest::post("/v1/admin/emergency/force-password-change").json(&rerun),
+    )
+    .await
+    .assert_error(StatusCode::TOO_MANY_REQUESTS, "rate_limited");
+    // … and after it finds nothing left to do.
+    h.advance(Duration::from_secs(5 * 60 + 1));
+    admin.auth_time = Some(h.now());
     let res = h
         .send(
             &admin,

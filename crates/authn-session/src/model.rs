@@ -259,6 +259,10 @@ pub struct CurrentSession {
     /// Set by the middleware when this state-changing cookie request passed
     /// the CSRF checks (origin + session-bound token).
     pub(crate) csrf_verified: bool,
+    /// Hash of the token presented in the `x-impersonation-session` header
+    /// (K-12) when that header authenticated the request; `None` otherwise.
+    /// Such a session must never be answered with a `Set-Cookie`.
+    pub(crate) impersonation_header_hash: Option<[u8; 32]>,
 }
 
 impl std::fmt::Debug for CurrentSession {
@@ -294,6 +298,14 @@ impl CurrentSession {
     #[must_use]
     pub fn csrf_verified(&self) -> bool {
         self.csrf_verified
+    }
+
+    /// Whether the request was authenticated by the web impersonation
+    /// header `x-impersonation-session` (ADM-04, K-12). Responses to such a
+    /// request must carry a rotated token in the body, never in a cookie.
+    #[must_use]
+    pub fn is_impersonation_header(&self) -> bool {
+        self.impersonation_header_hash.is_some()
     }
 }
 

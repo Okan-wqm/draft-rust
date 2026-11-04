@@ -41,8 +41,10 @@ Dalga B. `authn-core`, `authn-crypto`, `authn-store` ve tüm Dalga A crate'lerin
 |-----|----------|
 | `SessionService::new(SessionServiceDeps, SessionSettings)` | Servis (ucuz kopyalanır, `FromRef<AppState>`). Bağımlılıklar: `pool`, `clock`, `keys` (`CryptoServices::keys`), `envelopes`, `rate_limiter`, `audit`, `events`, `notifier`, `passwords`, `mfa`, `webauthn`, `orgs`, `accounts` |
 | `SessionSettings::from_app_config(&AppConfig)` | `[session]` + `server.public_base_url` (issuer, izinli origin), `crypto.jwt_leeway`, `crypto.signing_keys.jwks_cache_ttl`, `admin.impersonation_max_ttl`, `oidc_client.trust_provider_mfa`, `webauthn.ceremony_ttl` |
-| `PgSessionRevoker::new(clock, audit, events, mfa)` | `SessionRevoker` port uygulaması (SES-15) |
-| `impl SessionIssuer for SessionService` | `complete_primary_authentication`, `login_response`, `start_impersonation`, `start_impersonation_with`, `start_impersonation_audited` (ADM-04, ADM-08; wave 1, K-06: çağıranın transaction'ında, çağıranın verdiği olay kimliğiyle `admin.impersonation_started`; commit çağıranın) |
+| `PgSessionRevoker::new(clock, audit, events, mfa)` | `SessionRevoker` port uygulaması (SES-15); wave 2B: `revoke_everything_except(conn, keep, reason)` (K-10, acil iptalde çağıran adminin oturumu korunur) |
+| `is_session_active_in(conn, session, user, now) -> bool` | Wave 2B (K-03 desteği): oturum canlı mı, `user`'a mı ait, impersonation değil mi, sahibi giriş yapabilir mi — **yalnızca verilen bağlantıyla** (havuz kullanılmaz). authn-oidc-client'ın `SessionLiveness` kancası için sunucu adaptörü bunu çağırır |
+| `IMPERSONATION_SESSION_HEADER` (`x-impersonation-session`), `SessionService::authenticate_impersonation_token` | Wave 2B (K-12): web impersonation token'ı çerez yerine bu başlıkla |
+| `impl SessionIssuer for SessionService` | `complete_primary_authentication`, `login_response`, `start_impersonation`, `start_impersonation_with`, `start_impersonation_audited` (ADM-04, ADM-08; wave 1, K-06: çağıranın transaction'ında, çağıranın verdiği olay kimliğiyle `admin.impersonation_started`; commit çağıranın); `impersonation_response` (wave 2B, K-12: port varsayılan gövdesi — **`Set-Cookie` yok**, web token'ı gövdede `impersonation_token`) |
 | `authenticate` | Kimlik doğrulama ara katmanı (`from_fn_with_state(service, authenticate)`) |
 | `router::<S>()`, `SessionApi` | Uç noktalar ve OpenAPI |
 | `SessionDataExporter` | ACC-10 dışa aktarma bölümü `sessions` |
@@ -132,6 +134,8 @@ Yeni bağımlılıklar (`SessionServiceDeps`): `protection: LoginProtection`, `r
 
 `authenticate`, OPS-02 sırasındaki (8) yuvasıdır ve `authn_org::api_key_middleware`'in **yerine** kurulur (ikisi birlikte kurulmaz: org ara katmanı principal taşıyan isteği reddeder). Tam olarak bir kimlik bilgisi karar verir:
 
+0. **Web impersonation başlığı** `x-impersonation-session` (wave 2B, K-12; önce bakılır): yalnızca canlı bir **impersonation** web oturumunun token'ı kabul edilir — normal oturum token'ı bu başlıkla `401` (çerezin CSRF korumasını atlatmak için kullanılamaz). Tek değer, `Authorization` ile birlikte değil; geçersizse `401` ve adminin çerezine **geri düşülmez** (aynı tarayıcının admin çerezi yok sayılır). CSRF token'ı gerekmez (özel başlık tarayıcıca siteler arası eklenmez). `POST /v1/logout` bu başlıkla yalnızca impersonation oturumunu bitirir; çerez silinmez, `Clear-Site-Data` gönderilmez — adminin kendi oturumu yaşar.
+
 1. **API anahtarı** (`Authorization: Bearer ak_…` / `X-API-Key`): yalnızca `authn_org::middleware::is_api_key_path` yollarında (`/v1/orgs/{org_id}[/…]`) `Principal` olur; diğer yollarda principal üretilmez (introspection anahtarı kendisi doğrular), çerez de okunmaz. Birden fazla/çelişen başlık `401`.
 2. **Bearer access token**: imza/claim doğrulaması (CRY-09) + varsayılan olarak oturumun hâlâ etkin olması, sahibin aynı olması ve aktif organizasyonun token'daki ile eşleşmesi (organizasyon değiştikten sonra eski token reddedilir). Hata: `401` + `WWW-Authenticate: Bearer error="invalid_token"`. `Authorization` varsa çerez yok sayılır.
 3. **Oturum çerezi**: durum değiştiren her yöntemde CSRF (origin + senkronize token) burada kontrol edilir; başarısızsa `403 csrf_failed`, handler çalışmaz. Geçersiz çerez yalnızca principal üretmez (çerez silinmez: eşzamanlı rotasyonun yeni çerezini ezmemek için).
@@ -198,6 +202,7 @@ Düzeltilen bulgular (her biri, düzeltme olmadan başarısız olan bir regresyo
 | düşük | Yazılabilir impersonation, kullanıcının diğer oturumlarını tek tek kapatabiliyordu (toplu karşılıkları yasakken) | Impersonation yalnızca kendi oturumunu kapatır | `issuer::ses_11_impersonation_cannot_end_the_users_other_sessions` |
 | düşük | `VerifiedOrg` kullanıcıya bağlı değildi: giriş akışında yanlış kullanıcıya verilen kanıt, üye olmayan birine organizasyonu etkinleştirebilirdi | `VerifiedOrg.user_id`; `establish` uyuşmazlığı reddeder | `org_switch::ses_17_verified_org_is_bound_to_the_user_it_was_verified_for` |
 | düşük | `record_challenge_failure`, çağıran `open_challenge` kilidini tutarken sonsuza kadar bekliyordu (havuz tükenmesi) | `SET LOCAL lock_timeout = '5s'` + belgelenmiş çağrı sırası | `web_session::ses_03_challenge_failure_never_waits_forever_on_the_callers_lock` |
+| düşük | **Wave 2B denetimi (K-12 gerilemesi):** `x-impersonation-session` başlığıyla doğrulanan yazılabilir web impersonation'ı `POST /v1/session/org` çağırınca yanıt döndürülen yeni token'ı `Set-Cookie` ile veriyordu; tarayıcı adminin oturum çerezini impersonation token'ıyla değiştiriyordu, başlıktaki token da ölüyordu. Ayrıca başlık yolunda eşzamanlı rotasyon kontrolü (sunulan token hâlâ geçerli mi) atlanıyordu | `CurrentSession::is_impersonation_header`; başlıkla gelen oturumun rotasyonu yeni token'ı gövdede (`impersonation_token`, `token_header`) döner, hiç çerez yazmaz; rotasyon kontrolü başlık token'ının hash'iyle de yapılır | `issuer::adm_04_header_impersonation_rotation_never_sets_a_cookie` |
 | düşük | Organizasyon değiştirmede izinli giriş yöntemi kontrolü, oturum kontrolü kapalı bearer isteğinde token'dan kurulan sahte kayda (giriş yöntemi yok) bakıyordu | Kontrol kilitli `sessions` satırıyla yapılır | `org_switch::ses_17_login_method_policy_reads_the_stored_session_without_session_check` |
 
 ### Kabul edilen riskler / bilinen sınırlamalar
@@ -215,6 +220,8 @@ Düzeltilen bulgular (her biri, düzeltme olmadan başarısız olan bir regresyo
 - [low] İmza anahtarı önbelleği (`signing_key_cache_ttl`, 30 sn) nedeniyle acil iptal edilen anahtarın token'ları diğer instance'larda en fazla bu süre doğrulanabilir (oturum kontrolü açıkken iptal edilmiş oturumlar yine reddedilir).
 - [info] Kullanıcı başına kullanıcı ajanından türetilen cihaz adı (`authn_protect::risk::useragent::describe`) yalnızca sabit sözlükten oluşur.
 - [info] `SessionIssuer::complete_primary_authentication` şimdilik risk değerlendirmesi ve güvenilir cihaz yapmaz; giriş ajanı ekler (yukarıda).
+- ~~Break-glass hesabıyla giriş yüksek öncelikli olay üretmiyor~~ — **kapatıldı (wave 2B, K-05):** `is_break_glass` hesabına oturum kuran her giriş (boru hattı ve challenge tamamlama; federe giriş dahil) aynı transaction'da `admin.break_glass_used` (`priority: high`, `surface: login`, `method`, `client`) yazar ve `authn_break_glass_logins_total` metriğini artırır. Test: `passkey_login::adm_05_break_glass_login_emits_high_priority_event`.
+- [info] Web impersonation token'ı (K-12) admin konsolunun belleğinde tutulur ve başlıkla gönderilir: native token'larla aynı XSS maruziyeti; `HttpOnly` çerez koruması yoktur (bilinçli: çerez seçeneği adminin oturum çerezini ezerdi).
 
 ## Server'ın bağlaması gerekenler
 
@@ -235,6 +242,7 @@ let sessions = SessionService::new(SessionServiceDeps { pool, clock, keys: crypt
 - Açılış: `SigningKeyRepository::rotate_if_due` (ilk anahtar) — anahtar yoksa token basılamaz (`service_unavailable`); acil rotasyondan sonra aynı süreçte `sessions.invalidate_signing_keys()`.
 - Arka plan işi (OPS-06): `sessions.purge_expired(limit)` (biten oturumlar 30 gün sonra, challenge'lar 1 gün sonra, tolerans ardılları).
 - Dışa aktarma (ACC-10): `AccountServiceDeps.exporters`'a `Arc::new(authn_session::SessionDataExporter)`.
+- Wave 2B: CORS izinli başlıklarına `x-impersonation-session` (admin konsolu ayrı origin'deyse). `AccountAwareSessionRevoker` `revoke_everything_except`'i iletmelidir (wave 2A'da eklendi). authn-oidc-client `SessionLiveness` adaptörü → `authn_session::is_session_active_in(conn, session, user, now)`.
 - authn-admin: impersonation için `SessionIssuer::start_impersonation_audited(conn, ctx, request, client, Some(admin_session_id), event_id)` (bildirim ve audit burada, adminin transaction'ında yazılır; admin tekrar göndermez, gerekçeyi aynı transaction'da `event_id`'ye bağlar). Test: `ses_15_audited_impersonation_runs_in_the_callers_transaction`.
 
 ## Testler

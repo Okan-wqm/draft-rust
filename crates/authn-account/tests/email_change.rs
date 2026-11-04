@@ -611,3 +611,58 @@ async fn acc_07_code_attempts_do_not_reveal_whether_the_address_is_taken(pool: P
         answers[0]
     );
 }
+
+/// K-40: the restored address is told about the revert (and the forced
+/// password reset) by an `email_change_reverted` notice queued in the
+/// revert's transaction; a failed revert sends nothing.
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn acc_07_revert_notifies_the_restored_address(pool: PgPool) {
+    let h = Harness::new(pool).await;
+    let user = h.active_user("restored@example.com").await;
+    request(&h, user, "attacker@evil.example").await;
+    let (token, _) = change_secrets(&h, "attacker@evil.example");
+    h.service
+        .confirm_email_change_link(Some(&h.fresh(user)), &h.ctx(), &secret(&token))
+        .await
+        .unwrap();
+    let revert = revert_token(&h, "restored@example.com");
+    assert!(
+        h.ports
+            .notifier
+            .with_template("email_change_reverted")
+            .is_empty()
+    );
+
+    // A forged token reverts nothing and notifies nobody.
+    let forged = authn_crypto::token::OpaqueToken::generate().unwrap();
+    assert!(
+        h.service
+            .revert_email_change(&h.ctx(), &secret(forged.expose()))
+            .await
+            .is_err()
+    );
+    assert!(
+        h.ports
+            .notifier
+            .with_template("email_change_reverted")
+            .is_empty()
+    );
+
+    let before = h.ports.clock.now();
+    h.service
+        .revert_email_change(&h.ctx(), &secret(&revert))
+        .await
+        .unwrap();
+    let sent = h.mails("email_change_reverted", "restored@example.com");
+    assert_eq!(sent.len(), 1, "exactly one notice, to the restored address");
+    assert_eq!(sent[0].recipient.user_id, Some(user));
+    match &sent[0].kind {
+        NotificationKind::EmailChangeReverted { at } => assert!(*at >= before),
+        other => panic!("{other:?}"),
+    }
+    assert!(
+        h.mails("email_change_reverted", "attacker@evil.example")
+            .is_empty(),
+        "the abandoned address learns nothing"
+    );
+}

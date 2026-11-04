@@ -107,10 +107,22 @@ impl OrgService {
         let page = Page::from_overfetch(rows, page.limit(), |r| {
             cursor_of(r.created_at, r.id.as_uuid())
         });
-        let mut items = Vec::with_capacity(page.items.len());
-        for row in page.items {
-            items.push(self.member_from_row(row).await?);
-        }
+        // One query for the whole page's addresses (K-41).
+        let ids: Vec<UserId> = page.items.iter().map(|r| r.user_id).collect();
+        let emails: std::collections::HashMap<UserId, Option<String>> =
+            UserRepository::find_many(self.pool(), &ids)
+                .await?
+                .into_iter()
+                .map(|u| (u.id, u.email))
+                .collect();
+        let items = page
+            .items
+            .into_iter()
+            .map(|row| {
+                let email = emails.get(&row.user_id).cloned().flatten();
+                member_of(row, email)
+            })
+            .collect();
         Ok(MemberPage {
             items,
             next_cursor: page.next_cursor,
@@ -194,7 +206,13 @@ impl OrgService {
                     &mut tx,
                     target.user_id,
                     org,
-                    RevocationReason::MembershipRemoved,
+                    // A suspension removes the membership's access; a
+                    // demotion changes it (ORG-02, ORG-04).
+                    if suspended {
+                        RevocationReason::MembershipRemoved
+                    } else {
+                        RevocationReason::MembershipChanged
+                    },
                 )
                 .await?;
             revoke_invitations_sent_by(&mut tx, org, target.user_id, self.now()).await?;
@@ -379,20 +397,24 @@ impl OrgService {
         let email = UserRepository::find_by_id(self.pool(), row.user_id)
             .await?
             .and_then(|u| u.email);
-        Ok(Member {
-            id: row.id,
-            user_id: row.user_id,
-            email,
-            role: RoleRef {
-                id: row.role_id,
-                key: row.role_key,
-                name: row.role_name,
-            },
-            status: row.status,
-            invited_by: row.invited_by,
-            created_at: row.created_at,
-            updated_at: row.updated_at,
-        })
+        Ok(member_of(row, email))
+    }
+}
+
+fn member_of(row: MemberRow, email: Option<String>) -> Member {
+    Member {
+        id: row.id,
+        user_id: row.user_id,
+        email,
+        role: RoleRef {
+            id: row.role_id,
+            key: row.role_key,
+            name: row.role_name,
+        },
+        status: row.status,
+        invited_by: row.invited_by,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
     }
 }
 

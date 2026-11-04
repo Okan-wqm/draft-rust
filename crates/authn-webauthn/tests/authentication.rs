@@ -827,3 +827,66 @@ async fn pky_08_policy_source_applies_to_every_authentication(pool: PgPool) {
         .unwrap();
     assert_eq!(result.user_id, alice.user);
 }
+
+/// PKY-05 / K-19: the first clone detection of a passkey queues the
+/// `passkey_clone_suspected` e-mail to its owner in the same transaction as
+/// the flag and the audit event; a repeated detection of the already
+/// flagged passkey does not e-mail again (the outbox also limits per
+/// recipient).
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn pky_05_clone_suspicion_notifies_the_owner_once(pool: PgPool) {
+    let h = Harness::new(pool).await;
+    let alice = h.account("alice@example.com").await;
+    let mut authenticator = SoftPasskey::new(true);
+    let passkey = h
+        .register(&mut authenticator, alice, RegistrationIntent::Passwordless)
+        .await;
+    let handle = h.user_handle(alice.user).await;
+    h.ports.notifier.take();
+    for attempt in 0..2 {
+        h.bump_stored_counter(passkey.summary.id, 100 + attempt)
+            .await;
+        let start = h.start_auth(DISCOVERABLE).await;
+        let assertion = get_discoverable(
+            &mut authenticator,
+            &start.options,
+            &passkey.raw_id,
+            &handle,
+            ORIGIN,
+        );
+        h.finish_auth(&start, DISCOVERABLE, &assertion)
+            .await
+            .unwrap_err();
+    }
+    assert_eq!(
+        h.ports
+            .audit
+            .of_kind(SecurityEventKind::PasskeyCloneSuspected)
+            .len(),
+        2
+    );
+    let sent = h.ports.notifier.with_template("passkey_clone_suspected");
+    assert_eq!(sent.len(), 1, "one e-mail per suspected passkey");
+    assert_eq!(sent[0].recipient.user_id, Some(alice.user));
+    assert_eq!(sent[0].recipient.email.as_str(), "alice@example.com");
+    // Step-up path (known user) notifies too, for another passkey.
+    let mut other = SoftPasskey::new(true);
+    let second = h
+        .register(&mut other, alice, RegistrationIntent::Passwordless)
+        .await;
+    let target = AuthenticationTarget::StepUp {
+        user_id: alice.user,
+        session_id: alice.session,
+    };
+    let start = h.start_auth(target).await;
+    h.bump_stored_counter(second.summary.id, 50).await;
+    let assertion = get(&mut other, &start.options, ORIGIN);
+    h.finish_auth(&start, target, &assertion).await.unwrap_err();
+    assert_eq!(
+        h.ports
+            .notifier
+            .with_template("passkey_clone_suspected")
+            .len(),
+        2
+    );
+}

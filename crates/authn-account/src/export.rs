@@ -17,7 +17,7 @@ use async_trait::async_trait;
 use authn_core::error::AuthError;
 use authn_core::id::UserId;
 use authn_core::ports::{Clock, DataExporter};
-use authn_store::UserRepository;
+use authn_store::{OneTimeTokenRepository, UserRepository};
 use serde_json::{Value, json};
 use sqlx::PgConnection;
 use time::OffsetDateTime;
@@ -25,7 +25,7 @@ use time::format_description::well_known::Rfc3339;
 
 use crate::registration_store::RegistrationRepository;
 use crate::repo::{
-    ConsentRepository, DeletionRepository, ProfileRepository, ReservationRepository, SharedReads,
+    ConsentRepository, DeletionRepository, ProfileRepository, ReservationRepository,
 };
 
 /// Section name of this crate.
@@ -86,7 +86,14 @@ impl DataExporter for AccountDataExporter {
         let consents = ConsentRepository::for_user(&mut *conn, user).await?;
         let deletions = DeletionRepository::for_user(&mut *conn, user).await?;
         let reservations = ReservationRepository::for_user(&mut *conn, user).await?;
-        let pending = SharedReads::pending_account_tokens(&mut *conn, user, now).await?;
+        // Only this crate's purposes (contracts §5); the hash is never read.
+        let pending = OneTimeTokenRepository::active_for_user(
+            &mut *conn,
+            user,
+            crate::ACCOUNT_TOKEN_PURPOSES,
+            now,
+        )
+        .await?;
         let registrations = RegistrationRepository::live_for_user(&mut *conn, user, now).await?;
         Ok(json!({
             "user": {
@@ -144,7 +151,7 @@ impl DataExporter for AccountDataExporter {
                 "expires_at": ts(Some(r.expires_at)),
             })).collect::<Vec<_>>(),
             "pending_requests": pending.into_iter().map(|t| json!({
-                "purpose": t.purpose,
+                "purpose": t.purpose.as_str(),
                 "target": t.target,
                 "requested_from_ip": t.created_ip.map(|ip| ip.to_string()),
                 "created_at": ts(Some(t.created_at)),

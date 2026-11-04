@@ -365,6 +365,15 @@ pub async fn switch_org(
     let (record, credentials) = service
         .switch_org(&ctx, &principal, &current, body.org_id)
         .await?;
+    if current.is_impersonation_header() {
+        // K-12: never a `Set-Cookie` for a header-authenticated
+        // impersonation (it would replace the admin's session cookie).
+        return Ok(crate::response::impersonation_credentials_response(
+            &record,
+            credentials,
+            service.now(),
+        ));
+    }
     Ok(credentials_response(&record, credentials, service.now()))
 }
 

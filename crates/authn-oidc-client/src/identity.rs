@@ -59,8 +59,11 @@ pub struct ExternalIdentity {
     /// The provider asserted MFA (`amr` contains `mfa`); honoured only with
     /// `oidc_client.trust_provider_mfa` (SOC-09).
     pub provider_mfa: bool,
-    /// Provider tokens (web flow only).
+    /// Provider tokens (web flow; Apple native code exchange, K-35).
     pub tokens: Option<ProviderTokens>,
+    /// Client id the provider issued the token(s) to (ID token `azp` /
+    /// `aud`; the web client id for GitHub).
+    pub client_id: Option<String>,
 }
 
 impl ExternalIdentity {
@@ -134,6 +137,7 @@ pub fn from_id_claims(
         display_name,
         provider_mfa,
         tokens: None,
+        client_id: Some(claims.client_id),
     })
 }
 
@@ -205,6 +209,7 @@ pub async fn github_identity(
             .and_then(|n| clean_display_name(&n)),
         provider_mfa: false,
         tokens: None,
+        client_id: Some(provider.client_id.clone()),
     })
 }
 
@@ -258,6 +263,7 @@ mod tests {
             email_domain_verified: edov,
             is_private_email: false,
             amr: Vec::new(),
+            client_id: "client".to_owned(),
         }
     }
 

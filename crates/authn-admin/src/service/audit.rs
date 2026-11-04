@@ -20,6 +20,7 @@ use serde_json::Value;
 use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
+use super::limits::Limit;
 use super::{AdminService, meta};
 use crate::guard::AdminCaller;
 use crate::reason::Justification;
@@ -282,16 +283,46 @@ impl AdminService {
 
     /// Verifies the hash chain (AUD-02, ADM-07): from the retention start,
     /// or from an externally kept anchor. The verification is audited.
+    ///
+    /// K-09: the per-admin budget `audit_verify_per_admin` applies, and at
+    /// most **one** verification runs at a time across every instance (a
+    /// lease in `admin_operation_leases`, taken and released with single
+    /// statements — no connection is held while the chain is read). A
+    /// second concurrent request answers `429 rate_limited`.
     pub async fn verify_audit_chain(
         &self,
         caller: &AdminCaller,
         ctx: &RequestContext,
         anchor: Option<VerifiedAnchor>,
     ) -> Result<ChainVerification, AuthError> {
-        let report = match anchor {
-            Some(a) => authn_audit::verify_chain_from(self.pool(), a.into_anchor()?).await?,
-            None => authn_audit::verify_chain(self.pool()).await?,
+        const LEASE: &str = "audit_chain_verification";
+        let anchor = anchor.map(VerifiedAnchor::into_anchor).transpose()?;
+        self.check_audit_verify(caller, ctx).await?;
+        let holder = Uuid::now_v7();
+        let now = self.now();
+        let expires = now + self.settings().audit_verify_lease;
+        if !store::acquire_lease(self.pool(), LEASE, holder, now, expires).await? {
+            return Err(self
+                .throttled(
+                    caller,
+                    ctx,
+                    "audit_chain_verified",
+                    Limit::AuditVerifyRunning,
+                    self.settings()
+                        .audit_verify_lease
+                        .min(std::time::Duration::from_secs(60)),
+                )
+                .await);
+        }
+        let verified = match anchor {
+            Some(a) => authn_audit::verify_chain_from(self.pool(), a).await,
+            None => authn_audit::verify_chain(self.pool()).await,
         };
+        if let Err(err) = store::release_lease(self.pool(), LEASE, holder).await {
+            // The lease expires on its own.
+            tracing::warn!(error = %err, "could not release the chain verification lease");
+        }
+        let report = verified?;
         let verification = ChainVerification::from(report);
         let mut tx = self.begin().await?;
         self.record_action(

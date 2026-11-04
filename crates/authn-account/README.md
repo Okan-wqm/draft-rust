@@ -12,9 +12,9 @@ Kayıt, e-posta doğrulama, hesap durum makinesi, profil, e-posta değişikliği
 | ACC-04 | Kayıt başına link (24 sa) + 6 haneli kod (15 dk, kayıt ömrü boyunca 5 deneme), adrese ve kayda bağlı, tek kullanımlık; link yalnızca kaydı yapan istemcide (tutamaç), kayıtta seçilen şifreyle veya yeni şifreyle tamamlanır; kod yalnızca tutamaçla; tekrar gönderme 60 sn bekleme + saatlik limit; adres başına toplam kod denemesi | `verification.rs`: `acc_04_*` (brute force kilidi, yarış, tek kullanım, zamanlama/gövde eşitliği); `prehijack.rs`: `acc_04_link_on_another_device_*`, `acc_04_code_needs_the_registering_clients_handle_*`, `acc_04_session_issued_link_needs_the_account_holder` |
 | ACC-05 | `assess_login` (`block` / `limited` → `verify_email` zorunlu adımı); kayıtla oluşan hesabın doğrulanana kadar kimlik bilgisi yoktur; `purge_unverified_accounts` (7 gün; süresi dolan kayıtlar + canlı kaydı kalmayan hesaplar); doğrulanmamış hesapta şifre sıfırlama / şifresiz kanıt adresi posta kutusu sahibi için doğrular (`MailboxProof`) | `acc_05_*` (`prehijack.rs`: `acc_05_password_reset_on_unverified_account_hands_it_to_the_mailbox_owner`, `acc_05_passwordless_mailbox_proof_removes_an_unproven_password`) |
 | ACC-06 | `lifecycle::check_transition` (tek tablo), `apply_transition` (satır kilidi + CAS + audit), `change_status` / `change_status_in_tx`, `release_expired_locks` | `lifecycle::tests::acc_06_*` (7×7×2 kapsamlı tablo, proptest), `lifecycle.rs` |
-| ACC-07 | Step-up ile talep, yeni adrese link + kod (ikisi de hesap sahibinin oturumuyla onaylanır), eski adrese 7 günlük geri alma linki, eski adres rezervasyonu, geri almada oturum/güvenilir cihaz iptali + şifre sıfırlama zorunluluğu; bekleyen değişiklik şifre sıfırlama / "tümünü kapat" ile ölür (`AccountAwareSessionRevoker`) | `email_change.rs`: `acc_07_*`; `prehijack.rs`: `acc_07_email_change_link_requires_the_account_holders_session`, `acc_07_pending_email_change_ends_on_reset_and_sign_out_everywhere` |
-| ACC-08 | `GET/PATCH /v1/me/profile` (görünen ad, `tr`/`en`, IANA saat dilimi) | `profile.rs`, `profile::tests::acc_08_*` |
-| ACC-09 | `DELETE /v1/me` (step-up) → `pending_deletion` + 30 gün; oturumla veya linkle iptal; `purge_due_deletions` (kaskad silme + audit takma adlaştırma); son sahip engeli (`OrganizationOwnership`) | `deletion.rs`: `acc_09_*` |
+| ACC-07 | `is_address_reserved_in` (sosyal giriş vb. için rezervasyon sorgusu, K-02); step-up ile talep, yeni adrese link + kod (ikisi de hesap sahibinin oturumuyla onaylanır), eski adrese 7 günlük geri alma linki, eski adres rezervasyonu, geri almada oturum/güvenilir cihaz iptali + şifre sıfırlama zorunluluğu; bekleyen değişiklik şifre sıfırlama / "tümünü kapat" ile ölür (`AccountAwareSessionRevoker`) | `email_change.rs`: `acc_07_*`; `prehijack.rs`: `acc_07_email_change_link_requires_the_account_holders_session`, `acc_07_pending_email_change_ends_on_reset_and_sign_out_everywhere` |
+| ACC-08 | `GET/PATCH /v1/me/profile` (görünen ad, `tr`/`en`, IANA saat dilimi); posta kutusunu kendisi kanıtlayan modüller için doğrulanmış hesap + profil sağlama (`provision_verified_user_in_tx`, K-33) | `profile.rs`, `profile::tests::acc_08_*`, `provisioning.rs`: `acc_08_provisioned_social_account_gets_a_profile`, `acc_07_provisioning_never_takes_an_existing_or_reserved_address`, `acc_07_reservation_lookup_on_the_given_connection`, `acc_12_provisioning_honours_the_disposable_domain_list` |
+| ACC-09 | `DELETE /v1/me` (step-up) → `pending_deletion` + 30 gün; oturumla veya linkle iptal; `purge_due_deletions` (kaskad silme + audit takma adlaştırma); son sahip engeli (`OrganizationOwnership`); silme transaction'ında diğer modüllerin işi (`AccountErasureHook`, K-35) | `deletion.rs`: `acc_09_*`; `provisioning.rs`: `acc_09_erasure_hooks_run_in_the_erasure_transaction` |
 | ACC-10 | `GET /v1/me/export` (step-up, rate limit): tüm `DataExporter`'lar tek `REPEATABLE READ, READ ONLY` transaction'ında | `export.rs`: `acc_10_*` |
 | ACC-11 | `terms_versions` senkronu (`account.terms`), `consents` (zaman, IP, UA), `terms_requirements` / `accept_terms` (SES-22) | `consent.rs`: `acc_11_*` |
 | ACC-12 | `DisposableDomains` (dosyadan, alt alan adları dahil; varsayılan kapalı) | `acc_12_*` |
@@ -23,7 +23,7 @@ Kayıt, e-posta doğrulama, hesap durum makinesi, profil, e-posta değişikliği
 
 ## Bağımlılık kuralı
 
-Dalga A: yalnızca `authn-core`, `authn-crypto`, `authn-store`. Başka modüllerin verisine ihtiyaç duyulan yerde bu crate bir trait tanımlar (`OrganizationOwnership`); uygulamayı `authn-server` verir. Diğer modüllerin olaylarının hesap sonuçları (şifre sıfırlama, "tümünü kapat") `SessionRevoker` portunu saran `AccountAwareSessionRevoker` ile uygulanır — authn-password ve authn-session'da değişiklik gerekmez. Yeni harici bağımlılık: yok (`tokio-util` ve `http` workspace'te zaten vardı; crate `Cargo.toml`'una eklendi).
+Dalga A: yalnızca `authn-core`, `authn-crypto`, `authn-store`. Paylaşılan tablolardaki okumalar/iptaller authn-store API'leriyle yapılır (K-41: `UserRepository::claim_next` — kilit açma işi —, `OneTimeTokenRepository::active_for_user` — dışa aktarma ve geri alma linkleri —, `revoke_for_user_since` — geri alma); `SharedReads`'te yalnızca ACC-05 temizlik sorgusu kaldı, çünkü o canlı `pending_registrations` satırı olan hesapları da atlar (`claim_next` bunu ifade edemez; kullanmak satırları tek tek kilitleyip atlamak, yani farklı ve daha yavaş bir davranış olurdu). Başka modüllerin verisine ihtiyaç duyulan yerde bu crate bir trait tanımlar (`OrganizationOwnership`); uygulamayı `authn-server` verir. Diğer modüllerin olaylarının hesap sonuçları (şifre sıfırlama, "tümünü kapat") `SessionRevoker` portunu saran `AccountAwareSessionRevoker` ile uygulanır — authn-password ve authn-session'da değişiklik gerekmez. Yeni harici bağımlılık: yok (`tokio-util` ve `http` workspace'te zaten vardı; crate `Cargo.toml`'una eklendi).
 
 ## Genel API
 
@@ -46,9 +46,17 @@ async fn resend_verification(&self, ctx, email: &str, registration: Option<&Secr
 // CredentialConfirmation::{ChosenPassword(SecretString), NewPassword { password, accepted_terms }}
 // REGISTRATION_COOKIE = "__Host-authn_registration", MAX_PASSWORD_CONFIRMATIONS = 5
 
+// Posta kutusunu kendisi kanıtlayan modüller (authn-oidc-client; K-02, K-33)
+async fn is_address_reserved_in(&self, conn, email: &EmailAddress) -> Result<bool, AuthError>          // ACC-07, salt okuma
+async fn provision_verified_user_in_tx(&self, conn, ctx, VerifiedUserProvision { email, display_name, locale, method, provider })
+    -> Result<ProvisionOutcome, AuthError>   // Created(UserId) | Existing(UserRecord) | Reserved | Conflict
+async fn notification_recipient_in(&self, conn, user, fallback: Locale) -> Result<Option<(Recipient, Locale)>, AuthError>
+fn register_erasure_hook(&self, hook: Arc<dyn AccountErasureHook>)                                    // K-35, açılışta
+
 // Posta kutusu kanıtları ve iptal sonuçları (authn-server / Dalga B)
 async fn confirm_mailbox_control_in_tx(&self, conn, ctx: Option<&RequestContext>, user, proof: MailboxProof) -> Result<bool, AuthError>
 // MailboxProof::{PasswordReset, Passwordless, Administrator { admin }}
+//   Administrator: kullanıcının olayları Actor::System, IP/UA yok (request_id var) — K-14
 async fn revoke_pending_email_changes_in_tx(&self, conn, user) -> Result<u64, AuthError>
 async fn on_sessions_revoked_in_tx(&self, conn, user, reason: RevocationReason) -> Result<(), AuthError>
 async fn confirm_email_change_link(&self, principal: Option<&Principal>, ctx, token) -> Result<(), AuthError>
@@ -78,9 +86,12 @@ async fn purge_expired_reservations(&self, max: u32) -> Result<u64, AuthError>  
 async fn sync_terms_versions(&self) -> Result<usize, AuthError>                       // açılışta (ACC-11)
 async fn drain_background_jobs(&self)                                                  // zarif kapanış (OPS-07)
 
-// Server'ın uygulayacağı trait
+// Server'ın uygulayacağı / kaydedeceği trait'ler
 #[async_trait] trait OrganizationOwnership: Send + Sync {
     async fn sole_owner_organizations(&self, conn: &mut PgConnection, user: UserId) -> Result<Vec<OrgId>, AuthError>;
+}
+#[async_trait] trait AccountErasureHook: Send + Sync {   // silme transaction'ında, users satırı silinmeden önce
+    async fn before_erasure_in_tx(&self, conn: &mut PgConnection, user: UserId) -> Result<(), AuthError>;
 }
 ```
 
@@ -151,6 +162,8 @@ Ayrıca `session.step_up_max_age` (step-up penceresi) ve `protect.captcha.fail_o
 - **Homograf / görünmez karakterler (ACC-03):** e-posta yerel kısmı ve IDN alan adı etiketleri UTS #39 "orta derecede kısıtlayıcı" profilini sağlamalı; görünen adlarda biçim karakterleri (ZWJ/ZWNJ, bidi), emoji, sembol, 2'den fazla birleşik işaret, karışık alfabe ve ayrılmış adların (`admin`, `support`, `security`…) karıştırılabilir iskeletleri reddedilir.
 - **Token'lar:** link 256 bit, yalnızca SHA-256 hash'i; kod HMAC ile, kod başına 5 deneme + adres başına saatlik toplam; tüketim atomik (eşzamanlı kullanımda tam olarak biri başarılı — testli); link/kod gönderildiği adrese bağlı (`target`): adres değişirse eski doğrulama işe yaramaz.
 - **E-posta değişikliği (ACC-07):** yeni adresin kayıtlı olup olmadığı talep edene sızmaz; onayda kullanıcının adresine gönderilmiş tüm token'lar (şifre sıfırlama, magic link, giriş kodu, "bu ben değilim", e-posta OTP…) iptal edilir; eski adres rezerve edilir (saldırgan eski adresle hesap açıp geri almayı engelleyemez); geri almada yalnızca **daha sonraki** değişikliklerin geri alma linkleri iptal edilir (daha önceki linkler geçerli kalır ve geri almayla terk edilen adres onlar için rezerve kalır), planlanmış silme iptal edilir, tüm oturumlar ve güvenilir cihazlar kapanır, şifre rastgele kullanılamaz bir hash'le değiştirilir (`must_change_password` = true) — saldırgan bildiği şifreyle giremez, sahip restore edilen adresle sıfırlar. Adres kontrol-yaz dizileri adres başına advisory lock (sıralı, kilitlenmesiz) altında.
+- **Personel işlemleri kullanıcının görünümünde (K-14):** `MailboxProof::Administrator` ile yazılan `account.email_verified` ve `account.status_changed` olayları `Actor::System`'dir ve adminin IP/user-agent'ını taşımaz (yalnızca `request_id`; authn-admin'in aynı transaction'daki `admin.action` olayıyla ilişkilendirmek için). Aksi hâlde authn-audit IP'yi kullanıcının kişisel verisi olarak saklar ve `/v1/me/security-events` adminin ağını gösterirdi. Gerçek aktör authn-admin'in `admin.*` olayındadır (wave 1'deki `passkey.removed` deseniyle aynı). Testler: `adm_08_admin_mailbox_proof_shows_no_staff_identity_to_the_user`, authn-oidc-client `adm_03_admin_verification_shows_no_staff_identity_in_the_users_view` (gerçek audit sink ve kullanıcı görünümü). Aynı kural personelin durum değişikliklerinde de geçerlidir (`change_status[_in_tx]` ile askıya alma/kilit açma: istemci IP/UA yalnızca aktör bir kullanıcı (audit sink veriyi o kullanıcıya yazar) veya anonim ise eklenir; wave 2A denetimi, test `adm_08_staff_status_change_shows_no_staff_network_to_the_user`).
+- **Sosyal hesap sağlama (K-33, ADR 0002):** `provision_verified_user_in_tx` yalnızca çağıranın posta kutusu kontrolünü kanıtladığı adres için (sağlayıcının doğruladığı e-posta) `active` + doğrulanmış hesap açar; adres kilidi (kayıt/e-posta değişikliğiyle aynı) altında var olan hesaba **dokunmaz** (`Existing`), rezerve adresi vermez (`Reserved`), ACC-12 listesini uygular; profil adı ACC-03 kurallarından geçmezse saklanmaz.
 - **Durum makinesi (ACC-06):** `active` ⇒ doğrulanmış e-posta değişmezi tabloda; askıdan/silmeden dönüş doğrulamayı atlatamaz. Her geçiş audit'lenir; `pending_deletion`'dan silme dışında çıkış planlanmış silmeyi kapatır. `pending_deletion` ve `deleted` yalnızca silme akışı ve temizlik işleriyle girilir; `change_status` / `change_status_in_tx` bunları reddeder.
 - **Silme (ACC-09):** step-up, impersonation ve API anahtarı ile yapılamaz; kalıcı silme son sahiplik kontrolünü tekrar yapar; audit takma adlaştırması aynı transaction'da.
 - **Dışa aktarma (ACC-10):** sır içermez; dışa aktarıcı yazma yapamaz; bir bölüm hata verirse tüm dışa aktarma başarısız olur.
@@ -192,6 +205,14 @@ Kabul edilen riskler (gerekçeli):
 - **`GET /v1/me/export`:** GET olduğundan siteler arası üst düzey gezinme (SameSite=Lax) kurbanın günlük dışa aktarma hakkını (2/gün) tüketebilir; veri yalnızca kurbanın tarayıcısına iner ve step-up gerekir. Yöntem sözleşmede GET olarak tanımlı; değiştirilmedi.
 - **Geri alma sonrası diğer modüllerin faktörleri** (passkey, TOTP, sosyal kimlik) — aşağıdaki "Bilinen sınırlamalar"a bakın.
 
+### Wave 2A bağımsız denetimi (2026-11-04)
+
+Yazarın K-02 / K-14 testleri, düzeltme satırları geçici olarak geri alınarak **eski davranışta başarısız oldukları** doğrulandı: rezervasyon kontrolü kaldırılınca `acc_07_provisioning_never_takes_an_existing_or_reserved_address`, `MailboxProof::Administrator` eski aktör/bağlamına döndürülünce `adm_08_admin_mailbox_proof_shows_no_staff_identity_to_the_user` başarısız oldu (`acc_07_reservation_lookup_on_the_given_connection` yalnızca okuma API'sini sınar; geri almayla etkilenmez). K-41 sorguları eski sorgularla birebir karşılaştırıldı (koşullar, `FOR UPDATE SKIP LOCKED`, sıralama aynı).
+
+| Önem | Bulgu | Düzeltme | Test |
+|------|-------|----------|------|
+| Orta | **K-14 eksikti:** personelin durum değişiklikleri (authn-admin askıya alma / askıdan çıkarma / kilit açma → `change_status[_in_tx]`, `Actor::System`) adminin IP'sini ve user-agent'ını kullanıcının kendi `account.status_changed` olayına yazıyordu; audit sink konu sahibinin olayındaki istemci verisini **kullanıcının** kişisel verisi olarak saklar ve kullanıcının olay listesi onu (maskeli) gösterir. | `lifecycle::transition_event`: istemci IP/UA yalnızca aktör bir kullanıcıysa (`Actor::User`; audit sink veriyi aktörün takma adına yazar, konununkine değil) veya anonim istekse (kullanıcının kendi linki/kodu) eklenir; sistem/personel, servis hesabı ve API anahtarı aktörlerinde (sink veriyi **konunun** takma adına yazardı) yalnızca `request_id` kalır (authn-admin'in `admin.action` olayıyla ilişkilendirme için). | `adm_08_staff_status_change_shows_no_staff_network_to_the_user` (düzeltme olmadan `left: Some(198.51.100.7)` ile başarısız) |
+
 ## authn-server / Dalga B'nin bağlaması gerekenler
 
 0. **`SessionRevoker` sarmalama (ADR 0002):** `let revoker: Arc<dyn SessionRevoker> = Arc::new(AccountAwareSessionRevoker::new(session_revoker.clone(), account.clone()));` — sarılmış portu authn-password, authn-session (kendi "tümünü kapat"ı dahil), authn-mfa, authn-org, authn-admin ve authn-protect'e verin; `AccountServiceDeps::sessions`'a **iç** revoker'ı verin (döngüsel referans olmasın). `RevocationReason::PasswordReset` yalnızca e-postayla gelen sıfırlamanın tamamlanmasında kullanılmalıdır (adresi doğrular).
@@ -199,6 +220,7 @@ Kabul edilen riskler (gerekçeli):
 2. `impl FromRef<AppState> for AccountService`, `.merge(authn_account::router::<AppState>())` — `/v1/me*` **ve `/v1/email/change/confirm`** oturum katmanının (ve CSRF'in) arkasında; oturum katmanı `/v1/email/verify` için de, varsa, `Principal` eklemelidir (yoksa istek kimliksiz işlenir); `openapi.rs`'e `authn_account::AccountApi`.
 3. Açılışta `sync_terms_versions()`; zamanlanmış işler: `purge_unverified_accounts`, `purge_due_deletions`, `release_expired_locks`, `purge_expired_reservations` (ör. 5–15 dakikada bir, `max` = 100–500); zarif kapanışta `drain_background_jobs()`.
 4. authn-password `ProfileLookup` adaptörü: `profile_of(user)` → `ProfileHints { display_name, locale }`.
+4a. `account.register_erasure_hook(Arc::new(oidc.erasure_hook()))` (K-35: Apple token iptali silme transaction'ında kuyruğa alınır). Sarılmış revoker `revoke_everything_except`'i de iletir (K-10, acil "çağıran hariç tümünü kapat"; test `acc_07_emergency_revoke_except_caller_ends_pending_email_changes`).
 5. authn-session / authn-oidc-client / authn-admin — posta kutusu kanıtları: magic link (SES-18) ve giriş kodu (SES-19) doğrulanmamış bir hesaba oturum açmadan **önce**, aynı transaction'da `confirm_mailbox_control_in_tx(conn, Some(ctx), user, MailboxProof::Passwordless)`; sosyal girişte sağlayıcının doğruladığı e-postayla doğrulanmamış hesaba bağlama yapılacaksa aynı çağrı; admin "e-posta doğrulandı" işaretlemesi (ADM-03) `MailboxProof::Administrator { admin }`. **Hiçbir modül `pending_verification` bir hesaba kimlik bilgisi (sosyal kimlik, passkey) eklememelidir** ("Trojan identifier").
 6. authn-session: girişte doğru şifreden sonra `assess_login`; `Denied` → `DenialReason::into_error`; `Allowed { required_actions }` → SES-22 challenge'ı (`verify_email` tamamlanırken kod doğrulaması için challenge'a bağlı bir akış gerekiyorsa `verify_own_email_code` sınırlı oturumla kullanılabilir; `accept_terms` için `accept_terms(ctx, user, …)`).
 7. authn-admin: askıya alma / kilit / devre dışı → `change_status_in_tx` + aynı transaction'da `SessionRevoker`; "e-posta doğrulandı işaretleme" → `confirm_mailbox_control_in_tx(…, MailboxProof::Administrator { admin })`.
@@ -209,8 +231,8 @@ Kabul edilen riskler (gerekçeli):
 - **`limited` mod (ACC-05) ve kayıt:** kayıtla oluşan hesabın doğrulanana kadar kimlik bilgisi olmadığından şifreyle "sınırlı" giriş yapılamaz; kayıt sonrasındaki sınırlı erişim, kaydı yapan istemcinin tutamaçla yaptığı işlemlerdir (kodla doğrulama, yeniden gönderme). Politika, kimlik bilgisi başka yoldan gelmiş doğrulanmamış hesaplar için `assess_login` ile aynen uygulanır (ADR 0002).
 - Doğrulanmadan şifresini unutan kayıt sahibi şifre sıfırlama değil, doğrulama linkindeki "yeni şifre" yolunu kullanır (sıfırlama yalnızca var olan şifreyi değiştirir).
 - Geri alma (ACC-07) oturumları ve şifreyi sıfırlar ancak saldırganın arada eklemiş olabileceği passkey / TOTP / sosyal kimlikleri kaldırmaz (başka modüllerin tabloları). Kullanıcıya geri alma sonrası güvenlik ayarlarını gözden geçirmesi söylenmelidir; istenirse server bir "e-posta değişikliği geri alındı" kancası ile bu modülleri çağırabilir.
-- `RegistrationAttempt` bildirimi, e-posta değişikliğinde "adresiniz başka bir hesap için kullanılmak istendi" uyarısı olarak da kullanılır (port'ta ayrı tür yok); şablon metni genel tutulmalıdır.
-- Geri alma sonrası "şifrenizi sıfırlayın" e-postası otomatik gönderilmez (şifre sıfırlama authn-password'dadır); yanıt `password_reset_required: true` döner ve ön yüz `POST /v1/password/forgot` çağırır.
+- `RegistrationAttempt` bildirimi, e-posta değişikliğinde "adresiniz başka bir hesap için kullanılmak istendi" uyarısı olarak da kullanılır; şablon metni wave 1'de geneldir.
+- Geri alma, geri yüklenen adrese aynı transaction'da (outbox) `email_change_reverted` bildirimi gönderir (K-40; şablon "şifrenizi yeniden belirleyin" bağlantısını ve güvenlik ayarlarını gözden geçirme uyarısını içerir; test `acc_07_revert_notifies_the_restored_address`). Sıfırlama token'ı otomatik üretilmez (şifre sıfırlama authn-password'dadır); yanıt `password_reset_required: true` döner ve ön yüz `POST /v1/password/forgot` çağırır.
 - Unicode büyük/küçük harf katlaması Rust `to_lowercase` + NFKC'dir (tam Unicode case folding değil); Yunanca son sigma gibi sınır durumlarda iki yazım farklı hesap sayılabilir.
 - Görünen adlarda ZWNJ reddedilir (Farsça gibi dillerde gerekebilir) ve emoji kabul edilmez — güvenlik lehine bilinçli tercih.
 - Uygulanmayan MUST yoktur.

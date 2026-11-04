@@ -175,6 +175,30 @@ impl SessionService {
         event
     }
 
+    /// The high-priority `admin.break_glass_used` event of a login that
+    /// established a session for a break-glass account (ADM-05, K-05):
+    /// `priority: high`, `surface: login`. Record it in the establishing
+    /// transaction, next to `login.succeeded`, so alerting sees every use
+    /// of the recovery account — not only its admin API requests.
+    #[must_use]
+    pub fn break_glass_login_event(
+        &self,
+        ctx: &RequestContext,
+        established: &EstablishedSession,
+        method: LoginMethod,
+    ) -> SecurityEvent {
+        let session = &established.session;
+        SecurityEvent::new(SecurityEventKind::BreakGlassUsed, self.now())
+            .with_context(ctx)
+            .with_actor(Actor::User(session.user_id))
+            .with_subject(session.user_id)
+            .with_resource("session", session.id)
+            .with_meta("priority", "high")
+            .with_meta("surface", "login")
+            .with_meta("method", method.as_str())
+            .with_meta("client", session.client_kind.as_str())
+    }
+
     /// Starts an impersonation session (ADM-04). Defence in depth on top of
     /// authn-admin's checks: the actor must be an active platform admin
     /// with a live session of their own (whose `amr` / `acr` / `auth_time`

@@ -49,8 +49,12 @@ pub enum MailboxProof {
     /// (SOC-05 linking). No password is set by the proof itself.
     Passwordless,
     /// A platform administrator marked the address verified (ADM-03).
+    /// The account's events are written as `Actor::System` without the
+    /// administrator's IP / user agent (K-14); authn-admin audits the staff
+    /// member in its own `admin.action` event in the same transaction.
     Administrator {
-        /// The acting administrator (audited).
+        /// The acting administrator (audited by the caller's `admin.*`
+        /// event, never in the user's own events).
         admin: UserId,
     },
 }
@@ -69,11 +73,36 @@ impl MailboxProof {
         matches!(self, Self::PasswordReset)
     }
 
+    /// Actor of the account events. An administrator's proof is recorded
+    /// as [`Actor::System`] (K-14, ADM-08): these events land in the
+    /// **user's** own security-event list, and platform staff must appear
+    /// there neither by user id nor by IP; the acting administrator is
+    /// recorded by authn-admin in its own `admin.action` event (same
+    /// transaction), exactly like `passkey.removed` of an admin MFA reset.
     const fn actor(self, user: UserId) -> Actor {
         match self {
             Self::PasswordReset | Self::Passwordless => Actor::User(user),
-            Self::Administrator { admin } => Actor::User(admin),
+            Self::Administrator { .. } => Actor::System,
         }
+    }
+
+    /// Whether the request context (client IP, user agent) of the caller
+    /// may be attached to the user's events: not for staff actions — the
+    /// audit sink would store the administrator's IP as the subject's
+    /// personal data and the user's view would show its network (K-14).
+    /// The request id is kept for correlation with the `admin.*` event.
+    const fn keeps_client_context(self) -> bool {
+        !matches!(self, Self::Administrator { .. })
+    }
+
+    /// The request context to attach to the user's events (see
+    /// [`Self::keeps_client_context`]).
+    fn event_context(self, ctx: Option<&RequestContext>) -> Option<RequestContext> {
+        let ctx = ctx?;
+        if self.keeps_client_context() {
+            return Some(ctx.clone());
+        }
+        None
     }
 }
 
@@ -143,14 +172,15 @@ impl AccountService {
         )
         .await?;
         UserRepository::mark_email_verified(&mut *conn, user, now).await?;
+        let event_ctx = proof.event_context(ctx);
+        let request_id = ctx.map(|c| c.request_id);
         if record.status == AccountStatus::PendingVerification {
             let change =
                 StatusChange::new(AccountStatus::Active, "email_verified", proof.actor(user));
             write_transition(&mut *conn, &record, &change, true, now).await?;
-            self.deps()
-                .audit
-                .record_in_tx(&mut *conn, transition_event(&record, &change, now, ctx))
-                .await?;
+            let mut event = transition_event(&record, &change, now, event_ctx.as_ref());
+            event.request_id = request_id;
+            self.deps().audit.record_in_tx(&mut *conn, event).await?;
         }
         if !proof.sets_password() {
             self.deps()
@@ -180,9 +210,10 @@ impl AccountService {
             )
             .await?;
         let mut event = SecurityEvent::new(SecurityEventKind::EmailVerified, now);
-        if let Some(ctx) = ctx {
+        if let Some(ctx) = &event_ctx {
             event = event.with_context(ctx);
         }
+        event.request_id = request_id;
         let event = event
             .with_actor(proof.actor(user))
             .with_subject(user)
@@ -360,6 +391,25 @@ impl SessionRevoker for AccountAwareSessionRevoker {
         reason: RevocationReason,
     ) -> Result<u64, AuthError> {
         let revoked = self.inner.revoke_everything(&mut *conn, reason).await?;
+        self.account
+            .revoke_every_pending_email_change_in_tx(conn)
+            .await?;
+        Ok(revoked)
+    }
+
+    /// Emergency "revoke every session but the caller's" (ADM-06, K-10):
+    /// the same account consequence as [`SessionRevoker::revoke_everything`]
+    /// — every pending e-mail change ends, the caller's included.
+    async fn revoke_everything_except(
+        &self,
+        conn: &mut PgConnection,
+        keep: SessionId,
+        reason: RevocationReason,
+    ) -> Result<u64, AuthError> {
+        let revoked = self
+            .inner
+            .revoke_everything_except(&mut *conn, keep, reason)
+            .await?;
         self.account
             .revoke_every_pending_email_change_in_tx(conn)
             .await?;

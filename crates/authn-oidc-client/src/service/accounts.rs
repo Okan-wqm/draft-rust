@@ -10,7 +10,12 @@
 //!    (`oauth_email_not_verified`) never depends on existing accounts.
 //! 3. No account and no reservation for the address → a new account is
 //!    created `active` with the address verified (the provider proved the
-//!    mailbox) and the identity linked, in one transaction.
+//!    mailbox), with its `user_profiles` row (display name, language), and
+//!    the identity is linked, in one transaction. Account creation,
+//!    the ACC-07 reservation check and the ACC-12 domain list are
+//!    authn-account's (`AccountService::provision_verified_user_in_tx`,
+//!    under the address lock; K-02, K-33) — there is no way to wire a
+//!    reservation stand-in.
 //! 4. An account with that address exists → **no automatic merge**
 //!    (`oauth_link_required`: sign in and link), unless
 //!    `oidc_client.auto_link_verified_email` is on **and** the provider is
@@ -24,24 +29,28 @@
 //!    attached to a `pending_verification` account.
 //!
 //! Explicit linking (signed in, step-up) is allowed only for `active`
-//! accounts with a verified address. Unlinking locks the user row first
-//! (`UserRepository::lock_for_update`, PWD-11) and refuses to remove the
-//! last way to sign in ([`crate::LoginMethodInventory`]).
+//! accounts with a verified address; a browser link flow re-validates the
+//! session that started it ([`crate::SessionLiveness`], K-03). Unlinking
+//! locks the user row first (`UserRepository::lock_for_update`, PWD-11)
+//! and refuses to remove the last way to sign in
+//! ([`crate::LoginMethodInventory`]). Linking (explicit or automatic) and
+//! unlinking send an `identity_linked` / `identity_unlinked` notice to the
+//! account's address in the same transaction (outbox, K-18); unlinking an
+//! Apple identity queues the revocation of its stored token (K-35).
 
-use authn_account::MailboxProof;
+use authn_account::{MailboxProof, ProvisionOutcome, VerifiedUserProvision};
 use authn_core::domain::{
     AccountStatus, AuthMethodRef, ClientKind, EmailAddress, LoginMethod, Principal,
 };
 use authn_core::error::{AuthError, codes as common};
 use authn_core::http::RequestContext;
-use authn_core::id::{IdentityId, UserId};
+use authn_core::id::{IdentityId, SessionId, UserId};
 use authn_core::ports::{
-    Actor, DomainEvent, DomainEventKind, LoginOutcome, PrimaryAuthentication, SecurityEvent,
+    Actor, LoginOutcome, Notification, NotificationKind, PrimaryAuthentication, SecurityEvent,
     SecurityEventKind,
 };
 use authn_core::secret::SensitiveString;
-use authn_store::users::EMAIL_UNIQUE_CONSTRAINT;
-use authn_store::{NewUser, UserRecord, UserRepository};
+use authn_store::{UserRecord, UserRepository};
 use serde::Serialize;
 use sqlx::PgConnection;
 use time::OffsetDateTime;
@@ -50,7 +59,9 @@ use utoipa::ToSchema;
 use super::OidcClientService;
 use crate::codes;
 use crate::identity::ExternalIdentity;
-use crate::store::{self, IdentityRow, NewIdentity, PROVIDER_SUBJECT_KEY, USER_PROVIDER_KEY};
+use crate::store::{
+    self, IdentityRow, NewIdentity, PROVIDER_SUBJECT_KEY, SealedTokens, USER_PROVIDER_KEY,
+};
 
 /// Upper bound on waiting for the user row lock.
 const LOCK_TIMEOUT_SQL: &str = "SET LOCAL lock_timeout = '5s'";
@@ -154,29 +165,45 @@ impl OidcClientService {
     }
 
     /// Stores or clears the sealed provider tokens of an identity (SOC-08):
-    /// nothing is kept unless `oidc_client.store_provider_tokens` is on;
-    /// otherwise every column is envelope encrypted with the row as AAD.
+    /// with `oidc_client.store_provider_tokens` every token is kept; with
+    /// it off only a refresh token needed for revocation is kept (Apple,
+    /// `revoke_tokens_on_deletion`, K-35) and everything else is cleared.
+    /// Every column is envelope encrypted with the row as AAD.
     async fn store_tokens(
         &self,
         conn: &mut PgConnection,
         identity: IdentityId,
         external: &ExternalIdentity,
     ) -> Result<(), AuthError> {
-        if !self.settings().config.store_provider_tokens {
-            store::set_tokens(conn, identity, None, None, None).await?;
+        let store_all = self.settings().config.store_provider_tokens;
+        let keep_refresh = self
+            .provider_by_storage_id(&external.provider)
+            .is_some_and(|p| p.keep_refresh_token_for_revocation);
+        if !store_all && !keep_refresh {
+            store::set_tokens(conn, identity, &SealedTokens::default()).await?;
             return Ok(());
         }
         let Some(tokens) = &external.tokens else {
+            // Nothing new (e.g. a native login without an authorization
+            // code): the stored tokens stay as they are.
             return Ok(());
         };
-        let access = self
-            .seal(
-                "identities",
-                "access_token_ciphertext",
-                identity,
-                tokens.access_token.expose().as_bytes(),
+        if !store_all && tokens.refresh_token.is_none() {
+            return Ok(());
+        }
+        let access = if store_all {
+            Some(
+                self.seal(
+                    "identities",
+                    "access_token_ciphertext",
+                    identity,
+                    tokens.access_token.expose().as_bytes(),
+                )
+                .await?,
             )
-            .await?;
+        } else {
+            None
+        };
         let refresh = match &tokens.refresh_token {
             Some(r) => Some(
                 self.seal(
@@ -192,12 +219,55 @@ impl OidcClientService {
         store::set_tokens(
             conn,
             identity,
-            Some(&access),
-            refresh.as_deref(),
-            tokens.expires_at,
+            &SealedTokens {
+                access: access.as_deref(),
+                refresh: refresh.as_deref(),
+                expires_at: if store_all { tokens.expires_at } else { None },
+                client_id: external.client_id.as_deref(),
+            },
         )
         .await?;
         Ok(())
+    }
+
+    /// Queues an `identity_linked` / `identity_unlinked` notice to the
+    /// account's current address in the caller's transaction (K-18).
+    async fn notify_identity_change(
+        &self,
+        conn: &mut PgConnection,
+        ctx: &RequestContext,
+        user: UserId,
+        provider: &str,
+        linked: bool,
+    ) -> Result<(), AuthError> {
+        let Some((recipient, locale)) = self
+            .deps()
+            .accounts
+            .notification_recipient_in(&mut *conn, user, ctx.locale)
+            .await?
+        else {
+            return Ok(());
+        };
+        let provider = self
+            .provider_by_storage_id(provider)
+            .map_or_else(|| provider.to_owned(), |p| p.display_name.clone());
+        let at = self.now();
+        let kind = if linked {
+            NotificationKind::IdentityLinked { provider, at }
+        } else {
+            NotificationKind::IdentityUnlinked { provider, at }
+        };
+        self.deps()
+            .notifier
+            .notify_in_tx(
+                conn,
+                Notification {
+                    recipient,
+                    locale,
+                    kind,
+                },
+            )
+            .await
     }
 
     async fn insert_identity(
@@ -306,65 +376,31 @@ impl OidcClientService {
             .and_then(|e| EmailAddress::parse(e).ok())
             .ok_or_else(|| AuthError::new(codes::OAUTH_EMAIL_NOT_VERIFIED))?;
 
-        match UserRepository::find_by_email(&mut *tx, &email).await? {
-            None => {
-                if self
-                    .deps()
-                    .reservations
-                    .is_reserved(&mut tx, &email)
-                    .await?
-                {
-                    return Err(AuthError::new(codes::OAUTH_LINK_REQUIRED));
-                }
-                let user = UserId::generate();
-                match UserRepository::create(
-                    &mut tx,
-                    &NewUser {
-                        id: user,
-                        email,
-                        status: AccountStatus::Active,
-                        created_at: now,
-                    },
-                )
-                .await
-                {
-                    Ok(_) => {}
-                    Err(e) if e.is_unique_violation(EMAIL_UNIQUE_CONSTRAINT) => {
-                        return Ok(Resolution::Retry);
-                    }
-                    Err(e) => return Err(e.into()),
-                }
-                UserRepository::mark_email_verified(&mut tx, user, now).await?;
+        let provisioned = self
+            .deps()
+            .accounts
+            .provision_verified_user_in_tx(
+                &mut tx,
+                ctx,
+                VerifiedUserProvision {
+                    email: &email,
+                    display_name: external.display_name.as_deref(),
+                    locale: ctx.locale,
+                    method: "social",
+                    provider: Some(&external.provider),
+                },
+            )
+            .await?;
+        match provisioned {
+            // ACC-07: the address is held for its previous owner during an
+            // e-mail change's revert period — never a new account.
+            ProvisionOutcome::Reserved => Err(AuthError::new(codes::OAUTH_LINK_REQUIRED)),
+            ProvisionOutcome::Conflict => Ok(Resolution::Retry),
+            ProvisionOutcome::Created(user) => {
                 let Ok(identity) = self.insert_identity(&mut tx, user, external).await? else {
                     return Ok(Resolution::Retry);
                 };
                 self.store_tokens(&mut tx, identity, external).await?;
-                self.deps()
-                    .events
-                    .publish(
-                        &mut tx,
-                        DomainEvent {
-                            user_id: Some(user),
-                            ..DomainEvent::new(
-                                DomainEventKind::UserCreated,
-                                now,
-                                serde_json::json!({
-                                    "user_id": user,
-                                    "status": AccountStatus::Active,
-                                    "method": "social",
-                                }),
-                            )
-                        },
-                    )
-                    .await?;
-                let registered = SecurityEvent::new(SecurityEventKind::AccountRegistered, now)
-                    .with_context(ctx)
-                    .with_actor(Actor::Anonymous)
-                    .with_subject(user)
-                    .with_resource("user", user)
-                    .with_meta("method", "social")
-                    .with_meta("provider", external.provider.clone());
-                self.deps().audit.record_in_tx(&mut tx, registered).await?;
                 let linked = self
                     .identity_event(
                         SecurityEventKind::IdentityLinked,
@@ -379,7 +415,19 @@ impl OidcClientService {
                 crate::metrics::account_created(&external.provider);
                 Ok(Resolution::User(user))
             }
-            Some(existing) => {
+            ProvisionOutcome::Existing(existing) => {
+                // The identity may have been linked by a concurrent first
+                // sign-in that held the address lock before us (double
+                // submit, app retry): look again under the lock and, if
+                // so, run the decision again (it then signs in by
+                // `(provider, subject)`) instead of refusing the user's
+                // own identity with `oauth_link_required`.
+                if store::find_identity(&mut *tx, &external.provider, &external.subject)
+                    .await?
+                    .is_some()
+                {
+                    return Ok(Resolution::Retry);
+                }
                 let eligible = matches!(
                     existing.status,
                     AccountStatus::Active | AccountStatus::PendingVerification
@@ -427,6 +475,10 @@ impl OidcClientService {
                     )
                     .with_meta("linked_by", "auto_link_verified_email");
                 self.deps().audit.record_in_tx(&mut tx, linked).await?;
+                // K-18: an automatic link is exactly what the owner must
+                // hear about.
+                self.notify_identity_change(&mut tx, ctx, locked.id, &external.provider, true)
+                    .await?;
                 authn_store::commit(tx).await?;
                 Ok(Resolution::User(locked.id))
             }
@@ -447,11 +499,15 @@ impl OidcClientService {
     }
 
     /// Links `external` to `user` (SOC-06) in one transaction holding the
-    /// user row lock.
+    /// user row lock. `session` is the session that started a browser link
+    /// flow: it must still be an active session of `user` (K-03), checked
+    /// under the row lock; `None` for the native link, whose request is
+    /// itself authenticated.
     pub(crate) async fn link_identity(
         &self,
         ctx: &RequestContext,
         user: UserId,
+        session: Option<SessionId>,
         external: &ExternalIdentity,
     ) -> Result<IdentitySummary, AuthError> {
         let mut tx = authn_store::begin(&self.deps().pool).await?;
@@ -459,6 +515,18 @@ impl OidcClientService {
         let record = UserRepository::lock_for_update(&mut tx, user)
             .await?
             .ok_or_else(|| AuthError::new(common::common::NOT_FOUND))?;
+        if let Some(session) = session
+            && !self
+                .deps()
+                .session_liveness
+                .is_active(&mut tx, session, user, self.now())
+                .await?
+        {
+            // Signed out, reset, revoked or expired since the flow
+            // started: the flow dies with the session.
+            tracing::info!(user = %user, "link callback for a session that is no longer active");
+            return Err(AuthError::new(codes::OAUTH_STATE_INVALID));
+        }
         if !linkable(&record) {
             return Err(AuthError::new(codes::IDENTITY_LINK_NOT_ALLOWED));
         }
@@ -500,6 +568,8 @@ impl OidcClientService {
             )
             .with_meta("linked_by", "user");
         self.deps().audit.record_in_tx(&mut tx, event).await?;
+        self.notify_identity_change(&mut tx, ctx, user, &external.provider, true)
+            .await?;
         let rows = store::identities_of(&mut *tx, user).await?;
         authn_store::commit(tx).await?;
         tracing::info!(user = %user, identity = %identity, "identity linked");
@@ -554,6 +624,17 @@ impl OidcClientService {
             }
         }
         let provider = target.provider.clone();
+        // K-35: the provider token outlives the row only as a queued
+        // revocation (same transaction).
+        super::revocation::queue_identity_revocation(
+            &mut tx,
+            &self.deps().envelopes,
+            self.deps().audit.as_ref(),
+            self.now(),
+            user,
+            target,
+        )
+        .await?;
         if !store::delete_identity(&mut tx, identity, user).await? {
             return Err(AuthError::new(common::common::NOT_FOUND));
         }
@@ -568,6 +649,8 @@ impl OidcClientService {
             event.impersonator = Some(imp.admin_user_id);
         }
         self.deps().audit.record_in_tx(&mut tx, event).await?;
+        self.notify_identity_change(&mut tx, ctx, user, &provider, false)
+            .await?;
         authn_store::commit(tx).await?;
         tracing::info!(user = %user, identity = %identity, "identity unlinked");
         Ok(())

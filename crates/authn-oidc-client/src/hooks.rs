@@ -1,7 +1,12 @@
 //! Facts this crate needs from other modules (contracts §2 / §4: wave-B
 //! crates never depend on each other, and some data belongs to wave-A
-//! modules whose APIs do not expose it yet). authn-server implements these
-//! traits; the defaults are safe for tests and minimal deployments.
+//! modules whose APIs do not expose it). authn-server implements these
+//! traits.
+//!
+//! Address reservations (ACC-07) are **not** a hook (K-02): the service
+//! reads them through authn-account itself
+//! (`AccountService::provision_verified_user_in_tx`, under the address
+//! lock), so no deployment can wire a fail-open stand-in.
 //!
 //! Rule for implementations (contracts §4): read **only through the given
 //! connection** — the caller holds the `users` row lock
@@ -10,11 +15,12 @@
 //! effects.
 
 use async_trait::async_trait;
-use authn_core::domain::{EmailAddress, LoginMethod};
+use authn_core::domain::LoginMethod;
 use authn_core::error::AuthError;
-use authn_core::id::UserId;
+use authn_core::id::{SessionId, UserId};
 use authn_store::UserRepository;
 use sqlx::PgConnection;
+use time::OffsetDateTime;
 
 /// Login methods of an account **besides linked social identities**
 /// (SOC-06: the last way to sign in cannot be unlinked).
@@ -60,48 +66,25 @@ impl LoginMethodInventory for PasswordOnlyInventory {
     }
 }
 
-/// Addresses that must not get a new account (SOC-05 with ACC-07): after an
-/// e-mail change the old address stays reserved for its previous owner for
-/// the revert period (`email_reservations`, owned by authn-account).
+/// Whether the session that started a **link** flow is still valid
+/// (K-03, SOC-06, SES-13): the browser callback carries no session cookie
+/// (Apple's cross-site `form_post`), so the flow stores the session id at
+/// start and the callback asks this hook — inside the link transaction,
+/// after the user row is locked — before attaching the identity.
 ///
-/// Server implementation: authn-account's reservation lookup on the given
-/// connection (requested in `contract-change-requests.md`, authn-oidc-client
-/// section — authn-account does not expose it yet).
+/// Server implementation: authn-session on the given connection — `true`
+/// only when the session exists, belongs to `user`, is not revoked and has
+/// neither idle- nor absolute-expired at `now` (impersonation sessions:
+/// `false`; they cannot link). There is **no default implementation**:
+/// a permissive one would silently reopen the window this closes.
 #[async_trait]
-pub trait AddressReservations: Send + Sync {
-    /// Whether `email` is reserved for an existing account.
-    async fn is_reserved(
+pub trait SessionLiveness: Send + Sync {
+    /// Whether `session` is an active session of `user` at `now`.
+    async fn is_active(
         &self,
         conn: &mut PgConnection,
-        email: &EmailAddress,
+        session: SessionId,
+        user: UserId,
+        now: OffsetDateTime,
     ) -> Result<bool, AuthError>;
-
-    /// Whether reservations are actually looked up. `false` only for
-    /// [`NoReservations`]; the service logs a start-up warning then.
-    fn enforced(&self) -> bool {
-        true
-    }
-}
-
-/// [`AddressReservations`] without reservations (tests, deployments without
-/// e-mail change). **Production must use the authn-account adapter**: with
-/// this one, a social sign-up during an e-mail change's revert period can
-/// take the old address and make the revert impossible (ACC-07). The
-/// service warns at start-up when it is wired.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct NoReservations;
-
-#[async_trait]
-impl AddressReservations for NoReservations {
-    async fn is_reserved(
-        &self,
-        _conn: &mut PgConnection,
-        _email: &EmailAddress,
-    ) -> Result<bool, AuthError> {
-        Ok(false)
-    }
-
-    fn enforced(&self) -> bool {
-        false
-    }
 }

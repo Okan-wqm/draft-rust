@@ -404,6 +404,11 @@ impl AccountService {
                 .with_subject(user)
                 .with_meta("reason", reason),
         );
+        // Other modules' work before their rows cascade away (K-35: e.g.
+        // queue the revocation of a Sign in with Apple token).
+        for hook in self.erasure_hooks() {
+            hook.before_erasure_in_tx(tx.conn(), user).await?;
+        }
         // Order: record the events (they get the pseudonym), unlink the
         // pseudonym and erase audit PII, then delete the row.
         tx.flush_audit().await?;

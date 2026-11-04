@@ -53,12 +53,13 @@ pub(crate) fn has_passkey(amr: &[AuthMethodRef]) -> bool {
 
 impl SessionService {
     /// Re-reads the locked session's token and checks that the request's
-    /// cookie is still the current one (a concurrent rotation wins).
+    /// cookie (or impersonation header token, K-12) is still the current
+    /// one (a concurrent rotation wins).
     pub(crate) async fn check_current_token(
         conn: &mut sqlx::PgConnection,
         current: &CurrentSession,
     ) -> Result<(), AuthError> {
-        if let Some(presented) = current.token_hash {
+        if let Some(presented) = current.token_hash.or(current.impersonation_header_hash) {
             let stored = sessions::token_hash(conn, current.record.id).await?;
             if stored != Some(TokenHash::from_bytes(presented)) {
                 return Err(AuthError::new(codes::common::UNAUTHENTICATED)

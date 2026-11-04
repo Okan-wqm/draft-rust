@@ -22,7 +22,9 @@
 //! updated, so concurrent assertions or a stale ceremony snapshot cannot
 //! slip a regression through. A counter regression on a *signature-verified*
 //! assertion marks the passkey (`clone_suspected_at`), records
-//! `passkey.clone_suspected` and fails the ceremony. Backup-flag
+//! `passkey.clone_suspected`, queues the `passkey_clone_suspected` e-mail
+//! (first detection of that passkey only; K-19) — all in one transaction —
+//! and fails the ceremony. Backup-flag
 //! inconsistencies are detected by `webauthn-rs` before the signature is
 //! checked, so they only fail the ceremony (forgeable without the key).
 //!
@@ -576,7 +578,13 @@ impl WebauthnService {
             .failed(reason)
             .with_meta("purpose", purpose_label(purpose))
             .with_meta("stored_sign_count", row.sign_count);
-        self.deps().audit.record_in_tx(conn, event).await
+        self.deps().audit.record_in_tx(&mut *conn, event).await?;
+        // K-19: tell the owner once per passkey (the first detection); later
+        // detections of an already flagged passkey only add audit events.
+        if row.clone_suspected_at.is_none() {
+            self.notify_clone_suspected(conn, ctx, row.user_id).await?;
+        }
+        Ok(())
     }
 }
 

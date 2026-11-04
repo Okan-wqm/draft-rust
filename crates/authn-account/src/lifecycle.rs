@@ -251,6 +251,20 @@ pub(crate) async fn write_transition(
     })
 }
 
+/// Whether the request's client IP / user agent may be attached to an
+/// event about a user performed by `actor` (K-14). The audit sink stores an
+/// event's client data under the acting user's pseudonym when the actor is
+/// a user, otherwise under the **subject's**: for `Actor::System` (platform
+/// staff through authn-admin, jobs), service accounts and API keys the
+/// caller's network would become the subject's personal data and appear
+/// (masked) in the subject's own event list, so it is not attached.
+pub(crate) fn keeps_client_context(actor: Actor) -> bool {
+    match actor {
+        Actor::User(_) | Actor::Anonymous => true,
+        Actor::System | Actor::ServiceAccount(_) | Actor::ApiKey(_) => false,
+    }
+}
+
 /// The `account.status_changed` audit event of a transition.
 pub(crate) fn transition_event(
     user: &UserRecord,
@@ -260,7 +274,17 @@ pub(crate) fn transition_event(
 ) -> SecurityEvent {
     let mut event = SecurityEvent::new(SecurityEventKind::AccountStatusChanged, now);
     if let Some(ctx) = ctx {
-        event = event.with_context(ctx);
+        if keeps_client_context(change.actor) {
+            event = event.with_context(ctx);
+        } else {
+            // K-14 (ADM-08): a status change made by platform staff
+            // (`Actor::System` from authn-admin), a service account or an
+            // API key lands in the user's own event list; the caller's IP /
+            // user agent would be shown there (masked) and stored as the
+            // user's personal data. Only the request id is
+            // kept, for correlation with the caller's own `admin.*` event.
+            event.request_id = Some(ctx.request_id);
+        }
     }
     event
         .with_actor(change.actor)

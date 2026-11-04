@@ -9,6 +9,14 @@
 //!   providers do not block each other.
 //! * When a download fails, a stale cache that has the key is still used
 //!   (the provider's key did not change by being unreachable).
+//! * Failed downloads back off per URL (K-16): after the n-th consecutive
+//!   failure no download is attempted for
+//!   `min(JWKS_BACKOFF_BASE · 2^(n-1), JWKS_BACKOFF_MAX)`; meanwhile
+//!   verifications use the stale key if there is one and otherwise fail
+//!   fast with `service_unavailable` (no request to the provider). During
+//!   a provider outage a flood of logins therefore costs at most one
+//!   download attempt per backoff interval, not one per login. The first
+//!   successful download resets the backoff.
 //! * Entries that are not signature keys (`use` ≠ `sig`), unparseable keys
 //!   and symmetric keys are dropped; at most [`MAX_KEYS`] keys are kept.
 
@@ -27,6 +35,19 @@ use crate::outbound;
 
 /// Most keys kept from one JWKS document.
 pub const MAX_KEYS: usize = 64;
+/// Wait after the first failed download of a JWKS URL (K-16).
+pub const JWKS_BACKOFF_BASE: Duration = Duration::from_secs(5);
+/// Longest wait between two download attempts of a failing JWKS URL.
+pub const JWKS_BACKOFF_MAX: Duration = Duration::from_secs(300);
+
+/// Backoff after `failures` consecutive failed downloads (≥ 1).
+#[must_use]
+pub fn backoff(failures: u32) -> Duration {
+    let exponent = failures.saturating_sub(1).min(16);
+    JWKS_BACKOFF_BASE
+        .saturating_mul(1_u32 << exponent)
+        .min(JWKS_BACKOFF_MAX)
+}
 
 #[derive(Clone)]
 struct Entry {
@@ -43,7 +64,17 @@ impl Entry {
     }
 }
 
-type Slot = Arc<tokio::sync::Mutex<Option<Entry>>>;
+/// Per-URL state: the cached keys and the download backoff.
+#[derive(Default)]
+struct SlotState {
+    entry: Option<Entry>,
+    /// Consecutive failed downloads.
+    failures: u32,
+    /// No download before this instant (set after a failure).
+    retry_at: Option<OffsetDateTime>,
+}
+
+type Slot = Arc<tokio::sync::Mutex<SlotState>>;
 
 /// The JWKS cache. Cheap to clone (shared state).
 #[derive(Clone)]
@@ -82,6 +113,11 @@ pub fn parse_jwks(body: &[u8]) -> Result<Vec<CoreJsonWebKey>, AuthError> {
         })
         .take(MAX_KEYS)
         .collect())
+}
+
+fn unavailable() -> AuthError {
+    AuthError::new(authn_core::error::codes::common::SERVICE_UNAVAILABLE)
+        .with_context("provider JWKS unavailable")
 }
 
 fn age(now: OffsetDateTime, then: OffsetDateTime) -> Duration {
@@ -126,7 +162,7 @@ impl JwksCache {
     ) -> Result<Option<CoreJsonWebKey>, AuthError> {
         let slot = self.slot(url);
         let mut guard = slot.lock().await;
-        if let Some(entry) = guard.as_ref() {
+        if let Some(entry) = guard.entry.as_ref() {
             let fresh = age(now, entry.fetched_at) < self.ttl;
             if fresh {
                 if let Some(key) = entry.find(kid) {
@@ -140,6 +176,17 @@ impl JwksCache {
                     return Ok(None);
                 }
             }
+        }
+        if let Some(retry_at) = guard.retry_at
+            && now < retry_at
+        {
+            // Backing off after failed downloads: no request to the
+            // provider; a stale key still verifies (K-16).
+            crate::metrics::jwks_failure("backoff");
+            return match guard.entry.as_ref().and_then(|e| e.find(kid)) {
+                Some(stale) => Ok(Some(stale)),
+                None => Err(unavailable()),
+            };
         }
         let fetched = outbound::get(http, url.clone(), target, None, None)
             .await
@@ -157,20 +204,29 @@ impl JwksCache {
                     fetched_at: now,
                 };
                 let found = entry.find(kid);
-                *guard = Some(entry);
+                *guard = SlotState {
+                    entry: Some(entry),
+                    failures: 0,
+                    retry_at: None,
+                };
                 Ok(found)
             }
             Err(_) => {
+                crate::metrics::jwks_failure("failed");
+                guard.failures = guard.failures.saturating_add(1);
+                let wait = backoff(guard.failures);
+                guard.retry_at = time::Duration::try_from(wait)
+                    .ok()
+                    .and_then(|w| now.checked_add(w));
                 tracing::warn!(
                     host = url.host_str().unwrap_or_default(),
+                    failures = guard.failures,
+                    backoff_secs = wait.as_secs(),
                     "JWKS download failed"
                 );
-                match guard.as_ref().and_then(|e| e.find(kid)) {
+                match guard.entry.as_ref().and_then(|e| e.find(kid)) {
                     Some(stale) => Ok(Some(stale)),
-                    None => Err(AuthError::new(
-                        authn_core::error::codes::common::SERVICE_UNAVAILABLE,
-                    )
-                    .with_context("provider JWKS unavailable")),
+                    None => Err(unavailable()),
                 }
             }
         }
@@ -180,6 +236,16 @@ impl JwksCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn soc_03_jwks_backoff_is_exponential_and_bounded() {
+        assert_eq!(backoff(1), Duration::from_secs(5));
+        assert_eq!(backoff(2), Duration::from_secs(10));
+        assert_eq!(backoff(3), Duration::from_secs(20));
+        assert_eq!(backoff(7), Duration::from_secs(300));
+        assert_eq!(backoff(u32::MAX), JWKS_BACKOFF_MAX);
+        assert_eq!(backoff(0), JWKS_BACKOFF_BASE);
+    }
 
     #[test]
     fn soc_03_jwks_parsing_drops_symmetric_encryption_and_unnamed_keys() {

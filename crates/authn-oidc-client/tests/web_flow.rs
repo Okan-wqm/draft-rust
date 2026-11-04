@@ -680,9 +680,9 @@ async fn soc_01_generic_discovery_with_foreign_issuer_is_refused(pool: PgPool) {
         .mount(&h.idp.server)
         .await;
     let registry = authn_oidc_client::ProviderRegistry::from_settings(&settings).unwrap();
-    let service = OidcClientService::with_registry(h.service_deps(), settings, registry);
+    let service = OidcClientService::with_registry(h.service_deps(), settings, registry).unwrap();
     let err = service
-        .start_web_login(&h.ctx(), "mixup", None, None)
+        .start_web_login(&h.ctx(), "mixup", None, None, Default::default())
         .await
         .unwrap_err();
     assert!(err.is(authn_core::error::codes::common::SERVICE_UNAVAILABLE));

@@ -11,7 +11,11 @@
 mod actions;
 mod audit;
 mod emergency;
+#[cfg(feature = "passkey")]
+mod enrollment;
+mod export;
 mod impersonation;
+mod limits;
 mod users;
 
 use std::sync::Arc;
@@ -22,7 +26,8 @@ use authn_core::error::{AuthError, codes};
 use authn_core::http::RequestContext;
 use authn_core::id::{EventId, UserId};
 use authn_core::ports::{
-    Actor, AuditSink, Clock, SecurityEvent, SecurityEventKind, SessionIssuer, SessionRevoker,
+    Actor, AuditSink, Clock, RateLimiter, SecurityEvent, SecurityEventKind, SessionIssuer,
+    SessionRevoker,
 };
 use authn_crypto::envelope::EnvelopeCipher;
 use authn_mfa::MfaService;
@@ -39,6 +44,7 @@ pub use self::audit::{
     AdminAuditEvent, AdminAuditFilter, AuditExport, ChainVerification, VerifiedAnchor,
 };
 pub use self::emergency::{BulkResetOutcome, EmergencyOutcome, KeyRotationOutcome};
+pub use self::export::{AdminActionsDataExporter, STAFF_ACTOR};
 pub use self::impersonation::ImpersonationOptions;
 pub use self::users::{
     AdminUserDetail, AdminUserSummary, PasswordState, UserSearch, UserStatusFilter,
@@ -82,6 +88,10 @@ pub struct AdminServiceDeps {
     pub envelopes: EnvelopeCipher,
     /// In-process signing key cache to drop after an emergency rotation.
     pub signing_keys: Arc<dyn SigningKeyCache>,
+    /// Rate limiter (authn-protect) for the blast-radius limits of
+    /// emergency and admin-targeting actions, chain verification and
+    /// enrollment links (K-08, K-09, K-11).
+    pub rate_limiter: Arc<dyn RateLimiter>,
 }
 
 struct Inner {
@@ -250,6 +260,25 @@ impl AdminService {
             .ok_or_else(|| AuthError::new(codes::common::NOT_FOUND))?;
         check_target(caller, &record, policy)?;
         Ok(record)
+    }
+
+    /// K-08: before an action on `target` (no transaction open yet), the
+    /// admin-targeting budgets apply when `target` is a platform admin.
+    /// Returns whether it is one (the action is then high priority).
+    pub(crate) async fn guard_admin_target(
+        &self,
+        caller: &AdminCaller,
+        ctx: &RequestContext,
+        target: UserId,
+        action: &'static str,
+    ) -> Result<bool, AuthError> {
+        let is_admin = UserRepository::find_by_id(self.pool(), target)
+            .await?
+            .is_some_and(|u| u.is_platform_admin && u.id != caller.user_id());
+        if is_admin {
+            self.check_admin_target(caller, ctx, action).await?;
+        }
+        Ok(is_admin)
     }
 
     /// Records the audit event of an admin action in the caller's

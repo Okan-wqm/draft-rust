@@ -12,7 +12,7 @@
 use authn_core::domain::AccountStatus;
 use authn_core::error::AuthError;
 use authn_core::ports::Actor;
-use authn_store::UserRepository;
+use authn_store::{UserClaim, UserRepository};
 
 use super::AccountService;
 use crate::lifecycle::{StatusChange, apply_transition};
@@ -85,12 +85,11 @@ impl AccountService {
         for _ in 0..max {
             let now = self.now();
             let mut tx = self.begin().await?;
-            let Some(user_id) = SharedReads::claim_expired_lock(tx.conn(), now, &skip).await?
+            // Row-locked by the claim itself (`FOR UPDATE SKIP LOCKED`).
+            let Some(user) =
+                UserRepository::claim_next(tx.conn(), UserClaim::LockExpiredAt(now), &skip).await?
             else {
                 break;
-            };
-            let Some(user) = UserRepository::lock_for_update(tx.conn(), user_id).await? else {
-                continue;
             };
             let change = StatusChange::new(AccountStatus::Active, "lock_expired", Actor::System);
             let verified = user.email_verified_at.is_some();
@@ -103,7 +102,7 @@ impl AccountService {
                     // Only reachable with inconsistent data (locked without
                     // a verified address); leave it for an administrator.
                     tracing::error!(user_id = %user.id, error = %err, "expired lock not released");
-                    skip.push(user.id.as_uuid());
+                    skip.push(user.id);
                 }
             }
         }

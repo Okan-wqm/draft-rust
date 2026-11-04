@@ -19,7 +19,7 @@ use std::time::Duration;
 use authn_core::domain::{ClientKind, Principal};
 use authn_core::error::AuthError;
 use authn_core::http::RequestContext;
-use authn_core::id::{OAuthStateId, UserId};
+use authn_core::id::{OAuthStateId, SessionId, UserId};
 use authn_core::ports::LoginOutcome;
 use authn_crypto::token::{OpaqueToken, TokenHash};
 use secrecy::zeroize::Zeroizing;
@@ -78,6 +78,17 @@ impl std::fmt::Debug for CallbackParams {
     }
 }
 
+/// Session options of a browser **login** (SES-06, SES-07, K-32): chosen
+/// on the login page, stored with the authorization state and handed to
+/// the session pipeline by the callback.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WebLoginOptions {
+    /// "Remember me" (long-lived session).
+    pub remember_me: bool,
+    /// "This is not my device" (browser-session cookie, short lifetime).
+    pub shared_device: bool,
+}
+
 /// What a callback produced.
 #[derive(Debug)]
 pub enum CallbackResult {
@@ -96,6 +107,14 @@ pub enum CallbackResult {
     },
 }
 
+/// Which browser flow is started.
+enum Flow {
+    /// Login, with the session options of the login page.
+    Login(WebLoginOptions),
+    /// Linking to `user`'s account, from `session`.
+    Link { user: UserId, session: SessionId },
+}
+
 fn bounded(value: Option<&str>) -> Option<&str> {
     value.filter(|v| {
         !v.is_empty() && v.len() <= MAX_PARAM_BYTES && v.bytes().all(|b| b.is_ascii_graphic())
@@ -112,15 +131,23 @@ impl OidcClientService {
         provider: &str,
         return_to: Option<&str>,
         binding_cookie: Option<&str>,
+        options: WebLoginOptions,
     ) -> Result<WebStart, AuthError> {
         let provider = self.provider(provider)?.clone();
-        self.start(ctx, &provider, FLOW_LOGIN, None, return_to, binding_cookie)
-            .await
+        self.start(
+            ctx,
+            &provider,
+            Flow::Login(options),
+            return_to,
+            binding_cookie,
+        )
+        .await
     }
 
     /// Starts linking `provider` to the signed-in account (SOC-06; requires
     /// a recent authentication, SES-13). The callback links instead of
-    /// logging in.
+    /// logging in — only while the session that started the flow is still
+    /// active (K-03).
     pub async fn start_web_link(
         &self,
         ctx: &RequestContext,
@@ -130,13 +157,15 @@ impl OidcClientService {
         binding_cookie: Option<&str>,
     ) -> Result<WebStart, AuthError> {
         let user = self.require_step_up(principal)?;
+        let session = principal
+            .session_id()
+            .ok_or_else(|| AuthError::new(authn_core::error::codes::common::FORBIDDEN))?;
         let provider = self.provider(provider)?.clone();
         self.ensure_linkable(user).await?;
         self.start(
             ctx,
             &provider,
-            FLOW_LINK,
-            Some(user),
+            Flow::Link { user, session },
             return_to,
             binding_cookie,
         )
@@ -147,11 +176,19 @@ impl OidcClientService {
         &self,
         ctx: &RequestContext,
         provider: &Provider,
-        flow: &'static str,
-        user: Option<UserId>,
+        flow: Flow,
         return_to: Option<&str>,
         binding_cookie: Option<&str>,
     ) -> Result<WebStart, AuthError> {
+        let (flow_name, user, session, options) = match flow {
+            Flow::Login(options) => (FLOW_LOGIN, None, None, options),
+            Flow::Link { user, session } => (
+                FLOW_LINK,
+                Some(user),
+                Some(session),
+                WebLoginOptions::default(),
+            ),
+        };
         self.rate_limit(actions::START, ctx, self.settings().start_per_ip)
             .await?;
         let return_to = self.validate_return_to(return_to)?;
@@ -180,7 +217,7 @@ impl OidcClientService {
             &NewState {
                 id,
                 provider: &provider.storage_id,
-                flow,
+                flow: flow_name,
                 state_hash: state.hash().as_bytes(),
                 nonce_hash: nonce.hash().as_bytes(),
                 pkce_verifier_ciphertext: Some(&sealed),
@@ -190,6 +227,9 @@ impl OidcClientService {
                 binding_hash: Some(binding.hash().as_bytes()),
                 created_at: now,
                 expires_at: now + ttl,
+                remember_me: options.remember_me,
+                shared_device: options.shared_device,
+                session_id: session,
             },
         )
         .await?;
@@ -344,11 +384,23 @@ impl OidcClientService {
             let user = row
                 .user_id
                 .ok_or_else(|| AuthError::internal("link state without user"))?;
-            self.link_identity(ctx, user, &external).await?;
+            // K-03: rows written before migration 2101 were removed by it;
+            // a link row always names its session (CHECK constraint).
+            let session = row
+                .session_id
+                .ok_or_else(|| AuthError::new(codes::OAUTH_STATE_INVALID))?;
+            self.link_identity(ctx, user, Some(session), &external)
+                .await?;
             return Ok(CallbackResult::Linked { return_to });
         }
         let outcome = self
-            .login_with_identity(ctx, &external, ClientKind::Web, false, false)
+            .login_with_identity(
+                ctx,
+                &external,
+                ClientKind::Web,
+                row.remember_me,
+                row.shared_device,
+            )
             .await?;
         Ok(CallbackResult::Login { outcome, return_to })
     }

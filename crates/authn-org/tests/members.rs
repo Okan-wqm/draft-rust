@@ -186,7 +186,11 @@ async fn org_02_suspension_and_downgrade_revoke_org_sessions(pool: PgPool) {
         .unwrap();
     assert_eq!(updated.role.key, "member");
     // member ⊉ viewer (viewer has roles:read etc.): that is a downgrade.
-    assert!(h.revoked_in_org(carol, org));
+    assert!(h.changed_in_org(carol, org));
+    assert!(
+        !h.revoked_in_org(carol, org),
+        "K-41: a role change is not a removal"
+    );
 
     let downgraded = h
         .service
@@ -203,7 +207,11 @@ async fn org_02_suspension_and_downgrade_revoke_org_sessions(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(downgraded.role.key, "viewer");
-    assert!(h.revoked_in_org(bob, org));
+    assert!(h.changed_in_org(bob, org));
+    assert!(
+        !h.revoked_in_org(bob, org),
+        "K-41: a role change is not a removal"
+    );
     assert_eq!(
         h.ports
             .audit
@@ -227,6 +235,8 @@ async fn org_02_suspension_and_downgrade_revoke_org_sessions(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(suspended.status, MemberStatus::Suspended);
+    // K-41: a suspension removes access (`membership_removed`).
+    assert!(h.revoked_in_org(bob, org));
     // A suspended member has no access at all (looks like an outsider).
     let err = h
         .service

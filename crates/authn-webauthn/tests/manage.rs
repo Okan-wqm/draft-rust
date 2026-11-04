@@ -416,6 +416,11 @@ async fn pky_04_remove_all_passkeys_in_tx_for_admin_reset(pool: PgPool) {
         assert_eq!(event.actor, Actor::System);
         assert_eq!(event.subject_user, Some(alice.user));
         assert_eq!(event.metadata["reason"], "admin_reset");
+        // K-14 rule: the admin's IP / user agent never reach the user's
+        // own security events; only the request id correlates.
+        assert_eq!(event.ip, None);
+        assert_eq!(event.user_agent, None);
+        assert!(event.request_id.is_some());
     }
     assert!(h.ports.notifier.with_template("mfa_factor_removed").len() > notified_before);
 

@@ -37,7 +37,7 @@ use utoipa::{IntoParams, OpenApi, ToSchema};
 use crate::cookies::{binding_cookie, read_binding};
 use crate::service::{
     CallbackParams, CallbackResult, IdentitySummary, NativeLoginRequest, NativeNonce,
-    OidcClientService, ProviderInfo, WebStart,
+    OidcClientService, ProviderInfo, WebLoginOptions, WebStart,
 };
 
 /// The module router. Requires [`OidcClientService`] from the state; the
@@ -112,6 +112,12 @@ pub struct StartParams {
     /// Where to go after login: a same-origin path or an allow-listed
     /// absolute URL (PRT-10). Default `/`.
     pub return_to: Option<String>,
+    /// "Remember me" (SES-06): a long-lived session. Default `false`.
+    #[serde(default)]
+    pub remember_me: bool,
+    /// "This is not my device" (SES-07). Default `false`.
+    #[serde(default)]
+    pub shared_device: bool,
 }
 
 /// Body of `POST /v1/oauth/nonce`.
@@ -155,6 +161,9 @@ pub struct LinkNativeRequest {
     pub provider: String,
     /// ID token from the platform SDK (nonce from `POST /v1/oauth/nonce`).
     pub id_token: String,
+    /// Sign in with Apple only: the SDK's `authorizationCode` (K-35).
+    #[serde(default)]
+    pub authorization_code: Option<String>,
 }
 
 impl std::fmt::Debug for LinkNativeRequest {
@@ -237,6 +246,10 @@ pub async fn start_login(
             &provider,
             params.return_to.as_deref(),
             cookie.as_deref(),
+            WebLoginOptions {
+                remember_me: params.remember_me,
+                shared_device: params.shared_device,
+            },
         )
         .await?;
     let response = redirect(start.authorization_url.as_str())?;
@@ -251,17 +264,24 @@ async fn finish_callback(
     params: &CallbackParams,
 ) -> Result<Response, AuthError> {
     let cookie = read_binding(headers);
-    match service
+    let result = service
         .web_callback(ctx, provider, params, cookie.as_deref())
-        .await?
-    {
-        CallbackResult::Login { outcome, return_to } => Ok(no_store(
+        .await;
+    match result {
+        Ok(CallbackResult::Login { outcome, return_to }) => Ok(no_store(
             service
                 .deps()
                 .sessions
                 .login_response(outcome, Some(&return_to)),
         )),
-        CallbackResult::Linked { return_to } => redirect(&return_to),
+        Ok(CallbackResult::Linked { return_to }) => redirect(&return_to),
+        // K-36: a configured (start-up validated, allow-listed) error page
+        // gets the stable code; never the state's `return_to` (the state
+        // may be forged) and never error details.
+        Err(err) => match service.error_redirect_location(&err) {
+            Some(location) => redirect(&location),
+            None => Err(err),
+        },
     }
 }
 
@@ -272,7 +292,7 @@ async fn finish_callback(
     tag = "social-login",
     params(("provider" = String, Path, description = "Provider id"), CallbackParams),
     responses(
-        (status = 303, description = "Logged in (session cookie) / challenge cookie / identity linked; redirect to return_to"),
+        (status = 303, description = "Logged in (session cookie) / challenge cookie / identity linked; redirect to return_to. With `oidc_client.error_redirect`, failures also answer 303 to that page with `error=<code>`"),
         (status = 400, description = "oauth_state_invalid / oauth_authorization_denied", body = authn_core::error::ErrorEnvelope),
         (status = 401, description = "oauth_token_invalid", body = authn_core::error::ErrorEnvelope),
         (status = 403, description = "oauth_email_not_verified / identity_link_not_allowed", body = authn_core::error::ErrorEnvelope),
@@ -438,7 +458,13 @@ pub async fn link_native(
     Json(body): Json<LinkNativeRequest>,
 ) -> Result<Response, AuthError> {
     let identity = service
-        .native_link(&ctx, &principal, &body.provider, &body.id_token)
+        .native_link(
+            &ctx,
+            &principal,
+            &body.provider,
+            &body.id_token,
+            body.authorization_code.as_deref(),
+        )
         .await?;
     Ok(json(StatusCode::CREATED, identity))
 }

@@ -14,9 +14,7 @@ use authn_core::domain::{
 use authn_core::error::AuthError;
 use authn_core::http::RequestContext;
 use authn_core::id::{ChallengeId, FactorId, RequestId, SessionId, UserId};
-use authn_core::ports::{
-    Clock, Notification, NotificationKind, Notifier, SmsNotification, SmsNotificationKind,
-};
+use authn_core::ports::{Clock, NotificationKind, SmsNotification, SmsNotificationKind};
 use authn_core::secret::SecretString;
 use authn_crypto::CryptoServices;
 use authn_crypto::totp::{Totp, TotpParams, TotpSecret};
@@ -30,44 +28,6 @@ use authn_testkit::fakes::RecordingNotifier;
 use authn_testkit::http::with_request_context;
 use axum::{Extension, Router};
 use sqlx::{PgConnection, PgPool};
-
-/// Records e-mail notifications (testkit fake) and SMS notifications (the
-/// testkit fake does not implement `notify_sms_in_tx`).
-#[derive(Debug, Default)]
-pub struct TestNotifier {
-    pub email: RecordingNotifier,
-    pub sms: Mutex<Vec<SmsNotification>>,
-}
-
-impl TestNotifier {
-    pub fn sms(&self) -> Vec<SmsNotification> {
-        self.sms.lock().unwrap().clone()
-    }
-}
-
-#[async_trait]
-impl Notifier for TestNotifier {
-    async fn notify(&self, notification: Notification) -> Result<(), AuthError> {
-        self.email.notify(notification).await
-    }
-
-    async fn notify_in_tx(
-        &self,
-        conn: &mut PgConnection,
-        notification: Notification,
-    ) -> Result<(), AuthError> {
-        self.email.notify_in_tx(conn, notification).await
-    }
-
-    async fn notify_sms_in_tx(
-        &self,
-        _conn: &mut PgConnection,
-        sms: SmsNotification,
-    ) -> Result<(), AuthError> {
-        self.sms.lock().unwrap().push(sms);
-        Ok(())
-    }
-}
 
 /// Mutable organization policy / passkey count.
 #[derive(Debug, Default)]
@@ -110,7 +70,7 @@ pub struct Harness {
     pub crypto: CryptoServices,
     pub service: MfaService,
     pub settings: MfaServiceSettings,
-    pub notifier: Arc<TestNotifier>,
+    pub notifier: Arc<RecordingNotifier>,
     pub policy: Arc<TestPolicySource>,
 }
 
@@ -143,7 +103,7 @@ impl Harness {
         crypto: CryptoServices,
         settings: MfaServiceSettings,
     ) -> Self {
-        let notifier = Arc::new(TestNotifier::default());
+        let notifier = Arc::new(RecordingNotifier::default());
         let policy = Arc::new(TestPolicySource::default());
         let deps = MfaServiceDeps {
             pool: pool.clone(),
@@ -383,7 +343,7 @@ impl Harness {
     }
 
     pub fn last_email_code(&self) -> String {
-        let sent = self.notifier.email.with_template("mfa_email_code");
+        let sent = self.notifier.with_template("mfa_email_code");
         match &sent.last().expect("mfa e-mail code sent").kind {
             NotificationKind::MfaEmailCode { code, .. } => code.expose().to_owned(),
             other => panic!("unexpected {other:?}"),
@@ -391,7 +351,7 @@ impl Harness {
     }
 
     pub fn last_sms(&self) -> SmsNotification {
-        self.notifier.sms().last().cloned().expect("sms sent")
+        self.notifier.last_sms().expect("sms sent")
     }
 
     pub fn last_sms_code(&self) -> String {

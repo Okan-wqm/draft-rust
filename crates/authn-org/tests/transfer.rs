@@ -92,7 +92,11 @@ async fn org_11_transfer_needs_owner_step_up_and_target_acceptance(pool: PgPool)
     assert_eq!(done.previous_owner, alice);
     assert_eq!(h.membership_of(org, bob).await.unwrap().1, OWNER_ROLE_ID);
     assert_eq!(h.membership_of(org, alice).await.unwrap().1, ADMIN_ROLE_ID);
-    assert!(h.revoked_in_org(alice, org));
+    assert!(h.changed_in_org(alice, org));
+    assert!(
+        !h.revoked_in_org(alice, org),
+        "K-41: a role change is not a removal"
+    );
     assert_eq!(
         h.ports
             .audit

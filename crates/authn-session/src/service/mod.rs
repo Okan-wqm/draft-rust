@@ -46,7 +46,7 @@ use authn_webauthn::WebauthnService;
 use sqlx::PgPool;
 use time::OffsetDateTime;
 
-pub use self::authenticate::Authenticated;
+pub use self::authenticate::{Authenticated, is_session_active_in};
 pub use self::challenge::{
     CHALLENGE_LOCK_TIMEOUT, ChallengeKind, ChallengeProgress, ChallengeState, IssuedChallenge,
     NewChallenge,

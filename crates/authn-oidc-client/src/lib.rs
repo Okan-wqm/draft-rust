@@ -17,7 +17,7 @@
 //! | [`identity`] | SOC-01, SOC-05 | provider identity normalization, GitHub `/user` + `/user/emails` |
 //! | [`apple`] | SOC-07 | ES256 `client_secret` (`p256` 0.14 only), first-login name |
 //! | [`cookies`] | SOC-02 | the browser-binding cookie |
-//! | [`hooks`] | SOC-05, SOC-06 | [`LoginMethodInventory`], [`AddressReservations`] — implemented by authn-server |
+//! | [`hooks`] | SOC-06 | [`LoginMethodInventory`], [`SessionLiveness`] — implemented by authn-server |
 //! | [`export`] | ACC-10 | [`IdentityDataExporter`] — the `identities` export section |
 //! | [`codes`] | ARC-08 | this crate's error codes |
 //! | [`settings`] | ARC-07 | [`OidcClientSettings`] |
@@ -57,13 +57,14 @@ mod outbound;
 mod store;
 
 pub use export::IdentityDataExporter;
-pub use hooks::{AddressReservations, LoginMethodInventory, NoReservations, PasswordOnlyInventory};
+pub use hooks::{LoginMethodInventory, PasswordOnlyInventory, SessionLiveness};
 pub use provider::{
     Endpoints, IssuerRule, ProviderKind, ProviderRegistry, TenantPolicy, TokenAuthMethod,
 };
 pub use routes::{OidcClientApi, router};
 pub use service::{
     CallbackParams, CallbackResult, IdentitySummary, NativeLoginRequest, NativeNonce,
-    OidcClientService, OidcClientServiceDeps, ProviderInfo, StoredProviderTokens, WebStart,
+    OidcClientService, OidcClientServiceDeps, ProviderInfo, ProviderTokenErasureHook,
+    RevocationReport, StoredProviderTokens, WebLoginOptions, WebStart,
 };
 pub use settings::OidcClientSettings;

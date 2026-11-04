@@ -72,6 +72,50 @@ impl SessionService {
                 token_hash: Some(*hash.as_bytes()),
                 token_id: None,
                 csrf_verified: false,
+                impersonation_header_hash: None,
+            },
+        }))
+    }
+
+    /// Resolves the token of a **web impersonation** session presented in
+    /// the `x-impersonation-session` header (ADM-04, K-12). Only live
+    /// impersonation web sessions are accepted: a regular session token in
+    /// that header is refused (`Ok(None)`), so the header can never be used
+    /// to replay a normal session without its cookie's CSRF protection.
+    /// The returned session is not marked as cookie-authenticated (logout
+    /// clears no cookie; the admin's own session cookie stays untouched).
+    pub async fn authenticate_impersonation_token(
+        &self,
+        ctx: &RequestContext,
+        token: &str,
+    ) -> Result<Option<Authenticated>, AuthError> {
+        let Ok(token) = OpaqueToken::parse(token) else {
+            return Ok(None);
+        };
+        let hash = token.hash();
+        let now = self.now();
+        let Some(live) = sessions::find_live_by_token(self.pool(), &hash, now).await? else {
+            return Ok(None);
+        };
+        if !live.record.is_impersonation() || live.record.client_kind != ClientKind::Web {
+            metrics::bearer_rejected("impersonation_header_not_impersonation");
+            return Ok(None);
+        }
+        self.touch(&live.record, ctx, now).await?;
+        let principal = live.record.principal(
+            PrincipalCredential::SessionCookie {
+                session_id: live.record.id,
+            },
+            live.is_platform_admin,
+        );
+        Ok(Some(Authenticated {
+            principal,
+            session: CurrentSession {
+                record: live.record,
+                token_hash: None,
+                token_id: None,
+                csrf_verified: false,
+                impersonation_header_hash: Some(*hash.as_bytes()),
             },
         }))
     }
@@ -179,6 +223,7 @@ impl SessionService {
                     token_hash: None,
                     token_id: Some(verified.token_id),
                     csrf_verified: false,
+                    impersonation_header_hash: None,
                 },
             });
         }
@@ -206,7 +251,26 @@ impl SessionService {
                 token_hash: None,
                 token_id: Some(verified.token_id),
                 csrf_verified: false,
+                impersonation_header_hash: None,
             },
         })
     }
+}
+
+/// Whether `session` is a live, non-impersonation session of `user` at
+/// `now`, read **only** through `conn` (the caller's transaction; no pool
+/// connection is used). Live = exists, belongs to `user`, not revoked,
+/// within its idle and absolute expiry, and its owner may still sign in
+/// (not suspended, disabled, deleted or locked). For the identity-linking
+/// callback of authn-oidc-client (K-03), which re-validates the session
+/// that started the link inside its own transaction.
+pub async fn is_session_active_in(
+    conn: &mut sqlx::PgConnection,
+    session: authn_core::id::SessionId,
+    user: UserId,
+    now: OffsetDateTime,
+) -> Result<bool, AuthError> {
+    Ok(sessions::find_live_by_id(&mut *conn, session, now)
+        .await?
+        .is_some_and(|live| live.record.user_id == user && !live.record.is_impersonation()))
 }

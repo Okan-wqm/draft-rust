@@ -11,8 +11,8 @@ use std::net::IpAddr;
 
 use authn_core::config::account::TermsDocument;
 use authn_core::domain::{AccountStatus, Locale};
-use authn_core::id::{DeletionRequestId, OneTimeTokenId, TermsVersionId, UserId};
-use authn_store::{StoreError, TokenPurpose};
+use authn_core::id::{DeletionRequestId, TermsVersionId, UserId};
+use authn_store::StoreError;
 use sqlx::{PgConnection, PgExecutor};
 use time::OffsetDateTime;
 
@@ -422,74 +422,16 @@ impl ReservationRepository {
     }
 }
 
-/// An active `email_change_revert` link (target and expiry only).
-#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
-pub(crate) struct RevertLinkRecord {
-    pub target: Option<String>,
-    pub expires_at: OffsetDateTime,
-}
-
-/// `email_change_revert` rows of `one_time_tokens` — a purpose owned by
-/// this crate (contracts §5; registered in the change-request log).
-pub(crate) struct RevertLinkRepository;
-
-impl RevertLinkRepository {
-    /// Revokes the user's active revert links issued at or after the link
-    /// `(created_at, id)` — the links of *later* e-mail changes. Links of
-    /// earlier changes are kept (ACC-07: a revert performed from an
-    /// intermediate address must not cancel the original owner's revert).
-    pub(crate) async fn revoke_issued_since(
-        conn: &mut PgConnection,
-        user: UserId,
-        created_at: OffsetDateTime,
-        id: OneTimeTokenId,
-        now: OffsetDateTime,
-    ) -> Result<u64, StoreError> {
-        let result = sqlx::query(
-            "UPDATE one_time_tokens SET revoked_at = $5 WHERE user_id = $1 AND purpose = $2 \
-             AND consumed_at IS NULL AND revoked_at IS NULL AND (created_at, id) >= ($3, $4)",
-        )
-        .bind(user)
-        .bind(TokenPurpose::EmailChangeRevert.as_str())
-        .bind(created_at)
-        .bind(id)
-        .bind(now)
-        .execute(conn)
-        .await?;
-        Ok(result.rows_affected())
-    }
-
-    /// The user's revert links that can still be used.
-    pub(crate) async fn active(
-        conn: &mut PgConnection,
-        user: UserId,
-        now: OffsetDateTime,
-    ) -> Result<Vec<RevertLinkRecord>, StoreError> {
-        Ok(sqlx::query_as::<_, RevertLinkRecord>(
-            "SELECT target, expires_at FROM one_time_tokens WHERE user_id = $1 AND purpose = $2 \
-             AND consumed_at IS NULL AND revoked_at IS NULL AND expires_at > $3",
-        )
-        .bind(user)
-        .bind(TokenPurpose::EmailChangeRevert.as_str())
-        .bind(now)
-        .fetch_all(conn)
-        .await?)
-    }
-}
-
 /// Reads on shared tables (registered in the change-request log).
+///
+/// Everything else this crate reads on shared tables goes through
+/// authn-store (`UserRepository::claim_next`,
+/// `OneTimeTokenRepository::{active_for_user, revoke_for_user_since}`,
+/// K-41). The ACC-05 claim stays here: it also skips accounts that still
+/// have a live `pending_registrations` row (a table of this crate), which
+/// `UserRepository::claim_next` cannot express — using it would lock and
+/// then skip those rows one by one, a different (and slower) behaviour.
 pub(crate) struct SharedReads;
-
-/// An active one-time token of an account purpose (export view; the hash is
-/// never selected).
-#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
-pub(crate) struct PendingTokenRecord {
-    pub purpose: String,
-    pub target: Option<String>,
-    pub created_ip: Option<IpAddr>,
-    pub created_at: OffsetDateTime,
-    pub expires_at: OffsetDateTime,
-}
 
 impl SharedReads {
     /// Claims one never-verified account created before `created_before`
@@ -516,45 +458,6 @@ impl SharedReads {
         .fetch_optional(conn)
         .await?;
         Ok(row.map(|(id,)| id))
-    }
-
-    /// Claims one account whose temporary lock has ended (ACC-06).
-    pub(crate) async fn claim_expired_lock(
-        conn: &mut PgConnection,
-        now: OffsetDateTime,
-        skip: &[uuid::Uuid],
-    ) -> Result<Option<UserId>, StoreError> {
-        let row: Option<(UserId,)> = sqlx::query_as(
-            "SELECT id FROM users WHERE status = 'locked' AND locked_until <= $1 \
-             AND NOT (id = ANY($2)) ORDER BY locked_until, id LIMIT 1 FOR UPDATE SKIP LOCKED",
-        )
-        .bind(now)
-        .bind(skip)
-        .fetch_optional(conn)
-        .await?;
-        Ok(row.map(|(id,)| id))
-    }
-
-    /// Active tokens of this crate's purposes for the data export (ACC-10).
-    pub(crate) async fn pending_account_tokens<'e>(
-        executor: impl PgExecutor<'e>,
-        user: UserId,
-        now: OffsetDateTime,
-    ) -> Result<Vec<PendingTokenRecord>, StoreError> {
-        let purposes: Vec<&str> = crate::ACCOUNT_TOKEN_PURPOSES
-            .iter()
-            .map(|p| p.as_str())
-            .collect();
-        Ok(sqlx::query_as::<_, PendingTokenRecord>(
-            "SELECT purpose, target, created_ip, created_at, expires_at FROM one_time_tokens \
-             WHERE user_id = $1 AND purpose = ANY($2) AND consumed_at IS NULL \
-             AND revoked_at IS NULL AND expires_at > $3 ORDER BY created_at DESC",
-        )
-        .bind(user)
-        .bind(&purposes)
-        .bind(now)
-        .fetch_all(executor)
-        .await?)
     }
 }
 

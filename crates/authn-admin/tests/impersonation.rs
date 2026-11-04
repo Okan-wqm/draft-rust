@@ -27,7 +27,7 @@ async fn adm_04_defaults_read_only_fifteen_minutes_with_admin_session(pool: sqlx
     assert_eq!(res.header("cache-control"), Some("no-store"));
     let body: Value = res.json();
     assert_eq!(body["user_id"], user.to_string());
-    assert_eq!(body["client"], "web");
+    assert_eq!(body["client_kind"], "web");
 
     let requests = h.issuer.requests.lock().unwrap().clone();
     assert_eq!(requests.len(), 1);

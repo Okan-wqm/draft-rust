@@ -71,7 +71,7 @@ async fn mfa_01_totp_enrollment_returns_secret_uri_qr_and_stays_pending(pool: sq
     let added = h.ports.audit.of_kind(SecurityEventKind::MfaFactorAdded);
     assert_eq!(added.len(), 1);
     assert_eq!(added[0].metadata["factor"], "totp");
-    let notices = h.notifier.email.with_template("mfa_factor_added");
+    let notices = h.notifier.with_template("mfa_factor_added");
     assert!(matches!(
         notices[0].kind,
         NotificationKind::MfaFactorAdded {

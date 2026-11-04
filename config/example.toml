@@ -208,6 +208,7 @@ allowed_origins = ["http://localhost:8080"]  # exact match; rp_id or its subdoma
 # start_per_ip = { limit = 60, period = "10m" }     # web flow starts per client IP
 # native_per_ip = { limit = 60, period = "10m" }    # native nonces + native logins per client IP
 # callback_per_ip = { limit = 60, period = "10m" }  # web callbacks per client IP (before the state lookup)
+# error_redirect = "/login/error"     # K-36: send failed web callbacks here with ?error=<code> (path or allow-listed https URL); unset = JSON error
 # [oidc_client.google]
 # client_id = "..."
 # client_secret = "..."
@@ -223,7 +224,9 @@ allowed_origins = ["http://localhost:8080"]  # exact match; rp_id or its subdoma
 # team_id = "TEAMID"
 # key_id = "KEYID"
 # private_key_pem = "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"
-# private_key_file = "/run/secrets/apple_signin.p8"   # instead of private_key_pem (exactly one of them)
+# private_key_file = "/run/secrets/apple_signin.p8"   # instead of private_key_pem (exactly one key source)
+# private_key_ciphertext = "base64-envelope..."  # or: the PEM envelope-encrypted with the [crypto] KEK (authn_oidc_client::apple::seal_private_key)
+# revoke_tokens_on_deletion = true     # keep the Apple refresh token (encrypted) to revoke it on account deletion / unlink (K-35)
 # [oidc_client.github]
 # client_id = "..."
 # client_secret = "..."

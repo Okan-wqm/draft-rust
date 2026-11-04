@@ -92,7 +92,7 @@ async fn mfa_07_removal_notifies_audits_and_revokes_trusted_devices(pool: sqlx::
         .remove_factor(&h.ctx(), &h.fresh(user), email)
         .await
         .unwrap();
-    let removed = h.notifier.email.with_template("mfa_factor_removed");
+    let removed = h.notifier.with_template("mfa_factor_removed");
     assert_eq!(removed.len(), 1);
     assert!(matches!(
         removed[0].kind,
@@ -426,7 +426,7 @@ async fn mfa_07_admin_reset_removes_everything_and_notifies(pool: sqlx::PgPool) 
     assert_eq!(summary.trusted_devices, 1);
     let status = h.service.status_for_user(user).await.unwrap();
     assert!(!status.enabled && status.factors.is_empty());
-    assert_eq!(h.notifier.email.with_template("mfa_reset").len(), 1);
+    assert_eq!(h.notifier.with_template("mfa_reset").len(), 1);
     let err = h
         .verify_totp(user, &h.totp_code(&f.secret, 0))
         .await

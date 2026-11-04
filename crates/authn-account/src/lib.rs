@@ -22,7 +22,7 @@
 //! | [`profile`] | ACC-03, ACC-08 | display-name confusable checks, IANA time zones |
 //! | [`disposable`] | ACC-12 | disposable e-mail domain block list |
 //! | [`export`] | ACC-10 | the `account` export section |
-//! | [`hooks`] | ACC-09 | [`OrganizationOwnership`] — implemented by `authn-server` |
+//! | [`hooks`] | ACC-09 | [`OrganizationOwnership`] — implemented by `authn-server`; [`AccountErasureHook`] — registered by other modules |
 //! | [`routes`] | ARC-03, ARC-09 | [`router`], [`AccountApi`] |
 //! | [`model`] | — | input / output types |
 //!
@@ -55,7 +55,7 @@ use authn_store::TokenPurpose;
 pub use disposable::DisposableDomains;
 pub use export::AccountDataExporter;
 pub use extract::SecretJson;
-pub use hooks::{NoOrganizations, OrganizationOwnership};
+pub use hooks::{AccountErasureHook, NoOrganizations, OrganizationOwnership};
 pub use lifecycle::{
     StatusChange, StatusTransition, TransitionError, check_transition, resting_status,
 };
@@ -67,7 +67,8 @@ pub use routes::{AccountApi, router};
 pub use service::{
     AccountAwareSessionRevoker, AccountService, AccountServiceDeps, AccountServiceSettings,
     CredentialConfirmation, LinkConfirmation, MAX_PASSWORD_CONFIRMATIONS, MailboxProof,
-    REGISTRATION_COOKIE, RegistrationReceipt, VerificationProof, actions,
+    ProvisionOutcome, REGISTRATION_COOKIE, RegistrationReceipt, VerificationProof,
+    VerifiedUserProvision, actions,
 };
 
 /// `one_time_tokens.purpose` values owned by this crate (contracts §5).

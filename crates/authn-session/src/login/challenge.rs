@@ -1040,6 +1040,10 @@ impl SessionService {
             .login_succeeded_event(ctx, &established, method)
             .with_resource("auth_challenge", state.id);
         self.deps().audit.record_in_tx(&mut tx, event).await?;
+        if user.is_break_glass {
+            self.record_break_glass_login(&mut tx, ctx, &established, method)
+                .await?;
+        }
         let trusted_devices_allowed = match &org {
             Some(org) => org_mfa_policy(org.policy()).trusted_devices_allowed,
             None => strictest_membership_policy(&mut tx, user.id)

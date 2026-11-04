@@ -65,6 +65,9 @@ pub struct Endpoints {
     pub jwks: Option<Url>,
     /// REST API base (GitHub: `https://api.github.com/`).
     pub api_base: Option<Url>,
+    /// Token revocation endpoint (RFC 7009; Sign in with Apple:
+    /// `https://appleid.apple.com/auth/revoke`, K-35).
+    pub revocation: Option<Url>,
     /// Client authentication at the token endpoint.
     pub token_auth: TokenAuthMethod,
     /// Trust level of the token / JWKS / API destinations.
@@ -179,6 +182,11 @@ pub struct Provider {
     /// accounts still need `xms_edov`). Google, Apple, GitHub: `true` (they
     /// verify addresses; the claim / API flag is still required).
     pub trust_email_verified: bool,
+    /// Keep the provider's refresh token (sealed) even when
+    /// `store_provider_tokens` is off, so it can be revoked when the
+    /// identity goes away (K-35). Apple: `revoke_tokens_on_deletion`
+    /// (default on); every other provider: off.
+    pub keep_refresh_token_for_revocation: bool,
 }
 
 impl Provider {
@@ -204,6 +212,7 @@ fn static_endpoints(
         token: url(token)?,
         jwks: jwks.map(url).transpose()?,
         api_base: api_base.map(url).transpose()?,
+        revocation: None,
         token_auth: TokenAuthMethod::ClientSecretPost,
         target: OutboundTarget::Trusted,
     })
@@ -234,6 +243,7 @@ fn simple(
         endpoints: EndpointSource::Static(Box::new(endpoints)),
         issuer,
         trust_email_verified: true,
+        keep_refresh_token_for_revocation: false,
     }
 }
 
@@ -252,6 +262,7 @@ fn generic(provider: &GenericOidcProvider) -> Provider {
         },
         issuer: IssuerRule::Exact(vec![provider.issuer_url.clone()]),
         trust_email_verified: provider.trust_email_verified,
+        keep_refresh_token_for_revocation: false,
     }
 }
 
@@ -337,12 +348,13 @@ impl ProviderRegistry {
         }
         if let Some(apple) = &cfg.apple {
             let secret = AppleClientSecret::from_config(apple, settings.apple_client_secret_ttl)?;
-            let endpoints = static_endpoints(
+            let mut endpoints = static_endpoints(
                 "https://appleid.apple.com/auth/authorize",
                 "https://appleid.apple.com/auth/token",
                 Some("https://appleid.apple.com/auth/keys"),
                 None,
             )?;
+            endpoints.revocation = Some(url("https://appleid.apple.com/auth/revoke")?);
             providers.insert(
                 "apple".to_owned(),
                 Provider {
@@ -357,6 +369,7 @@ impl ProviderRegistry {
                     endpoints: EndpointSource::Static(Box::new(endpoints)),
                     issuer: IssuerRule::Exact(vec!["https://appleid.apple.com".to_owned()]),
                     trust_email_verified: true,
+                    keep_refresh_token_for_revocation: apple.revoke_tokens_on_deletion,
                 },
             );
         }

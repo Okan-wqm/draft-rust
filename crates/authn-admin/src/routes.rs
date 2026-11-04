@@ -24,13 +24,14 @@
 //! | `POST` | `/v1/admin/emergency/force-password-change` | ADM-06 |
 //! | `GET` | `/v1/admin/audit-events` | ADM-07 |
 //! | `POST` | `/v1/admin/audit-events/export` | ADM-07 |
-//! | `POST` | `/v1/admin/audit-events/verify` | ADM-07 |
+//! | `POST` | `/v1/admin/audit-events/verify` | ADM-07, K-09 |
+//! | `POST` | `/v1/admin/audit-events/{event_id}/restrict` | ADM-08, K-39 |
+//! | `POST` | `/v1/admin/enrollment/options`, `/v1/admin/enrollment/verify` | ADM-05, K-11 ([`enrollment_router`], no session) |
 
 use authn_core::domain::{ClientKind, Page};
 use authn_core::error::{AuthError, ErrorEnvelope, codes};
 use authn_core::http::{Json, Path, Query, RequestContext};
-use authn_core::id::UserId;
-use authn_core::ports::LoginOutcome;
+use authn_core::id::{EventId, UserId};
 use axum::Router;
 use axum::extract::{FromRef, State};
 use axum::http::{HeaderValue, StatusCode, header};
@@ -97,7 +98,35 @@ where
         .route("/v1/admin/audit-events", get(list_audit_events))
         .route("/v1/admin/audit-events/export", post(export_audit_events))
         .route("/v1/admin/audit-events/verify", post(verify_audit_chain))
+        .route(
+            "/v1/admin/audit-events/{event_id}/restrict",
+            post(restrict_justification),
+        )
 }
+
+/// The public break-glass passkey enrollment endpoints (ADM-05, K-11). No
+/// session: the single-use link token in the body is the authorization.
+/// Mount next to [`router`] (same IP allow-list applies; per-IP limit).
+#[cfg(feature = "passkey")]
+pub fn enrollment_router<S>() -> Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+    AdminService: FromRef<S>,
+{
+    Router::new()
+        .route("/v1/admin/enrollment/options", post(enrollment_options))
+        .route("/v1/admin/enrollment/verify", post(enrollment_verify))
+}
+
+/// OpenAPI document of the enrollment endpoints (K-11).
+#[cfg(feature = "passkey")]
+#[derive(OpenApi)]
+#[openapi(
+    paths(enrollment_options, enrollment_verify),
+    components(schemas(EnrollmentOptionsRequest, EnrollmentVerifyRequest)),
+    tags((name = "admin", description = "Platform admin API (passkey session + step-up)"))
+)]
+pub struct AdminEnrollmentApi;
 
 /// OpenAPI document of the admin API.
 #[derive(OpenApi)]
@@ -119,7 +148,8 @@ where
         emergency_force_password_change,
         list_audit_events,
         export_audit_events,
-        verify_audit_chain
+        verify_audit_chain,
+        restrict_justification
     ),
     components(schemas(
         AdminUserSummary,
@@ -133,6 +163,7 @@ where
         ImpersonateRequest,
         ImpersonationClient,
         EmergencyRequest,
+        RevokeAllRequest,
         ForcePasswordChangeRequest,
         ExportRequest,
         VerifyChainRequest,
@@ -185,7 +216,8 @@ pub struct ForcePasswordResetRequest {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ImpersonationClient {
-    /// Cookie session (the admin's browser switches to the user).
+    /// Web session whose token is returned in the body and sent back in
+    /// the `x-impersonation-session` header (the admin's own cookie stays).
     Web,
     /// Native tokens; access tokens carry the RFC 8693 `act` claim.
     Native,
@@ -214,6 +246,19 @@ pub struct EmergencyRequest {
     /// The operation's name, repeated: `revoke_all_sessions` /
     /// `rotate_signing_key`.
     pub confirm: Option<String>,
+}
+
+/// Body of `POST /v1/admin/emergency/revoke-all-sessions`.
+#[derive(Debug, Default, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RevokeAllRequest {
+    /// Mandatory justification.
+    pub reason: Option<String>,
+    /// Must be `revoke_all_sessions`.
+    pub confirm: Option<String>,
+    /// Also revoke the caller's own session (default `false`: the caller's
+    /// session is kept, K-10).
+    pub include_own_session: Option<bool>,
 }
 
 /// Body of `POST /v1/admin/emergency/force-password-change`.
@@ -471,8 +516,10 @@ pub async fn set_must_change_password(
 // --- impersonation (ADM-04) --------------------------------------------------------
 
 /// Starts impersonating the user (ADM-04): read-only by default, 15 minutes
-/// by default and at most 60. Web: the response sets the impersonation
-/// session cookie; native: tokens whose access tokens carry the `act` claim.
+/// by default and at most 60. The admin's session cookie is never replaced
+/// (K-12). Web: the body carries `impersonation_token`, to be sent in the
+/// `x-impersonation-session` request header; native: tokens whose access
+/// tokens carry the `act` claim.
 #[utoipa::path(
     post,
     path = "/v1/admin/users/{user_id}/impersonate",
@@ -506,39 +553,46 @@ pub async fn impersonate(
     let issued = service
         .impersonate(&caller, &ctx, user_id, &reason, &options)
         .await?;
-    let response = service
-        .deps()
-        .issuer
-        .login_response(LoginOutcome::Authenticated(issued), None);
+    // K-12: never a `Set-Cookie` — the admin's own session cookie survives.
+    // Web: the impersonation token is in the body, to be sent in the
+    // `x-impersonation-session` header; native: tokens in the body.
+    let response = service.deps().issuer.impersonation_response(issued);
     Ok(no_store(response))
 }
 
 // --- emergency (ADM-06) ------------------------------------------------------------
 
-/// Revokes every session of every user, the caller's included. Confirm with
+/// Revokes every session of every user — except the caller's own session
+/// unless `include_own_session` is `true` (K-10). Confirm with
 /// `"confirm": "revoke_all_sessions"`.
 #[utoipa::path(
     post,
     path = "/v1/admin/emergency/revoke-all-sessions",
     tag = "admin",
-    request_body = EmergencyRequest,
+    request_body = RevokeAllRequest,
     responses(
         (status = 200, description = "Done", body = EmergencyOutcome),
         (status = 401, description = "unauthenticated / step_up_required", body = ErrorEnvelope),
         (status = 403, description = "forbidden", body = ErrorEnvelope),
         (status = 422, description = "admin_reason_required / admin_confirmation_required", body = ErrorEnvelope),
+        (status = 429, description = "rate_limited (K-08: per-admin / global budget, cool-down)", body = ErrorEnvelope),
     )
 )]
 pub async fn emergency_revoke_all_sessions(
     State(service): State<AdminService>,
     caller: AdminCaller,
     ctx: RequestContext,
-    Json(body): Json<EmergencyRequest>,
+    Json(body): Json<RevokeAllRequest>,
 ) -> Result<Response, AuthError> {
     let reason = Justification::parse(body.reason.as_deref())?;
     require_confirmation(body.confirm.as_deref(), "revoke_all_sessions")?;
     Ok(ok(service
-        .revoke_all_sessions(&caller, &ctx, &reason)
+        .revoke_all_sessions(
+            &caller,
+            &ctx,
+            &reason,
+            body.include_own_session.unwrap_or(false),
+        )
         .await?))
 }
 
@@ -693,5 +747,135 @@ pub async fn verify_audit_chain(
 ) -> Result<Response, AuthError> {
     Ok(ok(service
         .verify_audit_chain(&caller, &ctx, body.anchor)
+        .await?))
+}
+
+/// Withholds the justification of an admin action from the subject's data
+/// export under a legal restriction (K-39, KVKK art. 28 / GDPR art. 23).
+/// The restriction note (`reason`) is mandatory; the restriction is itself
+/// audited and cannot be lifted through the API.
+#[utoipa::path(
+    post,
+    path = "/v1/admin/audit-events/{event_id}/restrict",
+    tag = "admin",
+    params(("event_id" = String, Path, description = "Audit event of the admin action")),
+    request_body = ReasonRequest,
+    responses(
+        (status = 200, description = "Restricted", body = ActionOutcome),
+        (status = 401, description = "unauthenticated / step_up_required", body = ErrorEnvelope),
+        (status = 403, description = "forbidden / admin_target_not_allowed", body = ErrorEnvelope),
+        (status = 404, description = "not_found (no justification about a user)", body = ErrorEnvelope),
+        (status = 422, description = "admin_reason_required", body = ErrorEnvelope),
+    )
+)]
+pub async fn restrict_justification(
+    State(service): State<AdminService>,
+    caller: AdminCaller,
+    ctx: RequestContext,
+    Path(event_id): Path<EventId>,
+    Json(body): Json<ReasonRequest>,
+) -> Result<Response, AuthError> {
+    let note = Justification::parse(body.reason.as_deref())?;
+    Ok(ok(service
+        .restrict_justification(&caller, &ctx, event_id, &note)
+        .await?))
+}
+
+// --- break-glass passkey enrollment (K-11) -------------------------------------
+
+/// Body of `POST /v1/admin/enrollment/options`.
+#[cfg(feature = "passkey")]
+#[derive(Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EnrollmentOptionsRequest {
+    /// The link token (from the URL fragment of the enrollment link).
+    #[schema(value_type = String)]
+    pub token: authn_core::secret::SensitiveString,
+}
+
+#[cfg(feature = "passkey")]
+impl std::fmt::Debug for EnrollmentOptionsRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EnrollmentOptionsRequest")
+            .finish_non_exhaustive()
+    }
+}
+
+/// Body of `POST /v1/admin/enrollment/verify`.
+#[cfg(feature = "passkey")]
+#[derive(Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EnrollmentVerifyRequest {
+    /// The link token.
+    #[schema(value_type = String)]
+    pub token: authn_core::secret::SensitiveString,
+    /// The ceremony id from the options response.
+    #[schema(value_type = String)]
+    pub ceremony_id: authn_core::id::CeremonyId,
+    /// The `PublicKeyCredential` of `navigator.credentials.create()`.
+    #[schema(value_type = Object)]
+    pub credential: serde_json::Value,
+}
+
+#[cfg(feature = "passkey")]
+impl std::fmt::Debug for EnrollmentVerifyRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EnrollmentVerifyRequest")
+            .field("ceremony_id", &self.ceremony_id)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Registration options for the account of a break-glass enrollment link
+/// (K-11).
+#[cfg(feature = "passkey")]
+#[utoipa::path(
+    post,
+    path = "/v1/admin/enrollment/options",
+    tag = "admin",
+    request_body = EnrollmentOptionsRequest,
+    responses(
+        (status = 200, description = "WebAuthn creation options and ceremony id"),
+        (status = 400, description = "invalid_or_expired_token", body = ErrorEnvelope),
+        (status = 403, description = "forbidden (IP allow-list)", body = ErrorEnvelope),
+        (status = 429, description = "rate_limited", body = ErrorEnvelope),
+    )
+)]
+pub async fn enrollment_options(
+    State(service): State<AdminService>,
+    ctx: RequestContext,
+    Json(body): Json<EnrollmentOptionsRequest>,
+) -> Result<Response, AuthError> {
+    Ok(ok(service
+        .start_break_glass_enrollment(&ctx, body.token.expose())
+        .await?))
+}
+
+/// Stores the passkey and consumes the enrollment link (K-11).
+#[cfg(feature = "passkey")]
+#[utoipa::path(
+    post,
+    path = "/v1/admin/enrollment/verify",
+    tag = "admin",
+    request_body = EnrollmentVerifyRequest,
+    responses(
+        (status = 200, description = "The enrolled passkey"),
+        (status = 400, description = "invalid_or_expired_token / passkey_ceremony_invalid / passkey_registration_failed", body = ErrorEnvelope),
+        (status = 403, description = "forbidden (IP allow-list)", body = ErrorEnvelope),
+        (status = 429, description = "rate_limited", body = ErrorEnvelope),
+    )
+)]
+pub async fn enrollment_verify(
+    State(service): State<AdminService>,
+    ctx: RequestContext,
+    Json(body): Json<EnrollmentVerifyRequest>,
+) -> Result<Response, AuthError> {
+    let request = authn_webauthn::RegistrationVerifyRequest {
+        ceremony_id: body.ceremony_id,
+        credential: body.credential,
+        name: None,
+    };
+    Ok(ok(service
+        .finish_break_glass_enrollment(&ctx, body.token.expose(), request)
         .await?))
 }
