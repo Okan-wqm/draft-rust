@@ -614,7 +614,129 @@ Dalga A'nın tüm talepleri işlendi; her kaydın **Durum** satırı güncellend
 
 ## authn-oidc-client
 
+### 2026-11-04 — Hata kodlarının `error/codes/oidc_client.rs`'e taşınması
+- **Talep eden:** authn-oidc-client
+- **Etkilenen dosya / sahip:** `crates/authn-core/src/error/codes/oidc_client.rs` (authn-oidc-client'a ait, ancak bu görevde yalnızca `crates/authn-oidc-client/**` değiştirilebildi)
+- **Gereksinim:** ARC-08, SOC-01 … SOC-06
+- **Gerekçe:** 12 kod (`oauth_provider_unknown`, `oauth_state_invalid`, `oauth_nonce_invalid`, `oauth_token_invalid`, `oauth_authorization_denied`, `oauth_email_not_verified`, `oauth_link_required`, `oauth_native_not_supported`, `identity_already_linked`, `identity_provider_already_linked`, `identity_last_login_method`, `identity_link_not_allowed`) geçici olarak `crates/authn-oidc-client/src/codes.rs`'te tanımlı; çalışırlar ama global kayıt defterinde (`codes::all()`, DOC-04 kataloğu) görünmezler.
+- **Önerilen değişiklik:** Sabitler birebir (ad, durum, TR/EN mesaj) `oidc_client.rs`'e taşınır ve `ALL`'a eklenir; `authn_oidc_client::codes` bunları yeniden dışa açar (`pub use authn_core::error::codes::oidc_client::*`). Test `soc_01_codes_are_unique_snake_case_and_not_in_the_global_registry` taşımadan sonra "registry'de bulunur" biçimine çevrilir.
+- **Geriye uyumluluk:** Kod dizeleri aynı kalır.
+- **Durum:** Açık — mimar / authn-oidc-client
+
+### 2026-11-04 — `[oidc_client]` yeni alanlar
+- **Talep eden:** authn-oidc-client
+- **Etkilenen dosya / sahip:** `crates/authn-core/src/config/oidc_client.rs` (authn-oidc-client), `config/example.toml` (authn-server)
+- **Gereksinim:** SOC-03, SOC-04, SOC-07, PRT-02
+- **Gerekçe:** Şu an `OidcClientSettings` alanı olarak (varsayılanlı) var, konfigürasyondan okunamıyor.
+- **Önerilen değişiklik:** `microsoft.allowed_tenants: Vec<String>` (GUID; alan adı biçimli `tenant` için zorunlu), `start_per_ip: RateLimitPolicy` (60/10 dk), `native_per_ip: RateLimitPolicy` (60/10 dk), `callback_per_ip: RateLimitPolicy` (60/10 dk; bağımsız denetimde eklendi — callback'in rate limit'i), `jwks_refresh_min_interval` (60 sn, 10 sn–1 sa), `apple.private_key_file: Option<PathBuf>` (`private_key_pem` ile tam olarak biri; SOC-07 "dosya"). `OidcClientSettings::from_app_config` bunları okur.
+- **Geriye uyumluluk:** Varsayılanlı ekleme; `private_key_pem`'in `Option` olması yalnızca bu crate'i etkiler.
+- **Durum:** Açık — authn-oidc-client
+
+### 2026-11-04 — Migration `2100`: web akışında oturum seçenekleri
+- **Talep eden:** authn-oidc-client
+- **Etkilenen dosya / sahip:** `migrations/2100_oauth_state_login_options.sql` (authn-oidc-client aralığı)
+- **Gereksinim:** SES-06, SES-07 (sosyal web girişi)
+- **Önerilen değişiklik:** `ALTER TABLE oauth_states ADD COLUMN remember_me boolean NOT NULL DEFAULT false, ADD COLUMN shared_device boolean NOT NULL DEFAULT false;` ve `GET /v1/oauth/{provider}/start?remember_me=&shared_device=`.
+- **Geriye uyumluluk:** Ekleme.
+- **Durum:** Açık — authn-oidc-client (bu görevde kök `migrations/` değiştirilmedi; web sosyal girişi şimdilik varsayılan oturum ömrünü kullanır)
+
+### 2026-11-04 — authn-account: adres rezervasyonu sorgusu ve sosyal hesap sağlama
+- **Talep eden:** authn-oidc-client
+- **Etkilenen dosya / sahip:** `crates/authn-account/src/{repo.rs,service/*}` / authn-account
+- **Gereksinim:** SOC-05, ACC-07, ACC-08
+- **Gerekçe:** Sosyal girişle yeni hesap açarken e-posta değişikliğinin geri alma süresinde ayrılmış eski adres yeni hesaba verilmemeli; `ReservationRepository` `pub(crate)`. Ayrıca yeni sosyal hesabın `user_profiles` satırı (görünen ad, dil) account'un tablosu.
+- **Önerilen değişiklik:** (1) `AccountService::is_address_reserved_in(conn, &EmailAddress) -> Result<bool, AuthError>` (verilen bağlantıyla, salt okuma). Server bunu `authn_oidc_client::AddressReservations` adaptörüyle bağlar. (2) İsteğe bağlı: `AccountService::provision_verified_user_in_tx(conn, ctx, email, display_name, locale) -> Result<ProvisionOutcome, AuthError>` (rezervasyon, disposable alan adı politikası, profil, `user.created`/`account.registered`); authn-oidc-client şu an `UserRepository::create` + `mark_email_verified` ve kendi audit/olay kayıtlarını kullanıyor.
+- **Geriye uyumluluk:** Ekleme.
+- **Durum:** Açık — authn-account, authn-server (adaptör)
+
+### 2026-11-04 — authn-notify: kimlik bağlandı / ayrıldı bildirimi
+- **Talep eden:** authn-oidc-client
+- **Etkilenen dosya / sahip:** `crates/authn-core/src/ports/notifier.rs`, `crates/authn-notify` şablonları / authn-notify
+- **Gereksinim:** SOC-06 (hesap ele geçirme tespiti)
+- **Önerilen değişiklik:** `NotificationKind::IdentityLinked { provider, at }` ve `IdentityUnlinked { provider, at }`; authn-oidc-client bağlama/ayırma transaction'ında `notify_in_tx` çağırır.
+- **Geriye uyumluluk:** Ekleme (yeni enum varyantı).
+- **Durum:** Açık — authn-notify
+
+### 2026-11-04 — PWD-11 kullanıcı satırı kilidi (bilgi)
+- **Talep eden:** authn-oidc-client
+- **Etkilenen dosya / sahip:** — (yukarıdaki authn-password talebinin oidc-client kısmı)
+- **Önerilen değişiklik:** Uygulandı: kimlik ayırma ve bağlama transaction'ları `UserRepository::lock_for_update` ile başlar (`crates/authn-oidc-client/src/service/accounts.rs`); testler `pwd_11_concurrent_unlinks_cannot_strand_the_account`, `pwd_11_unlink_and_password_removal_serialize_on_the_user_row`. Server adaptörleri için `OidcClientService::linked_identity_count_in(conn, user)`.
+- **Durum:** Uygulandı (authn-oidc-client tarafı); authn-password bölümündeki "Açık — authn-oidc-client" notu kapatılabilir.
+
+### 2026-11-04 — Bağlama akışında oturum bağlılığı (bağımsız denetim)
+- **Talep eden:** authn-oidc-client (bağımsız denetçi)
+- **Etkilenen dosya / sahip:** `migrations/2101_oauth_state_session.sql` (authn-oidc-client aralığı); oturumun geçerliliğini soran bir port/kanca (authn-session uygular, authn-server bağlar)
+- **Gereksinim:** SOC-06, SES-13
+- **Gerekçe:** Step-up yalnızca `POST /v1/me/identities/link`'te kontrol ediliyor; `oauth_states` yalnızca `user_id` taşıdığı için başlatan oturum `state_ttl` (10 dk) içinde iptal edilse de (çıkış, şifre sıfırlama, "tümünü kapat") aynı tarayıcı callback'i tamamlayıp kimliği bağlayabilir (README kabul edilen risk 9). Apple `form_post`'unda oturum çerezi gelmediğinden callback'te `Principal` istemek çözüm değil.
+- **Önerilen değişiklik:** `ALTER TABLE oauth_states ADD COLUMN session_id uuid` (bağlama akışında zorunlu, `CHECK (flow <> 'link' OR session_id IS NOT NULL)`); bu crate'te `trait SessionLiveness { async fn is_active(&self, conn, session: SessionId, user: UserId) -> Result<bool, AuthError>; }` — server authn-session ile uygular; callback bağlamadan önce kullanıcı satırı kilitliyken çağırır, `false` ise `oauth_state_invalid`.
+- **Geriye uyumluluk:** Ekleme (yeni nullable kolon, yeni kanca).
+- **Durum:** Açık — authn-oidc-client, authn-session, authn-server
+
+### 2026-11-04 — Genel sağlayıcı başına `trust_email_verified` (bağımsız denetim)
+- **Talep eden:** authn-oidc-client (bağımsız denetçi)
+- **Etkilenen dosya / sahip:** `crates/authn-core/src/config/oidc_client.rs` (authn-oidc-client), `config/example.toml` (authn-server)
+- **Gereksinim:** SOC-05, ADR 0002 ("non-verifying IdP")
+- **Gerekçe:** Genel OIDC sağlayıcısının `email_verified` beyanına koşulsuz güveniliyor. Otomatik bağlama kapalıyken bile doğrulamayan bir IdP, henüz kayıtlı olmayan bir adresle doğrulanmış hesap açtırabilir; gerçek sahip sonradan şifre sıfırlamayla girse de IdP kimliği hesapta kalır (README kabul edilen risk 1).
+- **Önerilen değişiklik:** `GenericOidcProvider.trust_email_verified: bool` (varsayılan `true` — mevcut davranış); `false` ise `identity::from_id_claims` e-postayı hiçbir zaman doğrulanmış saymaz (yeni hesap ve otomatik bağlama yok; yalnızca giriş yapmış kullanıcının açık bağlaması).
+- **Geriye uyumluluk:** Varsayılanlı ekleme.
+- **Durum:** Açık — authn-oidc-client
+
 ## authn-admin
+
+### 2026-11-04 — `admin_action_reasons` tablosu: KVKK envanteri ve mimari belgeler (**workspace testini bloklar**)
+- **Talep eden:** authn-admin
+- **Etkilenen dosya / sahip:** `docs/compliance/kvkk-gdpr.md` §2 / authn-account (DOC-07); `docs/architecture/contracts.md` §5 ve §6, `docs/architecture/overview.md` (ER) / mimar
+- **Gereksinim:** ADM-08, AUD-03, AUD-05, DOC-07
+- **Gerekçe:** Her admin işleminin gerekçesi serbest metindir ve kişisel veri içerebilir; authn-audit sanitizer'ı (AUD-03) serbest metni zincire almaz. Gerekçe, olay kimliğine bağlı yeni `admin_action_reasons` tablosunda (migration `2200`, authn-admin aralığı) tutuluyor. `doc_07_data_inventory_covers_every_table` (authn-account) yeni tablo envantere eklenene kadar **başarısız olur**.
+- **Önerilen değişiklik:** (1) `kvkk-gdpr.md` §2'ye (ör. denetim/audit alt bölümüne) satır: `` | `admin_action_reasons` | admin işleminin serbest metin gerekçesi (kişisel veri içerebilir), işlemi yapan admin ve hedef kullanıcı kimlikleri, işlem kodu, zaman | Platform personeli işlemlerinin hesap verebilirliği (ADM-08) | hedef kullanıcı silinince kaskad; admin silinince NULL; ilgili `audit_events` satırı saklama süresiyle silinince kaskad | ``. (2) contracts §5 tablo sahipliğine `admin_action_reasons` → authn-admin; §6 Dalga B migration tablosuna `2200` (admin) satırı; ER diyagramına `audit_events ||--o| admin_action_reasons`, `users ||--o{ admin_action_reasons`.
+- **Geriye uyumluluk:** Yalnızca ekleme.
+- **Durum:** Kısmen uygulandı — `kvkk-gdpr.md` satırı eklendi (2026-11-04, koordinatör; `doc_07_…` yeşil). Açık — **mimar** (contracts §5, §6, ER). Not: denetim sonrası migration `2200` tabloya ekleme-yalnızca trigger'ı da ekledi (`UPDATE`/`DELETE`/`TRUNCATE` yalnızca FK eylemleriyle); en az yetki kurulumunda uygulama rolüne yalnızca `SELECT, INSERT`.
+
+### 2026-11-04 — authn-admin'in başka modül tablolarındaki SQL'i (salt-okunur istisnalar + bir yazma)
+- **Talep eden:** authn-admin
+- **Etkilenen dosya / sahip:** `crates/authn-store/src/users.rs` / authn-store (mimar); `audit_events` / authn-audit; contracts §5 / mimar
+- **Gereksinim:** ADM-02, ADM-04, ADM-05, ADM-06, ADM-08
+- **Gerekçe:** `UserRepository`'de admin araması, toplu şifre taraması ve admin bayrağı yazımı için API yok. §13 gereği geçici olarak authn-admin'in kendi `src/store.rs` / `src/break_glass.rs` dosyalarında çalışma zamanı sqlx sorgularıyla uygulandı.
+- **Önerilen değişiklik:** contracts §5'e kayıtlı istisna olarak eklensin **veya** sahip API'ye taşınsın: (1) salt-okunur `users` araması — `starts_with(email_normalized, $1)`, `status`, `is_platform_admin`, doğrulanmış, oluşturma aralığı filtreleri, keyset `(created_at, id) < ($7, $8) ORDER BY created_at DESC, id DESC` → önerilen `UserRepository::search(executor, &UserSearchFilter, after, limit)`; ayrıca `CREATE INDEX users_created_id_idx ON users (created_at DESC, id DESC)` (store migration'ı); (2) salt-okunur `password_credentials` taraması `WHERE changed_at < $1 AND NOT must_change AND user_id > $2 ORDER BY user_id LIMIT $3` (ADM-06) → önerilen `UserRepository::stale_passwords(conn, before, after, limit)`; (3) salt-okunur `audit_events` sorgusu `SELECT id … WHERE kind = 'admin.impersonation_started' AND resource_type = 'session' AND resource_id = $1` (impersonation gerekçesini session'ın olayına bağlamak için; aşağıdaki session talebi kabul edilirse kaldırılır); (4) **yazma:** `UPDATE users SET is_platform_admin = true, is_break_glass = true WHERE id = $1` (break-glass oluşturma, ADM-05; authn-server `operations.rs` aynısını yapıyor) → önerilen `UserRepository::set_admin_flags(conn, id, is_platform_admin, is_break_glass)`. Ayrıca `admin_action_reasons.event_id` → `audit_events(id)` FK'si (ON DELETE CASCADE): authn-audit olay kimliği anlamını (`SecurityEvent::id` = `audit_events.id`) korumalı.
+- **Geriye uyumluluk:** Yalnızca ekleme; API'ye taşınırsa authn-admin çağrıları değiştirir, davranış aynı.
+- **Durum:** Açık — **mimar / authn-store** (istisna kaydı veya API), **authn-audit** (bilgi: FK)
+
+### 2026-11-04 — authn-session: impersonation olay kimliği ve break-glass girişi
+- **Talep eden:** authn-admin
+- **Etkilenen dosya / sahip:** `crates/authn-core/src/ports/session_issuer.rs`, `crates/authn-session/src/service/issuer.rs`, `src/login/**` / authn-session
+- **Gereksinim:** ADM-04, ADM-05, ADM-08
+- **Gerekçe:** (1) `start_impersonation_with` `admin.impersonation_started` olayını kendisi yazar (doğru), ancak olay gerekçe içermez ve port olay kimliğini döndürmez; authn-admin gerekçeyi olaya ancak commit'ten sonra `audit_events`'te arayarak bağlayabiliyor (ayrı transaction; başarısızlıkta yalnızca log). (2) Break-glass hesabıyla **giriş** (oturum açılması) yüksek öncelikli olay üretmiyor; authn-admin yalnızca admin API'sindeki her kullanımı `admin.break_glass_used` ile kaydedebiliyor.
+- **Önerilen değişiklik:** (1) Varsayılan gövdeli yeni port metodu `start_impersonation_audited(ctx, request, client, admin_session, event_id: EventId) -> IssuedSession` (session `admin.impersonation_started` olayını verilen kimlikle yazar; authn-admin gerekçe satırını önceden bilinen kimlikle yazabilir) **veya** `IssuedSession`'a dokunmadan `start_impersonation_with` sonucu yanında olay kimliğini döndüren bir varyant. (2) Giriş akışında `UserRecord.is_break_glass` olan hesap için oturum açılınca `SecurityEventKind::BreakGlassUsed` (`priority: high`, `surface: login`) kaydı.
+- **Geriye uyumluluk:** Yeni varsayılan gövdeli metot / yeni olay; kırıcı değil.
+- **Durum:** Açık — **authn-session**
+
+### 2026-11-04 — Personel kimliği ve redakte edilen metadata anahtarları (bilgi)
+- **Talep eden:** authn-admin
+- **Etkilenen dosya / sahip:** `crates/authn-account/src/service/revocation.rs` / authn-account; `crates/authn-password/src/service/{manage.rs,reset.rs}` / authn-password
+- **Gereksinim:** ADM-08, AUD-03
+- **Gerekçe:** (1) `confirm_mailbox_control_in_tx(…, MailboxProof::Administrator { admin })` `account.email_verified` olayını `Actor::User(admin)` ile yazıyor; authn-audit personel kimliğini yalnızca `admin.*` ve impersonation olaylarında gizlediği için adminin kullanıcı kimliği kullanıcının kendi güvenlik olaylarında görünebilir. authn-admin aynı transaction'da `admin.action` (`mark_email_verified`) yazıyor. (2) Testlerde sink'in şu anahtarları `[REDACTED]` yaptığı görüldü (yasaklı segment): `account.email_verified.password_removed`, `password.reset_requested.code_issued`, `password.change_required_set.must_change_password`.
+- **Önerilen değişiklik:** (1) Administrator kanıtında aktör `Actor::System` (gerçek aktör admin olayında) veya `impersonator` alanı. (2) Anahtarları yasaklı segment içermeyen adlara çevirmek (ör. `credential_removed`, `reset_link_issued`, `must_change`).
+- **Geriye uyumluluk:** Yalnızca audit içeriği değişir.
+- **Durum:** Açık — **authn-account**, **authn-password** (düşük öncelik)
+
+### 2026-11-04 — Sunucu bağlaması (bilgi)
+- **Talep eden:** authn-admin
+- **Etkilenen dosya / sahip:** `crates/authn-server/src/{services.rs,state.rs,app.rs,openapi.rs,cli.rs,operations.rs}` / authn-server
+- **Gereksinim:** ADM-01 … ADM-08
+- **Gerekçe:** Crate yazıldı (`crates/authn-admin/README.md` "server'ın bağlaması gerekenler").
+- **Önerilen değişiklik:** (1) `AdminService::new(AdminServiceDeps { pool, clock, audit (PgAuditSink), sessions (AccountAwareSessionRevoker ile sarılmış), issuer (SessionService), accounts, mfa, passwords, protection (LoginProtection), hasher (crypto.passwords), envelopes (crypto.envelopes), signing_keys }, AdminSettings::from_app_config(&config))`, `impl FromRef<AppState> for AdminService`. (2) `authn_admin::SigningKeyCache` adaptörü → `SessionService::invalidate_signing_keys()`. (3) `.merge(authn_admin::router::<AppState>())` oturum + CSRF katmanlarının arkasında; OpenAPI'ye `AdminApi`. (4) CLI `create-admin` → `authn_admin::create_break_glass_admin(&pool, &crypto.passwords, clock, &audit, email)`; `operations::create_break_glass_admin` kaldırılabilir. (5) En az yetki kurulumunda uygulama rolüne `admin_action_reasons` üzerinde `SELECT, INSERT`.
+- **Geriye uyumluluk:** —
+- **Durum:** Açık — **authn-server**
+
+### 2026-11-04 — authn-webauthn: admin MFA sıfırlamasında passkey'lerin silinmesi (güvenlik denetimi)
+- **Talep eden:** authn-admin (bağımsız denetçi)
+- **Etkilenen dosya / sahip:** `crates/authn-webauthn/src/service/manage.rs` / authn-webauthn
+- **Gereksinim:** ADM-03, PKY-04
+- **Gerekçe:** `POST /v1/admin/users/{id}/reset-mfa` TOTP/SMS/e-posta faktörlerini, kurtarma kodlarını ve güvenilir cihazları siler, passkey'leri silemez: authn-webauthn'de yalnızca principal'a bağlı, step-up isteyen `delete_passkey` var. Sonuç: (a) hesabı ele geçirilmiş kullanıcıda saldırganın kaydettiği passkey sıfırlamadan sonra da şifresiz girişe izin verir; (b) passkey'i kaybolan cihazdaki kullanıcı passkey ikinci faktör olarak kayıtlı kaldıkça kilitli kalabilir. authn-admin README'sinde açık risk (orta) olarak kayıtlı.
+- **Önerilen değişiklik:** `WebauthnService::remove_all_passkeys_in_tx(&self, conn: &mut PgConnection, ctx: &RequestContext, user: UserId) -> Result<u32, AuthError>` — çağıranın transaction'ında kullanıcının tüm passkey'lerini siler, `passkey.removed` olayını `Actor::System` ile yazar (gerçek aktör authn-admin'in `admin.action` olayında), son giriş yöntemi kuralını uygulamaz (admin kararı; şifre sıfırlama ile birlikte kullanılır) ve kullanıcı bildirimini aynı transaction'da kuyruğa alır. authn-admin bunu `reset_user_mfa_in_tx` ile aynı transaction'da çağırır (`AdminServiceDeps`'e `WebauthnService` eklenir; Dalga B → Dalga A bağımlılığı izinli).
+- **Geriye uyumluluk:** Yalnızca ekleme.
+- **Durum:** Açık — **authn-webauthn**
+
 
 ## authn-server
 
