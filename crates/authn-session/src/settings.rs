@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 use authn_core::config::AppConfig;
+use authn_core::config::protect::RiskConfig;
 use authn_core::config::session::{Lifetime, SessionConfig};
 
 /// Everything the session service reads from the configuration.
@@ -32,6 +33,8 @@ pub struct SessionSettings {
     /// Passkey ceremony lifetime (`webauthn.ceremony_ttl`): lifetime of the
     /// step-up binding cookie.
     pub passkey_ceremony_ttl: Duration,
+    /// Risk reactions (`protect.risk`, RSK-03).
+    pub risk: RiskConfig,
 }
 
 impl SessionSettings {
@@ -64,6 +67,7 @@ impl SessionSettings {
             impersonation_max_ttl: config.admin.impersonation_max_ttl,
             trust_provider_mfa: config.oidc_client.trust_provider_mfa,
             passkey_ceremony_ttl: config.webauthn.ceremony_ttl,
+            risk: config.protect.risk.clone(),
         }
     }
 

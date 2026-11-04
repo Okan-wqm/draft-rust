@@ -603,8 +603,26 @@ Dalga A'nın tüm talepleri işlendi; her kaydın **Durum** satırı güncellend
 - **Geriye uyumluluk:** Port imzası değişmedi; yalnızca daha fazla şey iptal edilir (güvenli yön).
 - **Durum:** Uygulandı (2026-11-01). Açık — **mimar:** contracts §4 notu
 
+### 2026-11-03 — Giriş akışları: yeni bağımlılıklar, hata kodları, `complete_login` boru hattı (bilgi)
+- **Talep eden:** authn-session (giriş akışları aşaması)
+- **Etkilenen dosya / sahip:** `crates/authn-session/src/login/**`, `src/service/{mod.rs,issuer.rs,challenge.rs}`, `src/settings.rs`, `src/cookies.rs`, `src/response.rs` / authn-session; `crates/authn-core/src/error/codes/session.rs` / authn-session; server bağlaması / authn-server
+- **Gereksinim:** SES-01, SES-02, SES-18 … SES-22, RSK-03, RSK-04, MFA-09
+- **Gerekçe:** Giriş akışları `LoginProtection` (PRT-02…05), `RiskEvaluator` + `RiskAlerts` (RSK-03/04) ve e-postayla gönderilen kodların anahtarlı özetini (CRY-07) gerektirir; `complete_login` (federe girişin de kullandığı boru hattı) risk ve güvenilir cihaz adımlarını içermeliydi.
+- **Önerilen değişiklik:** (uygulandı) (1) `SessionServiceDeps`'e `protection: LoginProtection`, `risk: Arc<dyn RiskEvaluator>`, `risk_alerts: RiskAlerts`, `otp: OtpHasher`; `SessionSettings.risk` (`protect.risk`). (2) `complete_login` artık `login::pipeline` üzerinden çalışır: hesap → organizasyon → MFA → **risk** (yüksek ⇒ engel + bildirim, orta ⇒ MFA ya da e-posta onayı) → **güvenilir cihaz** (yalnızca politika kaynaklı MFA'yı karşılar) → oturum/challenge; başarılı oturumdan sonra yeni cihaz bildirimi + "bu ben değilim" linki (RSK-04) ve `auto_join_verified_domains`. (3) `SessionService` `authn_protect::NotMeTokenIssuer`'ı uygular (`one_time_tokens` amacı `not_me`, 7 gün). (4) Yeni hata kodları `magic_link_confirmation_required` (409), `challenge_step_not_allowed` (403). (5) Çerez değer alfabesine `.` eklendi (imzalı güvenilir cihaz token'ı; RFC 6265 cookie-octet). (6) Yeni uç noktalar `/v1/login/*` (session router'ına birleştirildi), OpenAPI `LoginApi`. (7) Arka plan işleri: `SessionService::drain_background_jobs` (kapanışta çağrılmalı).
+- **Geriye uyumluluk:** `SessionServiceDeps` yapı literal'i değişti (tek kullanıcı: authn-server; testler güncellendi). Federe girişte (`SessionIssuer`) güvenilir cihaz token'ı port üzerinden taşınmadığından sosyal girişte MFA-09 atlaması yoktur (güvenli taraf); gerekirse `PrimaryAuthentication`'a alan eklemek bir port değişikliğidir.
+- **Durum:** Uygulandı (2026-11-03). Server bağlaması: uygulandı (`crates/authn-server/src/services.rs`).
+
 ## authn-oidc-client
 
 ## authn-admin
 
 ## authn-server
+
+### 2026-11-03 — Sunucu bağlaması (bilgi)
+- **Talep eden:** authn-server
+- **Etkilenen dosya / sahip:** `crates/authn-server/src/{services.rs,hooks.rs,state.rs,app.rs,openapi.rs,jobs.rs,operations.rs,serve.rs,cli.rs}`, `Dockerfile` / authn-server
+- **Gereksinim:** ARC-03, ARC-09, OPS-01, OPS-02, OPS-06, OPS-07, TST-02, TST-06
+- **Gerekçe:** contracts §15'teki tüm satırlar.
+- **Önerilen değişiklik:** (uygulandı) §15.1 kanca trait'leri (`hooks.rs`; MFA ↔ passkey döngüsü geç bağlanan hücrelerle kırıldı), §15.2 portlar ve §15.3 servisler (`services.rs`, inşa sırası authn-session talebindeki gibi), router'lar + birleşik OpenAPI, §15.4 katman sırası (`authn_session::authenticate` yuva 8'de; `api_key_middleware` kurulmadı), §15.5 işler (`jobs.rs`, outbox işçisi + `notification` köprüsü dahil), §15.6 açılış/kapanış ve CLI komutları (`operations.rs`). authn-oidc-client ve authn-admin router'ları bu crate'ler yazıldığında eklenecek.
+- **Geriye uyumluluk:** `AppState::new` artık `Services` alır; `build_router` `Result` döner.
+- **Durum:** Uygulandı (2026-11-03). Açık — authn-oidc-client / authn-admin bağlaması (crate'ler henüz boş).

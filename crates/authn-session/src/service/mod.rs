@@ -32,12 +32,15 @@ use std::sync::Arc;
 
 use authn_account::AccountService;
 use authn_core::error::AuthError;
-use authn_core::ports::{AuditSink, Clock, EventPublisher, Notifier, RateLimiter};
+use authn_core::ports::{AuditSink, Clock, EventPublisher, Notifier, RateLimiter, RiskEvaluator};
 use authn_crypto::envelope::EnvelopeCipher;
 use authn_crypto::kdf::KeyRing;
+use authn_crypto::otp::OtpHasher;
 use authn_mfa::MfaService;
 use authn_org::OrgService;
 use authn_password::PasswordService;
+use authn_protect::LoginProtection;
+use authn_protect::risk::RiskAlerts;
 use authn_store::PgTx;
 use authn_webauthn::WebauthnService;
 use sqlx::PgPool;
@@ -48,12 +51,15 @@ pub use self::challenge::{
     CHALLENGE_LOCK_TIMEOUT, ChallengeKind, ChallengeProgress, ChallengeState, IssuedChallenge,
     NewChallenge,
 };
+pub(crate) use self::establish::normalize_amr;
 pub use self::establish::{ClientChannel, EstablishSession, VerifiedOrg};
 pub use self::introspect::IntrospectionResponse;
 pub use self::issuer::org_mfa_policy;
+pub(crate) use self::issuer::{primary_amr, strictest_membership_policy};
 pub use self::maintenance::PurgeReport;
 pub use self::manage::{MeResponse, SessionSummary};
 pub use self::org_switch::OrgSwitch;
+pub(crate) use self::org_switch::has_passkey;
 pub use self::refresh::RefreshedTokens;
 pub use self::revoke::PgSessionRevoker;
 pub use self::step_up::{PasskeyStepUpStart, StepUpProof};
@@ -94,6 +100,15 @@ pub struct SessionServiceDeps {
     /// Profiles, login assessment, e-mail-change consequences of bulk
     /// revocations (authn-account).
     pub accounts: AccountService,
+    /// Login throttling, CAPTCHA escalation and soft lock (authn-protect,
+    /// PRT-02 … PRT-05) for the password login (SES-01).
+    pub protection: LoginProtection,
+    /// Login risk evaluation (authn-protect, RSK-01 … RSK-03).
+    pub risk: Arc<dyn RiskEvaluator>,
+    /// New-device notification and blocked-login notice (RSK-03, RSK-04).
+    pub risk_alerts: RiskAlerts,
+    /// Keyed hash of the e-mailed login codes (CRY-07, SES-19).
+    pub otp: OtpHasher,
 }
 
 struct Inner {
@@ -102,6 +117,10 @@ struct Inner {
     keys: KeyCache,
     csrf: CsrfProtector,
     revoker: PgSessionRevoker,
+    /// Passwordless requests processed after the uniform answer was sent
+    /// (SES-18, SES-19: no timing difference between existing and unknown
+    /// addresses).
+    jobs: tokio::sync::Mutex<tokio::task::JoinSet<()>>,
 }
 
 /// The session service. Cheap to clone (`FromRef<AppState>`).
@@ -147,6 +166,7 @@ impl SessionService {
                 keys,
                 csrf,
                 revoker,
+                jobs: tokio::sync::Mutex::new(tokio::task::JoinSet::new()),
             }),
         })
     }
@@ -193,6 +213,27 @@ impl SessionService {
         self.inner.keys.invalidate();
     }
 
+    /// Waits for the background work of passwordless requests (tests,
+    /// graceful shutdown).
+    pub async fn drain_background_jobs(&self) {
+        let mut jobs = self.inner.jobs.lock().await;
+        while jobs.join_next().await.is_some() {}
+    }
+
+    /// Runs `job` in the background (bounded: a full backlog drops it).
+    pub(crate) async fn spawn_job<F>(&self, job: F) -> bool
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let mut jobs = self.inner.jobs.lock().await;
+        while jobs.try_join_next().is_some() {}
+        if jobs.len() >= MAX_PENDING_JOBS {
+            return false;
+        }
+        jobs.spawn(job);
+        true
+    }
+
     pub(crate) fn deps(&self) -> &SessionServiceDeps {
         &self.inner.deps
     }
@@ -205,6 +246,9 @@ impl SessionService {
         &self.inner.revoker
     }
 }
+
+/// Largest number of queued passwordless background jobs.
+const MAX_PENDING_JOBS: usize = 1024;
 
 /// `now + duration`, saturating at the far future.
 pub(crate) fn after(now: OffsetDateTime, duration: std::time::Duration) -> OffsetDateTime {

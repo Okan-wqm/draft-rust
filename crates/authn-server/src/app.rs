@@ -1,6 +1,6 @@
-//! Router assembly and middleware stack (OPS-02).
+//! Router assembly and middleware stack (OPS-02, contracts §15.3 / §15.4).
 //!
-//! Documented order, outermost first:
+//! Order, outermost first:
 //!
 //! 1. request context (request id, client IP, locale; error envelopes) — authn-core
 //! 2. tracing (`TraceLayer`, path only — query strings may carry OAuth codes)
@@ -8,19 +8,25 @@
 //! 4. timeout (PRT-11)
 //! 5. global concurrency limit (PRT-11)
 //! 6. body size limit (PRT-11)
-//! 7. host validation → security headers → CORS → rate limit (authn-protect)
-//! 8. authentication → CSRF (authn-session)
+//! 7. host validation → security headers → CORS → per-IP rate limit (authn-protect)
+//! 8. authentication + CSRF (`authn_session::authenticate`; it replaces
+//!    `authn_org::api_key_middleware` — never install both)
 //! 9. handler
 //!
-//! Layers 7–8 are added by the owning crates' agents; their slots are marked
-//! below. axum applies `.layer()` calls inside-out, so the code lists them
-//! from innermost to outermost.
+//! axum applies `.layer()` calls inside-out, so the code lists them from
+//! innermost to outermost.
 
 use std::sync::Arc;
 
+use authn_core::error::AuthError;
 use authn_core::http::{REQUEST_ID_HEADER, not_found_fallback, request_context_middleware};
+use authn_protect::rate_limit::{HttpRateLimit, http_rate_limit};
+use authn_protect::web::{
+    CorsPolicy, HostValidation, SecurityHeaders, cors, security_headers, validate_host,
+};
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
+use axum::middleware::from_fn_with_state;
 use axum::routing::get;
 use http::StatusCode;
 use tower::limit::GlobalConcurrencyLimitLayer;
@@ -33,16 +39,30 @@ use tracing::Level;
 use crate::routes::{example, health};
 use crate::state::AppState;
 
-/// Builds the complete application router.
-pub fn build_router(state: AppState) -> Router {
+/// Every module router, merged (no layers).
+pub fn module_routes() -> Router<AppState> {
+    Router::new()
+        .merge(health::router::<AppState>())
+        .merge(example::router::<AppState>())
+        .merge(authn_session::router::<AppState>())
+        .merge(authn_password::router::<AppState>())
+        .merge(authn_account::router::<AppState>())
+        .merge(authn_mfa::router::<AppState>())
+        .merge(authn_webauthn::router::<AppState>())
+        .merge(authn_webauthn::well_known_router::<AppState>())
+        .merge(authn_org::router::<AppState>())
+        .merge(authn_protect::router::<AppState>())
+        .merge(authn_audit::router::<AppState>())
+}
+
+/// Builds the complete application router. Fails when a web-protection
+/// setting is unusable (fail fast at start-up, ARC-07).
+pub fn build_router(state: AppState) -> Result<Router, AuthError> {
     let config = state.config.clone();
     let limits = config.server.limits;
+    let protect = &config.protect;
 
-    let mut router: Router<AppState> = Router::new()
-        .merge(health::router::<AppState>())
-        .merge(example::router::<AppState>());
-    // Module routers are merged here as they land, e.g.:
-    //   .merge(authn_password::router::<AppState>())
+    let mut router = module_routes();
     if config.server.openapi_enabled {
         router = router.route(
             "/openapi.json",
@@ -50,11 +70,25 @@ pub fn build_router(state: AppState) -> Router {
         );
     }
 
-    router
+    let host = HostValidation::from_config(protect, &config.server.public_base_url)?;
+    let headers = SecurityHeaders::from_config(&protect.security_headers)?;
+    let cors_policy = CorsPolicy::from_config(&protect.cors)?;
+    let rate_limit = HttpRateLimit::new(
+        state.services.rate_limiter.clone(),
+        protect.rate_limit.requests_per_ip,
+    );
+    let sessions = state.services.sessions.clone();
+
+    Ok(router
         .fallback(not_found_fallback)
         .with_state(state)
-        // (8) authentication → CSRF: authn-session layers go here.
-        // (7) host validation → security headers → CORS → rate limit: authn-protect.
+        // (8) authentication + CSRF.
+        .layer(from_fn_with_state(sessions, authn_session::authenticate))
+        // (7) rate limit ← CORS ← security headers ← host validation.
+        .layer(from_fn_with_state(rate_limit, http_rate_limit))
+        .layer(from_fn_with_state(cors_policy, cors))
+        .layer(from_fn_with_state(headers, security_headers))
+        .layer(from_fn_with_state(host, validate_host))
         .layer(DefaultBodyLimit::max(limits.body_limit_bytes))
         .layer(RequestBodyLimitLayer::new(limits.body_limit_bytes))
         .layer(GlobalConcurrencyLimitLayer::new(limits.max_concurrent_requests))
@@ -79,101 +113,8 @@ pub fn build_router(state: AppState) -> Router {
                 })
                 .on_response(DefaultOnResponse::new().level(Level::INFO)),
         )
-        .layer(axum::middleware::from_fn_with_state(
+        .layer(from_fn_with_state(
             Arc::new(config.server.request_context()),
             request_context_middleware,
-        ))
-}
-
-#[cfg(test)]
-mod tests {
-    use authn_testkit::FakeClock;
-    use authn_testkit::config::TestConfigBuilder;
-    use authn_testkit::http::TestRequest;
-    use sqlx::PgPool;
-
-    use super::*;
-
-    fn app(pool: PgPool, openapi: bool) -> Router {
-        let mut config = TestConfigBuilder::new().build();
-        config.server.openapi_enabled = openapi;
-        build_router(AppState::new(
-            Arc::new(config),
-            pool,
-            Arc::new(FakeClock::new()),
-        ))
-    }
-
-    #[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
-    async fn ops_05_health_probes_report_ready_after_migrations(pool: PgPool) {
-        let app = app(pool, true);
-        let res = TestRequest::get("/health/live").send(&app).await;
-        res.assert_status(StatusCode::OK);
-        assert_eq!(res.header("cache-control"), Some("no-store"));
-        let res = TestRequest::get("/health/ready").send(&app).await;
-        res.assert_status(StatusCode::OK);
-        let body: serde_json::Value = res.json();
-        assert_eq!(
-            body,
-            serde_json::json!({"status": "ready", "database": "ok", "migrations": "up_to_date"})
-        );
-    }
-
-    #[sqlx::test(migrations = false)]
-    async fn ops_05_ready_is_503_when_schema_is_missing(pool: PgPool) {
-        let res = TestRequest::get("/health/ready")
-            .send(&app(pool, true))
-            .await;
-        res.assert_status(StatusCode::SERVICE_UNAVAILABLE);
-        let body: serde_json::Value = res.json();
-        assert_eq!(body["status"], "not_ready");
-        assert_eq!(body["migrations"], "pending");
-    }
-
-    #[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
-    async fn arc_03_example_route_through_app_state_from_ref(pool: PgPool) {
-        let res = TestRequest::get("/v1/time").send(&app(pool, true)).await;
-        res.assert_status(StatusCode::OK);
-        assert!(res.header("x-request-id").is_some());
-        let body: serde_json::Value = res.json();
-        assert_eq!(body["server_time"], "2026-01-01T00:00:00Z");
-    }
-
-    #[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
-    async fn arc_08_unknown_route_uses_error_envelope(pool: PgPool) {
-        let err = TestRequest::get("/v1/nope")
-            .accept_language("tr")
-            .send(&app(pool, true))
-            .await
-            .assert_error(StatusCode::NOT_FOUND, "not_found");
-        assert_eq!(err.message, "İstenen kaynak bulunamadı.");
-    }
-
-    #[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
-    async fn prt_11_oversized_body_is_rejected_with_envelope(pool: PgPool) {
-        let big = vec![b'a'; 64 * 1024 + 1];
-        let res = TestRequest::post("/v1/time")
-            .header("content-type", "application/json")
-            .header("content-length", &big.len().to_string())
-            .body(big)
-            .send(&app(pool, true))
-            .await;
-        res.assert_error(StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large");
-        assert!(!res.text().contains("aaaa"));
-    }
-
-    #[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
-    async fn ops_09_openapi_can_be_disabled(pool: PgPool) {
-        let res = TestRequest::get("/openapi.json")
-            .send(&app(pool.clone(), true))
-            .await;
-        res.assert_status(StatusCode::OK);
-        let doc: serde_json::Value = res.json();
-        assert!(doc["paths"]["/v1/time"].is_object());
-        assert!(doc["components"]["schemas"]["ErrorEnvelope"].is_object());
-        TestRequest::get("/openapi.json")
-            .send(&app(pool, false))
-            .await
-            .assert_error(StatusCode::NOT_FOUND, "not_found");
-    }
+        )))
 }

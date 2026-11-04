@@ -18,6 +18,12 @@ pub const STEP_UP: &str = "authn_step_up_total";
 pub const BEARER_REJECTED: &str = "authn_bearer_rejected_total";
 /// Introspection requests, by result (`active`, `inactive`).
 pub const INTROSPECTION: &str = "authn_introspection_total";
+/// Login outcomes (`succeeded`, `challenge`, `blocked`, `failed`).
+pub const LOGINS: &str = "authn_logins_total";
+/// Failed logins by stable reason code (OPS-04).
+pub const LOGIN_FAILURES: &str = "authn_login_failures_total";
+/// Second-factor verifications at login, by factor and outcome.
+pub const LOGIN_FACTORS: &str = "authn_login_factor_total";
 
 pub(crate) fn sessions_created(client: &'static str) {
     metrics::counter!(SESSIONS_CREATED, "client" => client).increment(1);
@@ -52,4 +58,17 @@ pub(crate) fn bearer_rejected(reason: &'static str) {
 
 pub(crate) fn introspection(result: &'static str) {
     metrics::counter!(INTROSPECTION, "result" => result).increment(1);
+}
+
+pub(crate) fn login(outcome: &'static str) {
+    metrics::counter!(LOGINS, "outcome" => outcome).increment(1);
+}
+
+pub(crate) fn login_failed(method: &'static str, reason: &'static str) {
+    metrics::counter!(LOGINS, "outcome" => "failed").increment(1);
+    metrics::counter!(LOGIN_FAILURES, "method" => method, "reason" => reason).increment(1);
+}
+
+pub(crate) fn login_factor(factor: &'static str, outcome: &'static str) {
+    metrics::counter!(LOGIN_FACTORS, "factor" => factor, "outcome" => outcome).increment(1);
 }

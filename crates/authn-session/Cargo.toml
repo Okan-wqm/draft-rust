@@ -57,3 +57,10 @@ http-body-util.workspace = true
 serde_json.workspace = true
 proptest.workspace = true
 futures.workspace = true
+webauthn-authenticator-rs.workspace = true
+webauthn-rs-proto.workspace = true
+
+# Real passkey ceremonies with the software authenticator.
+[[test]]
+name = "passkey_login"
+required-features = ["passkey"]

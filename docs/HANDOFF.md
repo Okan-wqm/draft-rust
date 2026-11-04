@@ -20,6 +20,8 @@ Depo: `github.com/Okan-wqm/draft-rust` (dal: `main`). Proje sahibi ileride adın
 
 ## 3. Mevcut durum
 
+> **Güncelleme (2026-11-03):** giriş akışları ve sunucu entegrasyonu tamamlandı; workspace testleri 1245 geçti / 0 başarısız. Kalan sıra: sosyal giriş ∥ admin → (onların sunucu bağlaması) → genel güvenlik denetimi → QA → dokümantasyon.
+
 ### 3.1 Genel resim
 
 Spesifikasyonda (`docs/spec/requirements.md`) 175 gereksinim kimliği var (ör. `PWD-07`, `SES-01`). Her biri `contracts.md` §1'deki tabloda **tam bir crate'e** atanmış.
@@ -47,10 +49,10 @@ Sayıya göre ~%73, efora göre ~%65 bitti: kalan iş (entegrasyon, uçtan uca t
 | `authn-mfa` | ✅ bitti | TOTP, kurtarma kodları, e-posta/SMS OTP, MFA politikası, güvenilir cihaz. |
 | `authn-webauthn` | ✅ bitti | Passkey seremonileri, yönetim, mobil ilişkilendirme dosyaları. |
 | `authn-org` | ✅ bitti | Organizasyon, üyelik, RBAC, davet, domain doğrulama, politika, API anahtarı, servis hesabı. |
-| `authn-session` | 🟡 **yarım** | **Çekirdek bitti** (SES-03…17: oturumlar, CSRF, token rotasyonu, JWKS, introspection, middleware, step-up, org değiştirme, `SessionRevoker`/`SessionIssuer`). **`src/login/` yok**: SES-01, 02, 18, 19, 20, 21, 22 yazılmadı. |
+| `authn-session` | ✅ bitti | Çekirdek (SES-03…17) + giriş akışları (`src/login/`: SES-01, 02, 18–22, RSK-03/04 session tarafı, MFA-09). Bağımsız denetimden geçti (2 yüksek, 5 orta bulgu kapatıldı). Açık: bağlantı havuzu kalıbı (README "kabul edilen riskler"). |
 | `authn-oidc-client` | 🔴 iskelet | Boş (14 satır). SOC-01…09 yazılacak. |
 | `authn-admin` | 🔴 iskelet | Boş (14 satır). ADM-01…08 yazılacak. |
-| `authn-server` | 🟠 iskelet | Yalnızca sağlık uçları, örnek route, CLI iskeleti, katman yığını. Hiçbir modül bağlı değil. OPS-*, DOC-01/04/06, TST-02/06 bu crate'in. |
+| `authn-server` | 🟡 büyük ölçüde | Tüm mevcut modüller bağlı (servisler, kancalar, router'lar, OpenAPI, OPS-02 katmanları, işler, CLI komutlarının hepsi, Dockerfile). Uçtan uca testler (TST-06) ve HTTP güvenlik regresyonları (TST-02) var. Kalan: oidc-client/admin bağlaması, DOC-01/04/06, Docker'ın gerçekten çalıştırılması. |
 
 ### 3.3 Doğrulama sonuçları (yazıldığı an)
 

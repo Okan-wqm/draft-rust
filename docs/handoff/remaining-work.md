@@ -23,6 +23,8 @@ Tüm görevlerde geçerli: HANDOFF §5 (kurallar) ve `contracts.md` §3 (dosya s
 
 ## 1. Login akışları — `crates/authn-session/src/login/**` (SES-01, 02, 18, 19, 20, 21, 22)
 
+> ✅ **Tamamlandı (2026-11-03).** Ayrıntı: `crates/authn-session/README.md` "Giriş akışları". Aşağıdaki tarif tarihsel kayıt olarak bırakıldı.
+
 **Durum:** Oturum çekirdeği (`SessionService`, `establish`, challenge API'si, `complete_login`, middleware) bitti ve push edildi. `src/login/` **henüz yok**; çekirdeğin README'si ve [`module-apis.md`](module-apis.md) §1 hangi yapı taşlarını sunduğunu anlatıyor. Çekirdek dosyalarını yalnızca zorunluysa değiştir ve onların testlerini yeşil tut.
 
 **Yazılacaklar:**
@@ -105,6 +107,8 @@ Tüm görevlerde geçerli: HANDOFF §5 (kurallar) ve `contracts.md` §3 (dosya s
 
 ## 3. Sunucu entegrasyonu — `crates/authn-server` (ARC-03, ARC-09, ARC-11, OPS-01 … OPS-10, PRT-11)
 
+> 🟡 **Büyük ölçüde tamamlandı (2026-11-03):** madde 1–8 uygulandı (`services.rs`, `hooks.rs`, `app.rs`, `jobs.rs`, `operations.rs`), madde 9 Dockerfile yazıldı ama Docker yokluğunda doğrulanmadı. authn-oidc-client ve authn-admin yazıldığında router'ları `app.rs::module_routes`'a ve `SessionIssuer` portları servislere eklenmeli. OPS-10 ayrı bakım rolü havuzu henüz yok (audit bakımı uygulama havuzuyla çalışıyor).
+
 **Durum:** Yalnızca iskelet: `app.rs` (katman sırası dokümante), `state.rs` (`AppState` + `FromRef` örneği), `serve.rs`, `cli.rs` (beş komut "henüz uygulanmadı" hatasıyla çıkıyor, panik yok), `/health/live`, `/health/ready`, `/openapi.json`, `GET /v1/time` örnek route.
 
 **Tek kaynak:** [`docs/architecture/contracts.md`](../architecture/contracts.md) **§15** — her kanca trait'inin, port uygulamasının, servisin, router'ın, katmanın, arka plan işinin ve CLI adımının tablosu; ayrıca [`module-apis.md`](module-apis.md). Her satırı uygula ve uygulanınca `contract-change-requests.md`'de ilgili talebi "Uygulandı" işaretle.
@@ -125,6 +129,8 @@ Tüm görevlerde geçerli: HANDOFF §5 (kurallar) ve `contracts.md` §3 (dosya s
 ---
 
 ## 4. Uçtan uca testler — `crates/authn-server/tests/` (TST-02, TST-06)
+
+> 🟡 **Başladı (2026-11-03):** `tests/e2e.rs` (kayıt→MFA→kurtarma, şifre sıfırlama, refresh rotasyonu, organizasyon/davet/RBAC/politika/API anahtarı), `tests/passkey_e2e.rs` (passkey kaydı, passkey step-up başarı yolu, passkey girişi), `tests/http_stack.rs` + `tests/routing.rs` (TST-02 bir kısmı). Kalan: sosyal giriş ve admin impersonation senaryoları (crate'ler yazılınca), open redirect ve SSRF HTTP testleri.
 
 Gerçek router + gerçek PostgreSQL + dış servisler için sahte/`wiremock` (ağ yok, TST-08).
 

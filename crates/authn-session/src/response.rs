@@ -117,13 +117,13 @@ fn no_store(response: &mut Response) {
         .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
 }
 
-/// The body and cookies of issued credentials.
-#[must_use]
-pub fn credentials_response(
+/// The body and the cookies of issued credentials (shared by
+/// [`credentials_response`] and the login flows, which add fields).
+pub(crate) fn credentials_parts(
     record: &SessionRecord,
     credentials: IssuedCredentials,
     now: OffsetDateTime,
-) -> Response {
+) -> (CredentialsBody, Vec<HeaderValue>) {
     let mut body = CredentialsBody {
         status: "authenticated",
         session_id: record.id,
@@ -171,6 +171,17 @@ pub fn credentials_response(
             body.refresh_token_expires_at = Some(refresh_token_expires_at);
         }
     }
+    (body, cookies_to_set)
+}
+
+/// The body and cookies of issued credentials.
+#[must_use]
+pub fn credentials_response(
+    record: &SessionRecord,
+    credentials: IssuedCredentials,
+    now: OffsetDateTime,
+) -> Response {
+    let (body, cookies_to_set) = credentials_parts(record, credentials, now);
     let mut response = (StatusCode::OK, axum::Json(body)).into_response();
     for cookie in cookies_to_set {
         response.headers_mut().append(SET_COOKIE, cookie);

@@ -2,10 +2,16 @@
 
 use std::path::PathBuf;
 
+use std::sync::Arc;
+
 use authn_core::config::AppConfig;
+use authn_core::error::AuthError;
+use authn_core::ports::{AuditSink, Clock, SystemClock};
+use authn_crypto::CryptoServices;
 use clap::{Parser, Subcommand};
 
 use crate::error::ServerError;
+use crate::operations;
 
 /// rust-authentication: authentication server for web, B2B SaaS and mobile.
 #[derive(Debug, Parser)]
@@ -80,12 +86,37 @@ pub enum Outcome {
     Message(String),
 }
 
+/// Loads the configuration, starts telemetry and connects (commands that
+/// work on the database).
+async fn connect(cli: &Cli) -> Result<(AppConfig, sqlx::PgPool), ServerError> {
+    let config = AppConfig::load(cli.config.as_deref())?;
+    crate::telemetry::init(&config.server)?;
+    let pool = authn_store::connect(&config.database).await?;
+    let status = authn_store::migration_status(&pool).await?;
+    if !status.is_up_to_date() {
+        return Err(ServerError::SchemaOutdated(format!("{status:?}")));
+    }
+    Ok((config, pool))
+}
+
+async fn crypto(config: &AppConfig) -> Result<CryptoServices, ServerError> {
+    CryptoServices::from_config(&config.crypto)
+        .await
+        .map_err(|e| ServerError::Startup(AuthError::from(e)))
+}
+
 /// Runs a command.
 pub async fn run(cli: Cli) -> Result<Outcome, ServerError> {
     authn_core::tls::install_crypto_provider();
-    match cli.command {
+    let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+    match &cli.command {
         Command::CheckConfig => {
-            AppConfig::load(cli.config.as_deref())?;
+            let config = AppConfig::load(cli.config.as_deref())?;
+            authn_notify::TemplateRenderer::from_config(&config).map_err(|e| {
+                ServerError::Startup(
+                    AuthError::internal("notification templates are invalid").with_source(e),
+                )
+            })?;
             Ok(Outcome::Message("configuration is valid".to_owned()))
         }
         Command::Migrate => {
@@ -105,13 +136,83 @@ pub async fn run(cli: Cli) -> Result<Outcome, ServerError> {
             crate::serve::serve(config).await?;
             Ok(Outcome::Done)
         }
-        // Owned by other modules; wired in by their agents. They fail with a
-        // clear error instead of panicking.
-        other @ (Command::CreateAdmin { .. }
-        | Command::RotateSigningKey { .. }
-        | Command::RotateKek
-        | Command::VerifyAuditChain
-        | Command::MigrateLegacyHashes { .. }) => Err(ServerError::NotImplemented(other.name())),
+        Command::CreateAdmin { email } => {
+            let (config, pool) = connect(&cli).await?;
+            let crypto = crypto(&config).await?;
+            let audit: Arc<dyn AuditSink> =
+                Arc::new(authn_audit::PgAuditSink::new(pool.clone(), clock.clone()));
+            let (id, password) =
+                operations::create_break_glass_admin(&pool, &crypto, clock.as_ref(), &audit, email)
+                    .await
+                    .map_err(ServerError::Startup)?;
+            Ok(Outcome::Message(format!(
+                "break-glass admin {id} created.\nOne-time password (store it offline now, it is not shown again):\n{}",
+                password.expose()
+            )))
+        }
+        Command::RotateSigningKey { emergency } => {
+            let (config, pool) = connect(&cli).await?;
+            let crypto = crypto(&config).await?;
+            let kid = operations::rotate_signing_key(
+                &pool,
+                &crypto,
+                clock.as_ref(),
+                &config.crypto.signing_keys,
+                *emergency,
+            )
+            .await
+            .map_err(ServerError::Startup)?;
+            Ok(Outcome::Message(if *emergency {
+                format!(
+                    "emergency rotation done; active key {kid}; restart or wait signing_key_cache_ttl on every instance"
+                )
+            } else {
+                format!(
+                    "pending key {kid} created; it activates after crypto.signing_keys.pending_period"
+                )
+            }))
+        }
+        Command::RotateKek => {
+            let (config, pool) = connect(&cli).await?;
+            let crypto = crypto(&config).await?;
+            let report = operations::rotate_kek(&pool, &crypto.envelopes)
+                .await
+                .map_err(ServerError::Startup)?;
+            Ok(Outcome::Message(format!(
+                "re-wrapped: {} signing keys, {} webhook secrets, {} other values",
+                report.signing_keys, report.webhook_secrets, report.other
+            )))
+        }
+        Command::VerifyAuditChain => {
+            let (_config, pool) = connect(&cli).await?;
+            let report = authn_audit::verify_chain(&pool)
+                .await
+                .map_err(ServerError::Startup)?;
+            if report.is_intact() {
+                Ok(Outcome::Message(format!(
+                    "audit chain intact; {} events verified",
+                    report.events_verified
+                )))
+            } else {
+                Err(ServerError::Integrity(format!(
+                    "audit chain broken after {} verified events: {:?}",
+                    report.events_verified, report.broken
+                )))
+            }
+        }
+        Command::MigrateLegacyHashes { input } => {
+            let text = std::fs::read_to_string(input)?;
+            let lines = operations::parse_legacy_lines(&text).map_err(ServerError::Input)?;
+            let (config, pool) = connect(&cli).await?;
+            let crypto = crypto(&config).await?;
+            let updated = operations::migrate_legacy_hashes(&pool, &crypto, clock.as_ref(), &lines)
+                .await
+                .map_err(ServerError::Startup)?;
+            Ok(Outcome::Message(format!(
+                "{updated} of {} accounts migrated",
+                lines.len()
+            )))
+        }
     }
 }
 
@@ -156,7 +257,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ops_01_unimplemented_commands_fail_cleanly() {
+    async fn ops_01_database_commands_fail_cleanly_without_configuration() {
         for command in [
             Command::CreateAdmin {
                 email: "a@example.com".into(),
@@ -164,18 +265,25 @@ mod tests {
             Command::RotateSigningKey { emergency: false },
             Command::RotateKek,
             Command::VerifyAuditChain,
-            Command::MigrateLegacyHashes { input: "x".into() },
         ] {
-            let name = command.name();
             let err = run(Cli {
-                config: None,
+                config: Some("/nonexistent/authn.toml".into()),
                 command,
             })
             .await
             .unwrap_err();
-            assert!(matches!(err, ServerError::NotImplemented(n) if n == name));
-            assert_eq!(err.exit_code(), std::process::ExitCode::from(2));
+            assert!(matches!(err, ServerError::Config(_)), "{err}");
+            assert_eq!(err.exit_code(), std::process::ExitCode::from(78));
         }
+        let err = run(Cli {
+            config: None,
+            command: Command::MigrateLegacyHashes {
+                input: "/nonexistent/hashes.csv".into(),
+            },
+        })
+        .await
+        .unwrap_err();
+        assert!(matches!(err, ServerError::Io(_)));
     }
 
     #[tokio::test]
