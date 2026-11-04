@@ -216,3 +216,69 @@ Büyük görevlerin dışında kalan, [`contract-change-requests.md`](../archite
 - **Doğrulanamayanlar:** Mailpit + sabit sertifika ve Dockerfile gerçek Docker ile hiç çalıştırılmadı.
 - **Proje sahibinin kararları (2026-11-04):** `libfuzzer-sys` NCSA istisnası **onaylandı** (ticari kullanıma engel olmayacak biçimde: yalnızca `fuzz/`, ürün workspace'inde `deny.toml` ile yasak; bkz. HANDOFF §7). Depo adı **`draft-rust` olarak kalıyor**.
 - **Proje sahibine sorulacak:** Faz 2/3 ne zaman?
+
+---
+
+## 10. Kapatılacak açık kalemler — tam liste (2026-11-04)
+
+> **Proje sahibinin talimatı (2026-11-04):** "Önemli önemsiz **tüm** eksikler kapatılmalı." Bu liste, şimdiye kadar "kabul edilen risk", "açık talep", "doğrulanmadı" veya "kapsam dışı" olarak bırakılan **her** maddeyi tek yerde toplar. Bir madde ancak kod + düzeltme olmadan başarısız olan test (gerekiyorsa) + belge güncellemesiyle kapatılır; kapatınca bu tabloda **Durum** sütununu `✅ <commit>` yap ve ilgili `contract-change-requests.md` talebini "Uygulandı" işaretle. Bir madde gerçekten kapatılamıyorsa (ör. proje sahibinin kararı gerekiyor) bunu açıkça yaz; sessizce "kabul edildi" deme.
+>
+> Kaynaklar: `contract-change-requests.md` açık talepleri, `crates/authn-admin/README.md` ve `crates/authn-oidc-client/README.md` "Güvenlik notları / Kabul edilen riskler", bu belgenin §9'u, HANDOFF §3.3 ve §7.
+
+### 10.1 Güvenlik açıkları ve güvenlik zayıflıkları
+
+| # | Kalem | Sahip / yer | Nasıl kapatılır | Durum |
+|---|-------|-------------|-----------------|-------|
+| K-01 | **Admin "MFA sıfırla" passkey'leri silmiyor** (orta, gerçek açık): saldırganın eklediği passkey sıfırlamadan sonra şifresiz girişe izin verir; cihazını kaybeden kullanıcı kilitli kalabilir. | authn-webauthn + authn-admin | `WebauthnService::remove_all_passkeys_in_tx(conn, user, reason)` (+ audit); admin MFA sıfırlaması aynı transaction'da çağırır; regresyon testi: sıfırlamadan sonra passkey ile giriş reddedilir. | Açık |
+| K-02 | **Sosyal kayıtta adres rezervasyonu (ACC-07) uygulanmıyor**: `NoReservations` fail-open; geri alma penceresindeki adres sosyal kayıtla kapılabilir ve eski sahibin geri alması unique kısıtına takılır. | authn-account + authn-server (+ authn-oidc-client) | authn-account `is_address_reserved_in(conn, email)` dışa açar; server adaptörü bağlar; üretim yapılandırmasında `NoReservations` kullanılamaz (yalnızca test). E2E testi: geri alma penceresinde sosyal kayıt reddedilir. | Açık |
+| K-03 | **Kimlik bağlama callback'i başlatan oturumu yeniden doğrulamıyor**: oturum iptal edildikten sonra 10 dk'ya kadar bağlama tamamlanabilir. | authn-oidc-client (+ migration, authn-session kancası) | `oauth_states.session_id` + callback'te oturum geçerlilik kancası; test: iptal edilen oturumla bağlama reddedilir. | Açık |
+| K-04 | **Genel OIDC sağlayıcısının `email_verified` beyanına koşulsuz güveniliyor.** | authn-oidc-client + authn-core config | Sağlayıcı başına `trust_email_verified` (varsayılan **false** genel sağlayıcılar için); güvenilmiyorsa e-posta doğrulanmamış sayılır. | Açık |
+| K-05 | **Break-glass hesabıyla giriş yüksek öncelikli olay üretmiyor** (yalnızca admin API kullanımı üretiyor). | authn-session | Giriş akışında `is_break_glass` için `admin.break_glass_used` (`priority: high`, `surface: login`). | Açık |
+| K-06 | **Impersonation gerekçesi olaya commit'ten sonra, ayrı transaction'da bağlanıyor** (başarısızlıkta yalnızca log). | authn-core port + authn-session + authn-admin | Olay kimliğini alan/döndüren port varyantı; gerekçe aynı transaction'da yazılır. | Açık |
+| K-07 | **Ele geçirilmiş break-glass hesabı API'den askıya alınamıyor** (bilinçli tasarım) ve buna yönelik araç yok. | authn-server CLI | `suspend-admin` / `revoke-admin-sessions` CLI komutları (gerekçe zorunlu, audit'li) + operasyon belgesinde prosedür. | Açık |
+| K-08 | **Ele geçirilmiş bir admin diğer adminleri askıya alabilir / acil durum işlemlerini tekrarlayarak kesinti yaratabilir.** | authn-admin | Acil durum işlemleri ve admin hedefli işlemler için ayrı, sıkı rate limit; tekrarlanan acil işlemde soğuma süresi; alarm için metrik. | Açık |
+| K-09 | **Audit zincir doğrulamasının ayrı rate limit'i yok** (pahalı işlem). | authn-admin | Uç başına rate limit + eşzamanlı tek doğrulama. | Açık |
+| K-10 | **Acil "tüm oturumları kapat" çağıran adminin oturumunu da kapatıyor.** | authn-admin | Çağıranın oturumunu hariç tutma seçeneği (varsayılan: hariç), test. | Açık |
+| K-11 | **Break-glass için passkey kayıt bağlantısı seçeneği yok** (§2b-5 "ya da passkey kayıt bağlantısı"). | authn-admin + authn-server CLI | `create-admin --passkey-link`: tek kullanımlık, kısa ömürlü kayıt bağlantısı. | Açık |
+| K-12 | **Web impersonation adminin oturum çerezini değiştiriyor.** | authn-admin + authn-session | Impersonation token'ını yalnızca gövdede döndürme / ayrı çerez adı seçeneği; admin oturumu bozulmaz. | Açık |
+| K-13 | **Break-glass IP izin listesini atlamıyor** (bilinçli). | authn-admin + belge | Karar belgelenmeli; acil durumda izin listesini değiştirme prosedürü operasyon rehberine. | Açık |
+| K-14 | **Admin kimliği/IP'si kullanıcının kendi olay listesinde görünebiliyor**: `account.email_verified` `Actor::User(admin)` kullanıyor; modül olaylarında adminin maskeli IP'si. | authn-account (+ authn-admin) | Admin yoluyla gelen olaylarda `Actor::System` + personel bağlamı; kullanıcı görünümünde personel IP'si gösterilmez. | Açık |
+| K-15 | **Audit sanitizer'ı bazı meşru metadata anahtarlarını `[REDACTED]` yapıyor** (`must_change_password`, `code_issued`, `password_removed`). | authn-audit (+ authn-account, authn-password) | İzin listesi düzeltmesi veya anahtar yeniden adlandırma; test. | Açık |
+| K-16 | **JWKS indirmesi başarısızken geri çekilme (backoff) yok**: sağlayıcı kesintisinde her doğrulama yeniden indirmeyi dener. | authn-oidc-client | Başarısız indirmede negatif önbellek / üstel geri çekilme; test. | Açık |
+| K-17 | **Microsoft kişisel hesap (MSA) e-postası doğrulanmış sayılıyor.** | authn-oidc-client | Yapılandırılabilir kural (varsayılan güvenli taraf) + belge. | Açık |
+| K-18 | **Sosyal kimlik bağlandı/ayrıldı bildirimi yok** (yalnızca audit). | authn-notify + authn-oidc-client | `NotificationKind::IdentityLinked/IdentityUnlinked` + TR/EN şablon; aynı transaction'da gönderim. | Açık |
+| K-19 | **Passkey klonu şüphesinde kullanıcıya bildirim yok** (yalnızca audit + listede işaret). | authn-notify + authn-webauthn | `NotificationKind::PasskeyCloneSuspected` + şablon. | Açık |
+| K-20 | **`Revert` (ACC-07 geri alma) passkey/TOTP/sosyal kimlikleri kaldırmıyor.** | authn-server kancası (+ ilgili modüller) | Geri almada saldırganın eklediği tüm giriş yöntemlerini kaldıran kanca; E2E testi. | Açık |
+| K-21 | **Cihaz kimliği hash'i ayrı HKDF amacı kullanmıyor** (`KeyPurpose::KnownDevice`, CRY-11; düşük). | authn-crypto + authn-protect | Yeni amaç + taşıma. | Açık |
+
+### 10.2 İşlevsel eksikler
+
+| # | Kalem | Sahip / yer | Nasıl kapatılır | Durum |
+|---|-------|-------------|-----------------|-------|
+| K-30 | **Sosyal girişin 12 hata kodu authn-core'da değil** (`codes::all()` listesinde yok). | authn-core + authn-oidc-client | `error/codes/oidc_client.rs`'e taşı; ARC-08 testleri. | Açık |
+| K-31 | **`[oidc_client]` yapılandırma anahtarları eksik**: `microsoft.allowed_tenants`, `start_per_ip`, `native_per_ip`, `callback_per_ip`, `jwks_refresh_min_interval`, `apple.private_key_file` (+ K-04, K-17 ayarları). | authn-core config + `config/example.toml` | Alanlar + doğrulama + örnek; `example_config` testi. | Açık |
+| K-32 | **Web sosyal girişinde `remember_me` / `shared_device` yok.** | migration `2100` + authn-oidc-client | `oauth_states` kolonları; web akışı iletir. | Açık |
+| K-33 | **Yeni sosyal hesapta `user_profiles` satırı yok** (görünen ad yalnızca `identities`'te). | authn-account + authn-oidc-client | Doğrulanmış kullanıcı sağlama API'si; profil satırı oluşturulur. | Açık |
+| K-34 | **Apple özel anahtarı yalnızca PEM** (SOC-07 "zarf şifreli veya dosya"). | authn-core config + authn-oidc-client | Dosya yolu ve zarf şifreli değer desteği. | Açık |
+| K-35 | **Apple native yetkilendirme kodu takas edilmiyor; hesap silmede Apple token iptali yok** (Apple, uygulama içi hesap silmede token iptali ister). | authn-oidc-client + authn-account silme kancası | Kod takası, refresh token zarf şifreli saklama (SOC-08), silmede `revoke` çağrısı. | Açık |
+| K-36 | **Callback hataları tarayıcıya JSON dönüyor.** | authn-oidc-client | Yapılandırılabilir hata yönlendirme adresi (izin listesiyle, open redirect yok). | Açık |
+| K-37 | **authn-oidc-client'ta kullanılmayan bağımlılıklar** (`oauth2`, `subtle`, `axum-extra`, `reqwest`, `uuid`, `thiserror`). | authn-oidc-client `Cargo.toml` | Kaldır; `Cargo.lock` ve `THIRD_PARTY_LICENSES.txt` yeniden üret. | Açık |
+| K-38 | **authn-admin başka modüllerin tablolarında doğrudan SQL çalıştırıyor**; `users (created_at, id)` indeksi yok. | authn-store + authn-admin | `UserRepository::search`, `stale_passwords`, `set_admin_flags` + indeks migration'ı; admin bunlara geçer. | Açık |
+| K-39 | **Admin işlem gerekçeleri kullanıcının veri dışa aktarımında (ACC-10) yok.** | **Proje sahibinin kararı** + authn-admin | Karar verilince: dışa aktarıcı ekle veya gerekçeyi belgede yaz. | Karar bekliyor |
+| K-40 | **authn-notify şablon/tür talepleri**: `registration_attempt` metnini genelleştir; `EmailChangeReverted`. | authn-notify (+ authn-account) | Tür + TR/EN şablon + kullanım. | Açık |
+| K-41 | **Yeniden kullanım fırsatları** (davranış aynı): authn-account `SharedReads`/`RevertLinkRepository` → `UserRepository`; authn-org `find_many`, `RevocationReason::MembershipChanged`; authn-mfa testlerinde `RecordingNotifier`. | ilgili crate'ler | Refaktör, testler yeşil kalır. | Açık |
+| K-42 | **OPS-10 ayrı bakım rolü havuzu yok** (audit bakımı uygulama havuzuyla çalışıyor). | authn-server | Ayrı bağlantı dizesi/rol + en az yetki belgesi (`admin_action_reasons` için `SELECT, INSERT` dahil). | Açık |
+
+### 10.3 Entegrasyon, doğrulama ve belgeler
+
+| # | Kalem | Sahip / yer | Nasıl kapatılır | Durum |
+|---|-------|-------------|-----------------|-------|
+| K-50 | **authn-admin sunucuya bağlı değil**: servis, `SigningKeyCache` adaptörü (`invalidate_signing_keys`), router + OpenAPI, CLI `create-admin`'in `authn_admin::create_break_glass_admin`'e geçmesi. | authn-server | `crates/authn-admin/README.md` "server'ın bağlaması gerekenler". | Açık |
+| K-51 | **authn-oidc-client sunucuya bağlı değil**: servis, router + OpenAPI, `LoginMethodInventory`, `AddressReservations` (K-02), password/webauthn adaptörlerinde `LoginMethod::Social`, `IdentityDataExporter`, `purge_expired_states` işi. | authn-server | `crates/authn-oidc-client/README.md` "Server'ın bağlaması gerekenler". | Açık |
+| K-52 | **Uçtan uca testler**: sosyal giriş (her sağlayıcı web+native, bağlama/ayırma, pre-hijacking etkileşimi), admin (yetki matrisi gerçek oturumla, impersonation gerçek `PgSessionRevoker` ile, acil durum), open redirect ve SSRF HTTP testleri. | authn-server `tests/` | §4. | Açık |
+| K-53 | **Eski talep durumları güncel değil**: önceki oturumda uygulanan sunucu bağlama talepleri (`contract-change-requests.md`) hâlâ "Açık" görünüyor. | belge | Her talebi kodla karşılaştır; uygulananları "Uygulandı" yap. | Açık |
+| K-54 | **Mimari belgeler**: contracts §5/§6/§15 ve `overview.md` ER diyagramına `pending_registrations`, `admin_action_reasons`, migration `2000`/`2100`/`2200` satırları; revoker inşa sırası, `authenticate`'in `api_key_middleware` yerine geçmesi, `purge_expired` işi. | mimar | Belgeleri güncelle. | Açık |
+| K-55 | **Dockerfile ve Mailpit hiç gerçek Docker ile çalıştırılmadı.** | operasyon | Docker'lı bir ortamda imajı derle/çalıştır; lisans dosyasının imajda olduğunu, sağlık uçlarını, gerçek SMTP'yi doğrula. Docker yoksa bunu açıkça raporla. | Açık |
+| K-56 | **CI bu dalda çalışmıyor** (yalnızca `main` push ve PR'da). Yeni `licence-notices` işi henüz hiç koşmadı. | GitHub | PR açılınca CI'ın tamamı ve yeni iş yeşil olmalı (PR açmak proje sahibinin onayıyla). | Açık |
+| K-57 | **Genel güvenlik denetimi, QA sertleştirme, dokümantasyon** (§5, §6, §7). | — | İlgili bölümler. | Açık |
+| K-58 | **Daha önce kabul edilmiş kalan riskler yeniden değerlendirilmeli**: ADR 0002 kalıntıları (kod phishing'i, hedefli kayıt DoS'u, hedef başına kod tahmini); oturum (access token oturum kontrolü kapatılırsa iptal gecikmesi ≤ 10 dk, imza anahtarı önbelleği 30 sn, eşzamanlı ayrıcalık değişiminde refresh yeniden kullanım algısı); audit (teslim edilmiş outbox/webhook geçmişinde saklama süresince kullanıcı kimliği); authn-session bağlantı havuzu kalıbı (README "kabul edilen riskler"). | ilgili crate'ler | Her biri için ya düzeltme ya da proje sahibine sunulan gerekçeli karar. | Açık |
