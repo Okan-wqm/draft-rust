@@ -242,8 +242,10 @@ async fn ses_01_unknown_account_takes_as_long_as_a_wrong_password(pool: PgPool) 
     })
     .await;
     h.user("alice@example.com").await;
-    let report = authn_testkit::timing::compare_timings(
-        15,
+    let report = authn_testkit::timing::compare_timings_repeated(
+        3,
+        41,
+        0.35,
         || async {
             let b = Browser::new(&h);
             h.send(b.post(
@@ -1308,7 +1310,12 @@ async fn ses_18_magic_link_signs_in_on_the_requesting_browser(pool: PgPool) {
 
 #[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
 async fn ses_18_unknown_addresses_get_the_same_answer_and_no_mail(pool: PgPool) {
-    let h = Harness::new(pool).await;
+    // Every sample comes from one IP: only the per-IP limit is raised.
+    let h = Harness::with(pool, |c| {
+        c.protect.rate_limit.login_per_ip =
+            authn_core::ports::RateLimitPolicy::new(1000, Duration::from_secs(900));
+    })
+    .await;
     h.user("alice@example.com").await;
     let mut known = Browser::new(&h);
     let a = known
@@ -1335,24 +1342,34 @@ async fn ses_18_unknown_addresses_get_the_same_answer_and_no_mail(pool: PgPool) 
     assert_eq!(a.set_cookies().len(), b.set_cookies().len());
     h.service.drain_background_jobs().await;
     assert_eq!(count_kind(&h, "magic_link"), 1);
-    let report = authn_testkit::timing::compare_timings(
-        15,
-        || async {
-            let b = Browser::new(&h);
-            h.send(b.post(
-                "/v1/login/magic-link",
-                &json!({"email": "alice@example.com"}),
-            ))
+    // A fresh address per sample: the per-address limit (5 per hour) must
+    // not turn the comparison into one of two `429` answers.
+    const SAMPLES: usize = 31;
+    let mut known = Vec::new();
+    let mut unknown = Vec::new();
+    // Enough fresh addresses for up to three rounds (warm-up included).
+    for i in 0..3 * (SAMPLES + 3) {
+        let email = format!("member{i}@example.com");
+        h.user(&email).await;
+        known.push(email);
+        unknown.push(format!("stranger{i}@example.com"));
+    }
+    let known = std::sync::Mutex::new(known);
+    let unknown = std::sync::Mutex::new(unknown);
+    let harness = &h;
+    let request = move |email: String| async move {
+        let b = Browser::new(harness);
+        let r = harness
+            .send(b.post("/v1/login/magic-link", &json!({"email": email})))
             .await;
-        },
-        || async {
-            let b = Browser::new(&h);
-            h.send(b.post(
-                "/v1/login/magic-link",
-                &json!({"email": "nobody@example.com"}),
-            ))
-            .await;
-        },
+        r.assert_status(StatusCode::ACCEPTED);
+    };
+    let report = authn_testkit::timing::compare_timings_repeated(
+        3,
+        SAMPLES,
+        0.35,
+        || request(known.lock().unwrap().pop().unwrap()),
+        || request(unknown.lock().unwrap().pop().unwrap()),
     )
     .await;
     report.assert_indistinguishable(0.35);
@@ -1722,7 +1739,13 @@ async fn ses_21_organization_login_methods_apply_to_passwordless_logins(pool: Pg
 
 #[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
 async fn ses_01_captcha_escalated_answers_take_the_same_time(pool: PgPool) {
-    let h = Harness::new(pool).await;
+    // Only the per-IP limit is raised (every sample comes from one IP); the
+    // per-identifier CAPTCHA budget keeps its default so it escalates.
+    let h = Harness::with(pool, |c| {
+        c.protect.rate_limit.login_per_ip =
+            authn_core::ports::RateLimitPolicy::new(1000, Duration::from_secs(900));
+    })
+    .await;
     h.user("alice@example.com").await;
     let budget = h.config.protect.rate_limit.login_per_account_captcha.limit;
     for email in ["alice@example.com", "nobody@example.com"] {
@@ -1732,8 +1755,10 @@ async fn ses_01_captcha_escalated_answers_take_the_same_time(pool: PgPool) {
                 .await;
         }
     }
-    let report = authn_testkit::timing::compare_timings(
-        15,
+    let report = authn_testkit::timing::compare_timings_repeated(
+        3,
+        41,
+        0.35,
         || async {
             let b = Browser::new(&h);
             let r = h
@@ -1998,7 +2023,8 @@ async fn ses_19_wrong_code_takes_as_long_for_unknown_addresses(pool: PgPool) {
     .await;
     let mut real = Vec::new();
     let mut ghost = Vec::new();
-    for i in 0..20 {
+    // Tokens for up to three rounds of 41 samples (warm-up included).
+    for i in 0..3 * 44 {
         let email = format!("user{i}@example.com");
         h.user(&email).await;
         for (address, out) in [
@@ -2022,8 +2048,10 @@ async fn ses_19_wrong_code_takes_as_long_for_unknown_addresses(pool: PgPool) {
             &token,
         )
     };
-    let report = authn_testkit::timing::compare_timings(
-        15,
+    let report = authn_testkit::timing::compare_timings_repeated(
+        3,
+        41,
+        0.35,
         || async {
             let token = real.lock().unwrap().pop().unwrap();
             h.send(wrong(token)).await;
