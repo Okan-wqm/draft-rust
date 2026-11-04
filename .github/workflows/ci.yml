@@ -3,7 +3,9 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    # Development branches are verified on every push too, so work is checked
+    # before a pull request exists.
+    branches: [main, "claude/**"]
   pull_request:
 
 permissions:

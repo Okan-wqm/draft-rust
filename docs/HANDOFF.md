@@ -171,6 +171,12 @@ Denetçinin baktığı sınıflar: hesap varlığı sızıntısı (gövde/durum/
 
 ## 9. Kullanıcıyla ilgili bilinmesi gerekenler
 
+- **Projenin hedefi (proje sahibinin sözü, 2026-11-04):** "Dünyadaki en güvenli, en hızlı/performanslı, en özellikli auth sistemini yazıyoruz." Proje sahibi teknik kararları uzmana bırakıyor ("uzman sensin"); kararlar gerekçesiyle bu belgeye ve `remaining-work.md` §10'a yazılır.
+- **Proje sahibi adına verilen kararlar (2026-11-04):**
+  - **K-39:** admin işlem gerekçeleri kullanıcının veri dışa aktarımına (ACC-10) **dahil** (GDPR md. 15 / KVKK md. 11); personel kimliği ve IP'si çıkarılır (GDPR md. 15/4). Dolandırıcılık/hukuki soruşturma için admin bir gerekçeyi zorunlu notla "kısıtlı" işaretleyebilir (KVKK md. 28 / GDPR md. 23); bu işaretleme audit'lenir, dışa aktarımda içerik verilmez ama kısıtlı kayıt sayısı belirtilir.
+  - **K-56:** CI, `main`'e ek olarak `claude/**` dallarına her push'ta da çalışır; PR açmak proje sahibinin kontrolünde kalır.
+  - **Lisans:** `libfuzzer-sys` NCSA istisnası onaylı (yalnızca `fuzz/`); tüm üçüncü taraf lisans şartları harfi harfine karşılanır (`licenses/README.md`). Depo adı `draft-rust` kalır.
+
 - Kullanıcı Türkçe konuşuyor; kısa, doğrudan ilerleme raporu bekliyor. İlerlemeyi "yüzde kaç bitti, ne kaldı" gibi sorarak takip ediyor — dürüst ol, bitmemiş şeyi bitmiş gösterme.
 - İsteği: "profesyonel kalite, güvenlik takıntılı, her özellik test edilsin, dokümantasyon eksiksiz, her bölüm için uzman agent". Faz 1 bu repoda; Faz 2/3 (OAuth 2.1/OIDC **sağlayıcısı**, kurumsal SSO, SCIM, DPoP, Single Logout, SAML) ayrı bir iş olarak planlandı (`docs/roadmap.md`, DOC-09 yazılacak).
 - Üretime çıkmadan önce **bağımsız bir dış güvenlik denetimi (pentest)** önerildi ve bu repo bunun yerine geçmez.
