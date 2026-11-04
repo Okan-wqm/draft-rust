@@ -3,9 +3,11 @@
 #   cargo +nightly fuzz run email_normalize
 #
 # Separate workspace on purpose: libfuzzer-sys is licensed
-# "(MIT OR Apache-2.0) AND NCSA". NCSA is permissive but not on the LIC-01
-# list, so it is confined to this development-only package (never linked
-# into the shipped binary) and allowed by fuzz/deny.toml for that crate only.
+# "(MIT OR Apache-2.0) AND NCSA". NCSA is permissive (BSD-style, commercial
+# use allowed) but not on the LIC-01 list; the project owner approved it as a
+# scoped exception. It is confined to this development-only package (never
+# linked into the shipped binary: ../deny.toml bans the crate) and allowed by
+# fuzz/deny.toml for that crate only.
 #
 # Ownership: each fuzz_targets/<target>.rs file belongs to the crate named in
 # its header; this Cargo.toml already depends on every crate that owns a

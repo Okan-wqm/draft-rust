@@ -398,7 +398,7 @@ Geriye uyumlu **eklemeler** (yeni port metodu varsayılan gövdeyle, yeni hata k
 | SQL'de enum yerine `text` + `CHECK` | Değer eklemek basit bir kısıt değişikliğidir |
 | `EmailAddress` `sqlx::Decode` uygulamaz | Kurallar sertleştiğinde eski satırlar okunamaz hale gelmez |
 | `AuthError` kutulanmış (`Box<Inner>`) | `Result<T, AuthError>` işaretçi boyutunda; `clippy::result_large_err` yok |
-| `fuzz/` ayrı workspace | `libfuzzer-sys` (NCSA) yalnızca geliştirme aracında; `fuzz/deny.toml` istisnayı yalnızca o crate için tanır (webauthn-rs ailesinin MPL-2.0 istisnaları kökle aynı) |
+| `fuzz/` ayrı workspace | `libfuzzer-sys` (NCSA; BSD benzeri, ticari kullanıma izin verir; proje sahibi onayladı) yalnızca geliştirme aracında; `fuzz/deny.toml` istisnayı yalnızca o crate için tanır (webauthn-rs ailesinin MPL-2.0 istisnaları kökle aynı); kök `deny.toml` `[bans]` crate'i ürün workspace'inde yasaklar |
 | Dalga A modülleri arası veri ihtiyacı → modülün kendi crate'inde kanca trait'i, uygulaması server'da (§4, §15.1) | Dalga A'nın birbirine bağımlı olmaması korunur; varsayılan uygulamalar testleri ve tek kiracılı kurulumu basit tutar |
 | `data_encryption_keys` tablosu ayrılmış (kullanılmıyor) | Değer başına DEK zarfın içinde taşınır: şifre çözmede DB araması yok, nonce yeniden kullanımı imkânsız, KEK rotasyonu satır bazında `rewrap` |
 | Bakım işleri `UserRepository::claim_next` (`FOR UPDATE SKIP LOCKED`) ile satır talep eder | Çoklu instance güvenli (OPS-06); kilitli satır beklenmez, atlanır |

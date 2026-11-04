@@ -1,0 +1,40 @@
+Third-party software notices for rust-authentication
+====================================================
+
+The rust-authentication binary includes the third-party Rust crates listed
+below. Each crate is used under the licence shown for it; the full licence
+texts, including the copyright notices supplied by each crate, follow.
+
+MPL-2.0 source code availability (Mozilla Public License 2.0, section 3.2):
+the crates marked "MPL-2.0" below are included unmodified. Their complete
+source code is available from crates.io at
+https://crates.io/crates/<crate-name>/<version> (download link
+https://crates.io/api/v1/crates/<crate-name>/<version>/download) and from the
+repository listed for each crate.
+
+Licences overview
+-----------------
+{{#each overview}}
+* {{{name}}} ({{count}})
+{{/each}}
+
+Crates
+------
+{{#each crates}}
+* {{package.name}} {{package.version}}: {{#if package.license}}{{package.license}}{{else}}see licence text below{{/if}}{{#if package.repository}} ({{package.repository}}){{/if}}
+{{/each}}
+
+Licence texts
+-------------
+{{#each licenses}}
+
+==============================================================================
+{{{name}}} ({{id}})
+Used by:
+{{#each used_by}}
+  * {{crate.name}} {{crate.version}}{{#if crate.repository}} ({{crate.repository}}){{/if}}
+{{/each}}
+==============================================================================
+
+{{{text}}}
+{{/each}}

@@ -88,6 +88,10 @@ deny = [
     { crate = "openssl-sys", reason = "rustls + ring is the only TLS/crypto provider" },
     { crate = "native-tls", reason = "rustls + ring is the only TLS/crypto provider" },
     { crate = "aws-lc-sys", reason = "ring is the selected rustls provider (avoids the OpenSSL licence surface)" },
+    # The NCSA licence exception for libfuzzer-sys (approved by the project
+    # owner) applies only to the development-only fuzz/ workspace. It must
+    # never enter the shipped product dependency graph.
+    { crate = "libfuzzer-sys", reason = "fuzz/ development harness only; NCSA exception is scoped to fuzz/deny.toml" },
 ]
 
 # ---------------------------------------------------------------------------

@@ -79,6 +79,23 @@ jobs:
       # Development-only fuzz harness (libfuzzer-sys NCSA exception, fuzz/deny.toml).
       - run: cargo deny --manifest-path fuzz/Cargo.toml --config fuzz/deny.toml check licenses sources
 
+  licence-notices:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.97"
+      - run: cargo install cargo-about --version 0.9.3 --features cli --locked
+      # --frozen = offline + locked: the texts come only from the crate packages.
+      - run: cargo fetch --locked
+      # THIRD_PARTY_LICENSES.txt ships with the binary (Docker image); it must
+      # match the current dependency graph exactly (LIC-01).
+      - run: python3 -I licenses/generate_notices.py
+      - run: git diff --exit-code -- THIRD_PARTY_LICENSES.txt
+      # The fuzz harness notices must stay next to the harness.
+      - run: test -s fuzz/THIRD_PARTY_LICENSES.txt
+
   audit:
     runs-on: ubuntu-latest
     steps:

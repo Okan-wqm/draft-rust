@@ -1,0 +1,34 @@
+# cargo-about configuration: generates the third-party licence notices that
+# must ship with the `rust-authentication` binary (MIT/BSD/ISC/Apache-2.0/...
+# require the copyright notice and licence text in binary distributions;
+# MPL-2.0 additionally requires telling recipients where the source is).
+#
+# Do not run cargo-about directly; regenerate with (also appends NOTICE /
+# COPYRIGHT / AUTHORS files, Apache-2.0 section 4(d)):
+#   python3 -I licenses/generate_notices.py
+#
+# Keep `accepted` identical to the allow-list in deny.toml (plus MPL-2.0,
+# which deny.toml restricts to the webauthn-rs family crate by crate).
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "0BSD",
+    "MPL-2.0",
+]
+# Only what is linked into the shipped binary.
+ignore-dev-dependencies = true
+ignore-build-dependencies = true
+ignore-transitive-dependencies = false
+# Workspace crates are the project itself, not third-party code.
+private = { ignore = true }
+# Built-in clarifications for crates whose licence files are non-standard.
+workarounds = ["ring", "rustls"]

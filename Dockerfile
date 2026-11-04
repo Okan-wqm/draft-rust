@@ -27,6 +27,8 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 FROM gcr.io/distroless/cc-debian12:nonroot
 COPY --from=build /out/rust-authentication /usr/local/bin/rust-authentication
 COPY --from=build /src/config/example.toml /etc/authn/example.toml
+# Third-party licence notices required for binary redistribution (LIC-01).
+COPY THIRD_PARTY_LICENSES.txt /usr/share/doc/rust-authentication/THIRD_PARTY_LICENSES.txt
 USER nonroot:nonroot
 EXPOSE 8080 9090
 ENTRYPOINT ["/usr/local/bin/rust-authentication"]
