@@ -1176,6 +1176,13 @@ async fn adm_07_k65_slow_verification_keeps_its_lease(pool: sqlx::PgPool) {
     .await;
     let (_, admin) = h.admin("admin@example.com").await;
     let caller = h.caller(&admin).await;
+    // K-77: as at server start-up, the chain is switched to the keyed form
+    // first (that switch writes a checkpoint; the lock below must only
+    // block the verification, not the throttle event's append).
+    authn_audit::PgAuditSink::keyed(h.pool.clone(), h.ports.clock.clone(), h.chain_keys.clone())
+        .activate_chain_key()
+        .await
+        .unwrap();
     // Hold the table the verification reads first: it blocks until released.
     let mut blocker = h.pool.begin().await.unwrap();
     sqlx::query("LOCK TABLE audit_chain_checkpoints IN ACCESS EXCLUSIVE MODE")

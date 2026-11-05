@@ -40,6 +40,8 @@ pub struct OrgSwitch {
 /// The new state of a session after a privilege change.
 pub(crate) struct PrivilegeChange<'a> {
     pub(crate) amr: &'a [AuthMethodRef],
+    /// Second factors behind the session's `mfa` (K-78).
+    pub(crate) mfa_factors: &'a [FactorKind],
     pub(crate) auth_time: time::OffsetDateTime,
     pub(crate) active_org_id: Option<OrgId>,
     pub(crate) absolute_expires_at: time::OffsetDateTime,
@@ -83,6 +85,7 @@ impl SessionService {
     ) -> Result<(SessionRecord, IssuedCredentials), AuthError> {
         let PrivilegeChange {
             amr,
+            mfa_factors,
             auth_time,
             active_org_id,
             absolute_expires_at,
@@ -105,6 +108,7 @@ impl SessionService {
             &SessionUpdate {
                 new_token_hash: new_hash.as_ref(),
                 amr,
+                mfa_factors,
                 auth_time,
                 active_org_id,
                 absolute_expires_at,
@@ -176,10 +180,12 @@ impl SessionService {
         }
         // K-58 audit: the organization's allowed second factors apply to
         // the `mfa` the session brings along, not only to logins made with
-        // the organization requested.
+        // the organization requested. K-78: read from the recorded second
+        // factors, never inferred from `amr` (a risk confirmation e-mail
+        // is in `amr` but is no factor).
         if let Some(policy) = &policy
             && !record.is_impersonation()
-            && !second_factor_allowed(policy, record.login_method, &record.amr)
+            && !second_factor_allowed(policy, &record.mfa_factors, &record.amr)
         {
             return Err(AuthError::new(codes::org::ORG_POLICY_MFA_REQUIRED)
                 .with_context("the session's second factor is not allowed here"));
@@ -200,6 +206,7 @@ impl SessionService {
                 &record,
                 PrivilegeChange {
                     amr: &record.amr,
+                    mfa_factors: &record.mfa_factors,
                     auth_time: record.auth_time,
                     active_org_id: target,
                     absolute_expires_at: absolute,
@@ -228,14 +235,17 @@ impl SessionService {
 
 /// Whether the second factor behind the session's `mfa` is one `policy`
 /// allows (`allowed_mfa_factors`, MFA-08), when the policy requires MFA.
-/// The factor is read from `amr` minus the references the primary login
-/// method itself contributes; a passkey is MFA on its own (SES-21). When
-/// no remaining reference names an allowed factor (including ambiguous
-/// sessions, e.g. an e-mail code login whose `otp` hides a TOTP) the answer
-/// is "no": the user steps up with an allowed factor.
+///
+/// K-78: the factor is read from the session's recorded `mfa_factors` (the
+/// factor kinds verified as second factors at login or step-up), never
+/// inferred from `amr` — a risk confirmation e-mail (RSK-03) adds `email`
+/// to `amr` without being a factor. A passkey is MFA on its own (SES-21).
+/// A session without a recorded allowed factor (provider MFA, sessions
+/// created before migration 2002) gets "no": the user steps up with an
+/// allowed factor.
 pub(crate) fn second_factor_allowed(
     policy: &OrgPolicy,
-    login_method: Option<LoginMethod>,
+    mfa_factors: &[FactorKind],
     amr: &[AuthMethodRef],
 ) -> bool {
     let Some(allowed) = &policy.allowed_mfa_factors else {
@@ -244,21 +254,5 @@ pub(crate) fn second_factor_allowed(
     if !(policy.mfa_required || policy.phishing_resistant_mfa_required) || has_passkey(amr) {
         return true;
     }
-    let primary: &[AuthMethodRef] = match login_method {
-        Some(LoginMethod::Password) => &[AuthMethodRef::Pwd],
-        Some(LoginMethod::MagicLink) => &[AuthMethodRef::Email],
-        Some(LoginMethod::EmailCode) => &[AuthMethodRef::Email, AuthMethodRef::Otp],
-        Some(LoginMethod::Social) => &[AuthMethodRef::Fed],
-        Some(LoginMethod::Passkey) | None => &[],
-    };
-    amr.iter()
-        .filter(|a| !primary.contains(a))
-        .filter_map(|a| match a {
-            AuthMethodRef::Otp => Some(FactorKind::Totp),
-            AuthMethodRef::Sms => Some(FactorKind::Sms),
-            AuthMethodRef::Email => Some(FactorKind::Email),
-            AuthMethodRef::Kba => Some(FactorKind::RecoveryCode),
-            _ => None,
-        })
-        .any(|factor| allowed.contains(&factor))
+    mfa_factors.iter().any(|factor| allowed.contains(factor))
 }

@@ -107,12 +107,13 @@ impl SessionService {
     pub async fn verify_access_token(&self, token: &str) -> Result<VerifiedAccessToken, AuthError> {
         let settings = self.settings();
         let kid = peek_kid(token);
-        let verifier = self.key_cache().verifier_for(kid.as_deref()).await?;
+        let keys = self.key_cache().verifier_for(kid.as_deref()).await?;
         let validation =
             JwtValidation::access_token(settings.issuer.clone(), settings.own_audience())
                 .with_leeway(settings.jwt_leeway)
                 .with_max_lifetime(settings.session.access_token_ttl);
-        let verified = verifier
+        let verified = keys
+            .verifier
             .verify::<AccessTokenClaims>(token, &validation, self.now())
             .map_err(|e| reject(jwt_reason(e)))?;
         let user_id = verified

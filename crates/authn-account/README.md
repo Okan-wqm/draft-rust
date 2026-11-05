@@ -15,7 +15,7 @@ Kayıt, e-posta doğrulama, hesap durum makinesi, profil, e-posta değişikliği
 | ACC-07 | `is_address_reserved_in` (sosyal giriş vb. için rezervasyon sorgusu, K-02); step-up ile talep, yeni adrese link + kod (ikisi de hesap sahibinin oturumuyla onaylanır), eski adrese 7 günlük geri alma linki, eski adres rezervasyonu, geri almada oturum/güvenilir cihaz iptali + şifre sıfırlama zorunluluğu; bekleyen değişiklik şifre sıfırlama / "tümünü kapat" ile ölür (`AccountAwareSessionRevoker`) | `email_change.rs`: `acc_07_*`; `prehijack.rs`: `acc_07_email_change_link_requires_the_account_holders_session`, `acc_07_pending_email_change_ends_on_reset_and_sign_out_everywhere` |
 | ACC-08 | `GET/PATCH /v1/me/profile` (görünen ad, `tr`/`en`, IANA saat dilimi); posta kutusunu kendisi kanıtlayan modüller için doğrulanmış hesap + profil sağlama (`provision_verified_user_in_tx`, K-33) | `profile.rs`, `profile::tests::acc_08_*`, `provisioning.rs`: `acc_08_provisioned_social_account_gets_a_profile`, `acc_07_provisioning_never_takes_an_existing_or_reserved_address`, `acc_07_reservation_lookup_on_the_given_connection`, `acc_12_provisioning_honours_the_disposable_domain_list` |
 | ACC-09 | `DELETE /v1/me` (step-up) → `pending_deletion` + 30 gün; oturumla veya linkle iptal; `purge_due_deletions` (kaskad silme + audit takma adlaştırma); son sahip engeli (`OrganizationOwnership`); silme transaction'ında diğer modüllerin işi (`AccountErasureHook`, K-35) | `deletion.rs`: `acc_09_*`; `provisioning.rs`: `acc_09_erasure_hooks_run_in_the_erasure_transaction` |
-| ACC-10 | `GET /v1/me/export` (step-up, rate limit): tüm `DataExporter`'lar tek `REPEATABLE READ, READ ONLY` transaction'ında | `export.rs`: `acc_10_*` |
+| ACC-10 | `POST /v1/me/export` (step-up, rate limit, CSRF; K-79: önceden `GET`): tüm `DataExporter`'lar tek `REPEATABLE READ, READ ONLY` transaction'ında | `export.rs`: `acc_10_*` |
 | ACC-11 | `terms_versions` senkronu (`account.terms`), `consents` (zaman, IP, UA), `terms_requirements` / `accept_terms` (SES-22) | `consent.rs`: `acc_11_*` |
 | ACC-12 | `DisposableDomains` (dosyadan, alt alan adları dahil; varsayılan kapalı) | `acc_12_*` |
 | ACC-13 | `CaptchaVerifier` ile `always` / `risk_based` (IP başına eşik) / `never` | `acc_13_*` |
@@ -117,7 +117,7 @@ async fn drain_background_jobs(&self)                                           
 | `DELETE` | `/v1/me` | oturum + step-up | ACC-09 |
 | `GET` | `/v1/me/deletion` | oturum | ACC-09 |
 | `POST` | `/v1/me/deletion/cancel` | oturum | ACC-09 |
-| `GET` | `/v1/me/export` | oturum + step-up | ACC-10 |
+| `POST` | `/v1/me/export` (gövde yok; web: CSRF başlığı) | oturum + step-up | ACC-10 |
 | `GET`, `POST` | `/v1/me/consents` | oturum | ACC-11 |
 
 Link token'ları her zaman `POST` gövdesiyle gelir (e-postadaki link bir ön yüz sayfasına gider, sayfa token'ı gönderir): link önizleme botları token tüketemez. Doğrulama sayfası önce yalnızca `{token}` gönderir (kaydı yapan tarayıcıda çerez yeter); `403 registration_confirmation_required` dönerse kullanıcıya "kayıtta seçtiğiniz şifreyi girin" (`password`) ve "kaydı ben yapmadım / yeni şifre belirle" (`new_password`, zorunluysa `accepted_terms`) seçeneklerini sunar. Mobil istemci kayıt yanıtındaki `registration` değerini saklar ve kodla birlikte gönderir. Tüm gövdeler `SecretJson` ile okunur — ayrıştırma hataları gönderilen değeri (şifre, token, adres, ad) loglara kopyalamaz. `GET /v1/me` (SES-16) authn-session'a aittir; `DELETE /v1/me` ile aynı yolda birleşir (test: `acc_01_router_merges_with_other_module_routes`).
@@ -206,13 +206,30 @@ Kabul edilen riskler (gerekçeli):
 - **Kod tahmini** (K-58: azaltıldı): adres başına günlük kod gönderim sınırı `REGISTRATION_CODE_GUESSES_PER_DAY = 5` tüm kayıtlarda ortaktır. Hedef adres başına başarı olasılığı günde ≈ 1,5·10⁻⁵'ten ≈ 5·10⁻⁶'ya iner (ilk 24 saatte en fazla 1·10⁻⁵). Sahip link ile kodsuz tamamlar (`acc_04_k58_code_guesses_per_address_are_capped_per_day`). 6 hane ACC-04 gereğidir.
 - ~~**Hedefli kayıt DoS'u**~~ — **kapatıldı (K-58):** adresin günlük e-posta bütçesi dolunca kayıt artık düşürülmez. Saklanır, yalnızca e-postası gönderilmez. Sahip, hesabın herhangi bir canlı linkini kendi tutamacını taşıyan tarayıcıda açınca kendi kaydını tamamlar (`acc_02_k58_exhausted_email_budget_never_drops_the_owners_registration`). Başka hesabın tutamacı hiçbir şey tamamlamaz (`acc_02_k58_a_link_never_completes_a_registration_of_another_account`). Kalan: en eski kayıtlar 10 canlı kayıttan sonra düşer; sahip yine "link + yeni şifre" ile hesabı alır.
 - **Kilit sırası:** temizlik işi `account_deletions` satırını sonra `users` satırını, iptal/geri alma ise önce `users` sonra `account_deletions` satırını kilitler; kayıt tamamlama (kayıt satırı → kullanıcı) ile şifre sıfırlama dekoratörü (kullanıcı → kayıt satırları) de çakışabilir. Eşzamanlı rastlaşmada PostgreSQL kilitlenmeyi tespit edip bir transaction'ı geri alır; tutarsız durum oluşmaz, iş bir sonraki çalışmada yeniden dener, kullanıcı isteği `500` alıp tekrarlayabilir.
-- **`GET /v1/me/export`:** GET olduğundan siteler arası üst düzey gezinme (SameSite=Lax) kurbanın günlük dışa aktarma hakkını (2/gün) tüketebilir; veri yalnızca kurbanın tarayıcısına iner ve step-up gerekir. Yöntem sözleşmede GET olarak tanımlı; değiştirilmedi.
+- ~~**Dışa aktarma ucunun güvenli (CSRF'siz) yöntemle sunulması:** siteler arası üst düzey gezinme (SameSite=Lax) kurbanın günlük dışa aktarma hakkını (2/gün) tüketebiliyordu.~~ — **kapatıldı (wave 4B denetimi, istemci belgesi K-79):** uç `POST /v1/me/export`; ayrıntı aşağıda ve "İstemciler için: kişisel veri dışa aktarma" bölümünde.
 - **Geri alma sonrası diğer modüllerin faktörleri** (passkey, TOTP, sosyal kimlik) — aşağıdaki "Bilinen sınırlamalar"a bakın (K-20 ile kapatıldı).
+
+## İstemciler için: kişisel veri dışa aktarma (`POST /v1/me/export`, K-79)
+
+Wave 4B denetiminden beri dışa aktarma ucu **`POST /v1/me/export`**'tur (öncesinde güvenli yöntemle sunuluyordu). Eski yöntemle yapılan istek `405 Method Not Allowed` alır. Yanıt gövdesi ve biçimi değişmedi.
+
+| | Web (çerezli oturum) | Mobil / native (bearer) |
+|---|---|---|
+| Yöntem | `POST` | `POST` |
+| Gövde | yok (boş gövde; `Content-Type` gerekmez) | yok |
+| Kimlik | `__Host-authn_session` çerezi | `Authorization: Bearer <access token>` |
+| CSRF | `X-CSRF-Token` başlığı + aynı köken `Origin` (SES-04) | gerekmez |
+| Step-up | son `session.step_up_max_age` içinde yeniden doğrulama; yoksa `401 step_up_required` → `POST /v1/reauth` ve tekrar | aynı |
+| Sınır | kullanıcı başına `account.export_per_user` (varsayılan günde 2) → `429` + `Retry-After` | aynı |
+| Yanıt | `200`, JSON (`format: rust-authentication/personal-data-export/v1`), `Content-Disposition: attachment; filename="personal-data-export.json"`, `Cache-Control: no-store` | aynı |
+| Hatalar | `403 csrf_failed` (CSRF başlığı/köken eksik), `403 forbidden` (impersonation altında), `401 unauthenticated` | `401`, `403 forbidden` (impersonation) |
+
+Tarayıcıda indirme: `fetch('/v1/me/export', { method: 'POST', credentials: 'include', headers: { 'X-CSRF-Token': csrf } })` yanıtını `Blob` olarak kaydedin. Düz bir `<a href>` bağlantısı artık çalışmaz (bilinçli: siteler arası gezinme hakkı tüketemez). Bir HTML formu da kullanılabilir, ancak CSRF başlığı gönderemediği için reddedilir; `fetch` kullanın. Geçiş notu: [`docs/api-changelog.md`](../../docs/api-changelog.md).
 
 K-58 değerlendirmesi (2026-11-05), kalan maddeler:
 
 - **Kilit sırası:** gerekçeli kalır. Tek bir kilit sırasına geçmek için temizlik işinin kullanıcı satırını, iptal/geri alma yolunun da silme satırını önce kilitlemesi gerekir. Bu her iki yolda da iki kat kilit süresi demektir. PostgreSQL kilitlenmeyi tespit eder, tutarsız durum oluşmaz, iş yeniden dener.
-- ~~**`GET /v1/me/export` (SameSite=Lax üst düzey gezinme)**~~ — **kapatıldı (wave 4B denetimi):** uç artık `POST /v1/me/export`. `GET` `405` döner. POST, CSRF denetimlerinden geçer ve siteler arası gezinmede gönderilmez (`acc_10_k58_export_is_a_post_never_a_get`, düzeltmeden önce `GET` `200` dönüyordu). API değişikliğidir; istemciler POST kullanmalı.
+- ~~**Dışa aktarma ucunda SameSite=Lax üst düzey gezinme**~~ — **kapatıldı (wave 4B denetimi):** uç artık `POST /v1/me/export`. Eski yöntem `405 Method Not Allowed` döner. POST, CSRF denetimlerinden geçer ve siteler arası gezinmede gönderilmez (`acc_10_k58_export_is_a_post_never_a_get`, düzeltmeden önce `GET` `200` dönüyordu). API değişikliğidir; istemciler POST kullanmalı.
 - ~~**Kayıt arka plan işinde transaction içinde `RateLimiter`**~~ — **kapatıldı (wave 4B denetimi):** `process_signup` adres bütçesi, kayıt bildirimi ve yeniden gönderme bekleme süresi kararlarını transaction açılmadan önce, kilitsiz bir ön okumaya göre alır (`signup_budget`). Kilitli okuma ön okumadan farklı çıkarsa (eşzamanlı kayıt), o dal için bütçe alınmamıştır ve e-posta gönderilmez (güvenli taraf: bütçeden fazla posta asla gitmez). Aynı kalıp e-posta değişikliğinin "adres kullanımda" bildiriminde de vardı ve düzeltildi. Test: `acc_01_k58_signup_job_never_waits_for_a_second_pooled_connection`. Test, her denetimde havuzdan bağlantı alan bir limiter ve tek bağlantılı bir havuz kullanır; düzeltmeden önce `database pool timed out` veriyordu. Ayrıca `AccountService::profile_of_in(conn, …)` eklendi: authn-session impersonation'ı profili transaction bağlantısından okur.
 
 

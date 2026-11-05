@@ -21,7 +21,7 @@ use authn_account::{
     AccountAwareSessionRevoker, AccountService, AccountServiceDeps, AccountServiceSettings,
 };
 use authn_admin::{AdminService, AdminServiceDeps, AdminSettings};
-use authn_audit::{AuditService, AuditServiceParts, OutboxEventPublisher, PgAuditSink};
+use authn_audit::{AuditService, AuditServiceParts, ChainKeys, OutboxEventPublisher, PgAuditSink};
 use authn_core::config::AppConfig;
 use authn_core::error::AuthError;
 use authn_core::ports::{
@@ -211,8 +211,13 @@ impl Services {
                 (Some(notify), port)
             }
         };
-        let audit_sink: Arc<dyn AuditSink> =
-            Arc::new(PgAuditSink::new(pool.clone(), clock.clone()));
+        // K-77: every audit writer MACs the chain with the chain key.
+        let chain_keys = ChainKeys::from_config(&crypto.keys, &config.audit.chain)?;
+        let audit_sink: Arc<dyn AuditSink> = Arc::new(PgAuditSink::keyed(
+            pool.clone(),
+            clock.clone(),
+            chain_keys.clone(),
+        ));
         let events: Arc<dyn EventPublisher> = Arc::new(OutboxEventPublisher::new(
             clock.clone(),
             config.audit.outbox.max_attempts,
@@ -343,6 +348,7 @@ impl Services {
             rate_limiter: rate_limiter.clone(),
             config: config.audit,
             step_up_max_age: config.session.step_up_max_age,
+            chain_keys: chain_keys.clone(),
         });
 
         // 5. Late hooks (weak references; the strong ones are the anchors).
@@ -460,6 +466,7 @@ impl Services {
                 envelopes: crypto.envelopes.clone(),
                 signing_keys: Arc::new(ServerSigningKeyCache(sessions.clone())),
                 rate_limiter: rate_limiter.clone(),
+                audit_chain_keys: chain_keys,
             },
             AdminSettings::from_app_config(&config),
         );

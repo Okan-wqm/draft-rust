@@ -158,7 +158,7 @@ async fn aud_01_record_persists_event_with_pseudonyms_and_pii(pool: PgPool) {
     assert_eq!(ip, Some("203.0.113.9".parse().unwrap()));
     assert_eq!(ua.as_deref(), Some("Mozilla/5.0 (X11)"));
 
-    let report = verify_chain(&pool).await.unwrap();
+    let report = verify_chain(&pool, h.keys()).await.unwrap();
     assert!(report.is_intact(), "{report:?}");
     assert_eq!(report.events_verified, 1);
 }
@@ -186,7 +186,7 @@ async fn aud_01_record_in_tx_commits_and_rolls_back_with_the_caller(pool: PgPool
         .await
         .unwrap();
     assert_eq!(ids, vec![committed.id.as_uuid()]);
-    assert!(verify_chain(&pool).await.unwrap().is_intact());
+    assert!(verify_chain(&pool, h.keys()).await.unwrap().is_intact());
 }
 
 #[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
@@ -234,7 +234,7 @@ async fn aud_01_every_security_event_kind_is_recordable_and_duplicates_are_ignor
         .await
         .unwrap();
     assert_eq!(count, i64::try_from(SecurityEventKind::ALL.len()).unwrap());
-    let report = verify_chain(&pool).await.unwrap();
+    let report = verify_chain(&pool, h.keys()).await.unwrap();
     assert!(report.is_intact(), "{report:?}");
 }
 
@@ -275,7 +275,7 @@ async fn aud_02_concurrent_writers_never_fork_the_chain(pool: PgPool) {
             .unwrap();
     assert_eq!(count, i64::try_from(WRITERS).unwrap());
     assert_eq!(distinct_prev, count, "two events share a predecessor: fork");
-    let report = verify_chain(&pool).await.unwrap();
+    let report = verify_chain(&pool, h.keys()).await.unwrap();
     assert!(report.is_intact(), "{report:?}");
     assert_eq!(report.events_verified, u64::try_from(WRITERS).unwrap());
     // One pseudonym per user even under concurrent first use.
@@ -332,14 +332,14 @@ async fn aud_02_modified_event_is_detected(pool: PgPool) {
     let h = Harness::new(pool.clone());
     let user = create_user(&pool).await;
     let events = record_n(&h.service.sink(), &h, user, 5).await;
-    assert!(verify_chain(&pool).await.unwrap().is_intact());
+    assert!(verify_chain(&pool, h.keys()).await.unwrap().is_intact());
     tamper(
         &pool,
         "UPDATE audit_events SET outcome = 'failure' WHERE id = $1",
         events[2].id.as_uuid(),
     )
     .await;
-    let report = verify_chain(&pool).await.unwrap();
+    let report = verify_chain(&pool, h.keys()).await.unwrap();
     let broken = report.broken.unwrap();
     assert_eq!(broken.problem, ChainProblem::HashMismatch);
     assert_eq!(broken.seq, seq_of(&pool, &events[2]).await);
@@ -358,7 +358,7 @@ async fn aud_02_deleted_or_reinserted_event_is_detected(pool: PgPool) {
         events[1].id.as_uuid(),
     )
     .await;
-    let broken = verify_chain(&pool).await.unwrap().broken.unwrap();
+    let broken = verify_chain(&pool, h.keys()).await.unwrap().broken.unwrap();
     assert_eq!(broken.problem, ChainProblem::PrevHashMismatch);
     assert_eq!(broken.seq, third);
 }
@@ -372,7 +372,7 @@ async fn aud_02_truncated_tail_is_detected_by_head_and_external_anchor(pool: PgP
         .await
         .unwrap();
     assert_eq!(anchor.seq, seq_of(&pool, &events[2]).await);
-    assert!(verify_chain(&pool).await.unwrap().is_intact());
+    assert!(verify_chain(&pool, h.keys()).await.unwrap().is_intact());
 
     tamper(
         &pool,
@@ -380,7 +380,7 @@ async fn aud_02_truncated_tail_is_detected_by_head_and_external_anchor(pool: PgP
         events[2].id.as_uuid(),
     )
     .await;
-    let broken = verify_chain(&pool).await.unwrap().broken.unwrap();
+    let broken = verify_chain(&pool, h.keys()).await.unwrap().broken.unwrap();
     assert!(
         matches!(
             broken.problem,
@@ -389,9 +389,11 @@ async fn aud_02_truncated_tail_is_detected_by_head_and_external_anchor(pool: PgP
         "{broken:?}"
     );
     // Even if the attacker also rewinds the head and removes the checkpoint,
-    // the externally kept anchor exposes the truncation.
+    // the externally kept anchor exposes the truncation. (K-77: removing the
+    // `chain_key_switch` checkpoint too would itself be detected, see
+    // `k_77_removed_key_switch_checkpoint_is_detected`.)
     let mut tx = pool.begin().await.unwrap();
-    sqlx::query("DELETE FROM audit_chain_checkpoints")
+    sqlx::query("DELETE FROM audit_chain_checkpoints WHERE reason = 'manual'")
         .execute(&mut *tx)
         .await
         .unwrap();
@@ -405,10 +407,10 @@ async fn aud_02_truncated_tail_is_detected_by_head_and_external_anchor(pool: PgP
     .unwrap();
     tx.commit().await.unwrap();
     assert!(
-        verify_chain(&pool).await.unwrap().is_intact(),
+        verify_chain(&pool, h.keys()).await.unwrap().is_intact(),
         "internally consistent"
     );
-    let report = verify_chain_from(&pool, anchor).await.unwrap();
+    let report = verify_chain_from(&pool, h.keys(), anchor).await.unwrap();
     assert!(!report.is_intact(), "{report:?}");
 }
 
@@ -421,7 +423,7 @@ async fn aud_02_verify_from_anchor_checks_the_anchor_and_later_events(pool: PgPo
         .await
         .unwrap();
     record_n(&h.service.sink(), &h, user, 2).await;
-    let report = verify_chain_from(&pool, anchor).await.unwrap();
+    let report = verify_chain_from(&pool, h.keys(), anchor).await.unwrap();
     assert!(report.is_intact(), "{report:?}");
     assert_eq!(report.events_verified, 2);
     let forged = ChainAnchor {
@@ -429,7 +431,7 @@ async fn aud_02_verify_from_anchor_checks_the_anchor_and_later_events(pool: PgPo
         hash: [9; 32],
     };
     assert_eq!(
-        verify_chain_from(&pool, forged)
+        verify_chain_from(&pool, h.keys(), forged)
             .await
             .unwrap()
             .broken
@@ -450,7 +452,12 @@ async fn aud_02_tampered_personal_data_is_detected(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(
-        verify_chain(&pool).await.unwrap().broken.unwrap().problem,
+        verify_chain(&pool, h.keys())
+            .await
+            .unwrap()
+            .broken
+            .unwrap()
+            .problem,
         ChainProblem::PiiDigestMismatch
     );
 }
@@ -513,7 +520,7 @@ async fn aud_03_secrets_and_personal_data_never_reach_the_database(pool: PgPool)
     assert_eq!(metadata["method"], "email_link");
     assert_eq!(metadata["password"], "[REDACTED]");
     assert_eq!(metadata["redacted_entries"], 1);
-    assert!(verify_chain(&pool).await.unwrap().is_intact());
+    assert!(verify_chain(&pool, h.keys()).await.unwrap().is_intact());
 }
 
 #[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
@@ -624,7 +631,7 @@ async fn aud_05_pseudonymize_subject_removes_pii_and_keeps_the_chain_intact(pool
     .unwrap();
     assert_eq!(events, 6, "events stay");
     assert_eq!(pii, 2, "only the other user's personal data remains");
-    let report = verify_chain(&pool).await.unwrap();
+    let report = verify_chain(&pool, h.keys()).await.unwrap();
     assert!(report.is_intact(), "{report:?}");
     assert!(!dump(&pool).await.contains(&user.to_string()));
 }
@@ -663,7 +670,7 @@ async fn aud_05_hard_deleted_user_is_unlinkable_and_never_remapped(pool: PgPool)
         2,
         "the late event is not linkable to the old ones"
     );
-    assert!(verify_chain(&pool).await.unwrap().is_intact());
+    assert!(verify_chain(&pool, h.keys()).await.unwrap().is_intact());
     assert!(!dump(&pool).await.contains(&user.to_string()));
 
     // Soft-deleted accounts (status `deleted`) are treated the same.
@@ -694,7 +701,7 @@ async fn aud_05_retention_purge_deletes_old_prefix_with_checkpoint(pool: PgPool)
     let recent = record_n(&sink, &h, user, 3).await;
     let last_old = seq_of(&pool, &old[4]).await;
 
-    let report = purge_expired(&pool, h.ports.clock.as_ref(), DAY * 400)
+    let report = purge_expired(&pool, h.keys(), h.ports.clock.as_ref(), DAY * 400)
         .await
         .unwrap();
     assert_eq!(report.events_deleted, 5);
@@ -722,19 +729,19 @@ async fn aud_05_retention_purge_deletes_old_prefix_with_checkpoint(pool: PgPool)
             .unwrap();
     assert_eq!(reason, "retention_purge");
     assert_eq!(hash, checkpoint.hash.to_vec());
-    let verified = verify_chain(&pool).await.unwrap();
+    let verified = verify_chain(&pool, h.keys()).await.unwrap();
     assert!(verified.is_intact(), "{verified:?}");
     assert_eq!(verified.start, checkpoint);
     assert_eq!(verified.events_verified, 3);
 
     // Nothing left to purge; new events still chain onto the checkpointed
     // history.
-    let again = purge_expired(&pool, h.ports.clock.as_ref(), DAY * 400)
+    let again = purge_expired(&pool, h.keys(), h.ports.clock.as_ref(), DAY * 400)
         .await
         .unwrap();
     assert_eq!(again.events_deleted, 0);
     record_n(&sink, &h, user, 1).await;
-    assert!(verify_chain(&pool).await.unwrap().is_intact());
+    assert!(verify_chain(&pool, h.keys()).await.unwrap().is_intact());
 }
 
 #[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
@@ -754,7 +761,7 @@ async fn aud_05_retention_purge_never_leaves_holes_and_batches(pool: PgPool) {
     backdated.occurred_at = start + DAY;
     sink.record(backdated.clone()).await.unwrap();
 
-    let report = purge_before(&pool, start + DAY * 300, 1, start + DAY * 700)
+    let report = purge_before(&pool, h.keys(), start + DAY * 300, 1, start + DAY * 700)
         .await
         .unwrap();
     assert_eq!(report.events_deleted, 1);
@@ -763,12 +770,12 @@ async fn aud_05_retention_purge_never_leaves_holes_and_batches(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(remaining, vec![young.id.as_uuid(), backdated.id.as_uuid()]);
-    assert!(verify_chain(&pool).await.unwrap().is_intact());
+    assert!(verify_chain(&pool, h.keys()).await.unwrap().is_intact());
 
     // Batches of one event each: several checkpoints, chain still intact.
     let more = record_n(&sink, &h, user, 0).await;
     assert!(more.is_empty());
-    let report = purge_before(&pool, start + DAY * 900, 1, start + DAY * 1000)
+    let report = purge_before(&pool, h.keys(), start + DAY * 900, 1, start + DAY * 1000)
         .await
         .unwrap();
     assert_eq!(report.events_deleted, 2);
@@ -777,7 +784,7 @@ async fn aud_05_retention_purge_never_leaves_holes_and_batches(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(checkpoints, 3);
-    let report = verify_chain(&pool).await.unwrap();
+    let report = verify_chain(&pool, h.keys()).await.unwrap();
     assert!(report.is_intact(), "{report:?}");
     assert_eq!(report.events_verified, 0);
 }
@@ -796,7 +803,7 @@ async fn aud_05_retention_purge_refuses_a_tampered_segment(pool: PgPool) {
     .await;
     h.ports.clock.advance(DAY * 500);
     assert!(
-        purge_expired(&pool, h.ports.clock.as_ref(), DAY * 400)
+        purge_expired(&pool, h.keys(), h.ports.clock.as_ref(), DAY * 400)
             .await
             .is_err()
     );
@@ -893,7 +900,7 @@ async fn aud_02_least_privilege_roles_cannot_rewrite_history(pool: PgPool) {
 #[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
 async fn aud_02_empty_chain_verifies_and_timestamps_round_trip(pool: PgPool) {
     let h = Harness::new(pool.clone());
-    let report = verify_chain(&pool).await.unwrap();
+    let report = verify_chain(&pool, h.keys()).await.unwrap();
     assert!(report.is_intact());
     assert_eq!(report.head, ChainAnchor::GENESIS);
     // Nanosecond timestamps are truncated consistently (hash = stored value).
@@ -902,7 +909,7 @@ async fn aud_02_empty_chain_verifies_and_timestamps_round_trip(pool: PgPool) {
     event.occurred_at =
         OffsetDateTime::from_unix_timestamp_nanos(1_800_000_000_123_456_789).unwrap();
     h.service.sink().record(event).await.unwrap();
-    assert!(verify_chain(&pool).await.unwrap().is_intact());
+    assert!(verify_chain(&pool, h.keys()).await.unwrap().is_intact());
 }
 
 /// Every textual form of `user` that must never appear in the chain or in
@@ -957,7 +964,7 @@ async fn aud_05_embedded_user_ids_never_reach_the_chain(pool: PgPool) {
     for key in ["target", "urn", "braced", "path", "simple"] {
         assert_eq!(metadata[key], "[REDACTED]", "{key}");
     }
-    assert!(verify_chain(&pool).await.unwrap().is_intact());
+    assert!(verify_chain(&pool, h.keys()).await.unwrap().is_intact());
 }
 
 /// Security review: user ids of accounts that no longer exist were kept
@@ -1005,7 +1012,7 @@ async fn aud_05_references_to_deleted_accounts_are_pseudonymised(pool: PgPool) {
             .await
             .unwrap();
     assert_eq!(mapped, 0);
-    assert!(verify_chain(&pool).await.unwrap().is_intact());
+    assert!(verify_chain(&pool, h.keys()).await.unwrap().is_intact());
 }
 
 /// Security review: only the first 128 distinct UUIDs of an event are
@@ -1044,7 +1051,7 @@ async fn aud_05_identifiers_beyond_the_per_event_limit_are_redacted(pool: PgPool
     assert_eq!(metadata["batch4"][31], "[REDACTED]");
     // The checked ones are kept (they are no user ids).
     assert_eq!(metadata["batch0"][0], Uuid::from_u128(1).to_string());
-    assert!(verify_chain(&pool).await.unwrap().is_intact());
+    assert!(verify_chain(&pool, h.keys()).await.unwrap().is_intact());
 }
 
 /// Security review: a user whose account is `deleted` (anonymised row kept)
@@ -1081,7 +1088,7 @@ async fn aud_05_deleted_status_account_is_never_linked_again(pool: PgPool) {
     .unwrap();
     assert_ne!(subject, mapping, "deleted account linked to its history");
     assert_eq!(pii, 0, "personal data of a deleted account stored");
-    assert!(verify_chain(&pool).await.unwrap().is_intact());
+    assert!(verify_chain(&pool, h.keys()).await.unwrap().is_intact());
 }
 
 /// Security review: the least-privilege helper only revoked privileges on

@@ -259,6 +259,7 @@ pub struct Harness {
     pub keys: Arc<CountingKeyCache>,
     pub revoker: Arc<TestRevoker>,
     pub audit: Arc<dyn AuditSink>,
+    pub chain_keys: authn_audit::ChainKeys,
     pub mfa: MfaService,
     pub passwords: PasswordService,
     pub webauthn: WebauthnService,
@@ -274,8 +275,13 @@ impl Harness {
         let config = authn_testkit::config::test_config();
         let crypto = CryptoServices::from_config(&config.crypto).await.unwrap();
         let ports = TestPorts::new();
-        let audit: Arc<dyn AuditSink> =
-            Arc::new(PgAuditSink::new(pool.clone(), ports.clock.clone()));
+        let chain_keys =
+            authn_audit::ChainKeys::from_config(&crypto.keys, &config.audit.chain).unwrap();
+        let audit: Arc<dyn AuditSink> = Arc::new(PgAuditSink::keyed(
+            pool.clone(),
+            ports.clock.clone(),
+            chain_keys.clone(),
+        ));
         {
             let mut conn = pool.acquire().await.unwrap();
             SigningKeyRepository::rotate_if_due(
@@ -398,6 +404,7 @@ impl Harness {
                 envelopes: crypto.envelopes.clone(),
                 signing_keys: keys.clone(),
                 rate_limiter: ports.rate_limiter.clone(),
+                audit_chain_keys: chain_keys.clone(),
             },
             settings,
         );
@@ -411,6 +418,7 @@ impl Harness {
             keys,
             revoker,
             audit,
+            chain_keys,
             mfa,
             passwords,
             webauthn,

@@ -591,9 +591,9 @@ async fn ses_09_k58_listener_survives_a_killed_connection(pool: PgPool) {
 /// "Which factor produced `mfa`" (audit item): an organization that only
 /// allows some second factors must not be entered with a session whose
 /// `mfa` came from another one (login without the organization, then
-/// `POST /v1/session/org`). The factor is read from the session's `amr`
-/// minus what its primary login method contributes; ambiguous sessions are
-/// refused (step-up with an allowed factor).
+/// `POST /v1/session/org`). K-78: the factor is read from the session's
+/// recorded `mfa_factors`, not from `amr`; a session without a recorded
+/// allowed factor is refused (step-up with an allowed factor).
 #[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
 async fn ses_17_k58_org_switch_enforces_the_allowed_second_factors(pool: PgPool) {
     use authn_core::domain::{AuthMethodRef, FactorKind, LoginMethod};
@@ -610,29 +610,49 @@ async fn ses_17_k58_org_switch_enforces_the_allowed_second_factors(pool: PgPool)
         h.web_post("/v1/session/org", login)
             .json(&json!({ "org_id": org }))
     };
-    let login_with = |method: LoginMethod, amr: Vec<AuthMethodRef>| {
+    let login_with = |method: LoginMethod, amr: Vec<AuthMethodRef>, factors: Vec<FactorKind>| {
         let mut request = h.request(alice, h.web_channel());
         request.method = method;
         request.amr = amr;
+        request.mfa_factors = factors;
         request
     };
     use AuthMethodRef::{Email, Fed, Kba, Mfa, Otp, Pwd, Sms};
-    for (method, amr) in [
-        (LoginMethod::Password, vec![Pwd, Sms, Mfa]),
-        (LoginMethod::Password, vec![Pwd, Kba, Mfa]),
-        (LoginMethod::Social, vec![Fed, Email, Mfa]),
-        // E-mail code login + TOTP: `otp` is the primary method's own
-        // reference, the factor cannot be told apart (fail closed).
-        (LoginMethod::EmailCode, vec![Email, Otp, Mfa]),
+    for (method, amr, factors) in [
+        (
+            LoginMethod::Password,
+            vec![Pwd, Sms, Mfa],
+            vec![FactorKind::Sms],
+        ),
+        (
+            LoginMethod::Password,
+            vec![Pwd, Kba, Mfa],
+            vec![FactorKind::RecoveryCode],
+        ),
+        (
+            LoginMethod::Social,
+            vec![Fed, Email, Mfa],
+            vec![FactorKind::Email],
+        ),
+        // `otp` in `amr` without a recorded TOTP (e.g. the e-mail code
+        // login's own reference, or a session from before K-78): refused.
+        (LoginMethod::EmailCode, vec![Email, Otp, Mfa], vec![]),
+        (LoginMethod::Password, vec![Pwd, Otp, Mfa], vec![]),
     ] {
-        let login = common::web_of(h.establish(login_with(method, amr)).await);
+        let login = common::web_of(h.establish(login_with(method, amr, factors)).await);
         h.send(switch(&login))
             .await
             .assert_error(StatusCode::FORBIDDEN, "org_policy_mfa_required");
     }
-    let login = common::web_of(
-        h.establish(login_with(LoginMethod::Password, vec![Pwd, Otp, Mfa]))
-            .await,
-    );
-    h.send(switch(&login)).await.assert_status(StatusCode::OK);
+    for (method, amr) in [
+        (LoginMethod::Password, vec![Pwd, Otp, Mfa]),
+        // K-78: an e-mail code login + TOTP is now told apart.
+        (LoginMethod::EmailCode, vec![Email, Otp, Mfa]),
+    ] {
+        let login = common::web_of(
+            h.establish(login_with(method, amr, vec![FactorKind::Totp]))
+                .await,
+        );
+        h.send(switch(&login)).await.assert_status(StatusCode::OK);
+    }
 }

@@ -215,6 +215,8 @@ impl SessionService {
                     .map_err(|_| unauthenticated("exp"))?,
                 login_method: None,
                 scopes: principal.scopes.clone(),
+                // Not in the token; the stored session has them.
+                mfa_factors: Vec::new(),
             };
             return Ok(Authenticated {
                 principal,

@@ -375,6 +375,7 @@ impl Harness {
             user_id: user,
             method: LoginMethod::Password,
             amr: vec![AuthMethodRef::Pwd],
+            mfa_factors: Vec::new(),
             acr: None,
             auth_time: self.now(),
             client,

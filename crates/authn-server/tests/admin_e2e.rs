@@ -363,9 +363,10 @@ async fn adm_06_emergency_revoke_all_keeps_the_callers_session(pool: PgPool) {
 async fn adm_05_k11_break_glass_enrollment_link_end_to_end(pool: PgPool) {
     let app = App::new(pool).await;
     // What `create-admin --passkey-link` does.
-    let audit: Arc<dyn AuditSink> = Arc::new(authn_audit::PgAuditSink::new(
+    let audit: Arc<dyn AuditSink> = Arc::new(authn_audit::PgAuditSink::keyed(
         app.pool.clone(),
         app.ports.clock.clone(),
+        app.services.audit.chain_keys().clone(),
     ));
     let link = authn_admin::create_break_glass_admin_with_passkey_link(
         &app.pool,

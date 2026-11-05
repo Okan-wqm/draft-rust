@@ -43,7 +43,8 @@ use super::pipeline::{EMAIL_CONFIRMATION, ENROLL_FACTORS, recipient_of};
 use crate::model::{DeviceInfo, EstablishedSession};
 use crate::service::{
     ChallengeKind, ChallengeProgress, ChallengeState, ClientChannel, EstablishSession,
-    SessionService, after, normalize_amr, org_mfa_policy, strictest_membership_policy,
+    SessionService, after, normalize_amr, org_mfa_policy, record_second_factor,
+    strictest_membership_policy,
 };
 
 /// Challenge metadata key: the user asked to trust this device after the
@@ -444,12 +445,19 @@ impl SessionService {
         state.required_actions.retain(|a| *a != completes);
         if completes == RequiredAction::VerifyMfa {
             if email_confirmation {
-                // A mailbox confirmation of a risky login: recorded, but it
-                // is not an enrolled second factor (never `mfa`).
+                // A mailbox confirmation of a risky login: recorded in
+                // `amr`, but it is not an enrolled second factor: never
+                // `mfa`, never in `mfa_factors` (K-78).
                 state.amr =
                     normalize_amr(&[state.amr.as_slice(), &[AuthMethodRef::Email]].concat())?;
             } else {
-                state.amr = normalize_amr(&authn_mfa::amr::combine(&state.amr, &proven))?;
+                state.amr = record_second_factor(
+                    &state.amr,
+                    &mut state.mfa_factors,
+                    state.primary_method,
+                    kind,
+                    &proven,
+                )?;
             }
             // A policy enrollment that waited for this proof (existing
             // factor, RSK-03 confirmation) may start now.
@@ -934,10 +942,13 @@ impl SessionService {
                         return Err(self.challenge_failed(&state, map_factor_error(err)).await);
                     }
                 };
-                state.amr = normalize_amr(&authn_mfa::amr::combine(
+                state.amr = record_second_factor(
                     &state.amr,
+                    &mut state.mfa_factors,
+                    state.primary_method,
+                    confirmed.factor.kind,
                     &authn_mfa::amr::for_factor(confirmed.factor.kind),
-                ))?;
+                )?;
                 state.metadata.remove(PENDING_FACTOR);
                 state.allowed_factors.clear();
                 state
@@ -990,6 +1001,7 @@ impl SessionService {
                     allowed_factors: state.allowed_factors.clone(),
                     required_actions: state.required_actions.clone(),
                     metadata: state.metadata.clone(),
+                    mfa_factors: state.mfa_factors.clone(),
                 },
             )
             .await?;
@@ -1025,6 +1037,7 @@ impl SessionService {
                     user_id: user.id,
                     method,
                     amr: state.amr.clone(),
+                    mfa_factors: state.mfa_factors.clone(),
                     acr: None,
                     auth_time: state.first_factor_at.unwrap_or(now).min(now),
                     client,

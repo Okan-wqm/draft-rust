@@ -115,8 +115,24 @@ pub enum Command {
     /// Re-wrap data-encryption keys with the current KEK (CRY-08).
     #[command(alias = "reencrypt")]
     RotateKek,
-    /// Verify the audit log hash chain (AUD-02).
-    VerifyAuditChain,
+    /// Verify the audit log hash chain (AUD-02, K-77: keyed with the chain
+    /// key derived from `crypto.hmac_root_key`).
+    VerifyAuditChain {
+        /// Start after an externally kept checkpoint `<seq>:<hash hex>`
+        /// (e.g. from the WORM copy of the logs) instead of the retention
+        /// start.
+        #[arg(long, value_parser = parse_anchor)]
+        anchor: Option<authn_audit::ChainAnchor>,
+        /// Refuse unkeyed (legacy SHA-256) events after this sequence number
+        /// (overrides `audit.chain.legacy_until_seq`).
+        #[arg(long)]
+        legacy_until_seq: Option<i64>,
+    },
+    /// Switch the audit chain to `audit.chain.key_version` now (K-77): the
+    /// first keyed event after an upgrade, or a key rotation. Prints the
+    /// `chain_key_switch` checkpoint to keep outside the database. The
+    /// server does the same at start-up.
+    RotateAuditChainKey,
     /// Wrap legacy password hashes in bulk (CRY-04).
     MigrateLegacyHashes {
         /// Input file with `user_id,algorithm,hash` lines.
@@ -143,7 +159,8 @@ impl Command {
             Self::SealAppleKey { .. } => "seal-apple-key",
             Self::RotateSigningKey { .. } => "rotate-signing-key",
             Self::RotateKek => "rotate-kek",
-            Self::VerifyAuditChain => "verify-audit-chain",
+            Self::VerifyAuditChain { .. } => "verify-audit-chain",
+            Self::RotateAuditChainKey => "rotate-audit-chain-key",
             Self::MigrateLegacyHashes { .. } => "migrate-legacy-hashes",
         }
     }
@@ -162,6 +179,32 @@ pub struct OfflineArgs {
     /// Who runs the command (1–64 of `[A-Za-z0-9._@-]`), audited.
     #[arg(long)]
     pub operator: String,
+}
+
+/// `<seq>:<64 hex digits>`.
+fn parse_anchor(value: &str) -> Result<authn_audit::ChainAnchor, String> {
+    const FORMAT: &str = "expected <seq>:<64 hex digits>";
+    let (seq, hex) = value.split_once(':').ok_or(FORMAT)?;
+    let seq: i64 = seq.trim().parse().map_err(|_| FORMAT)?;
+    let hex = hex.trim().as_bytes();
+    if seq < 0 || hex.len() != 64 {
+        return Err(FORMAT.to_owned());
+    }
+    let mut hash = [0_u8; 32];
+    for (byte, pair) in hash.iter_mut().zip(hex.chunks_exact(2)) {
+        let text = std::str::from_utf8(pair).map_err(|_| FORMAT)?;
+        *byte = u8::from_str_radix(text, 16).map_err(|_| FORMAT)?;
+    }
+    Ok(authn_audit::ChainAnchor { seq, hash })
+}
+
+/// The audit chain keys of the configuration (K-77).
+fn chain_keys(
+    config: &AppConfig,
+    crypto: &CryptoServices,
+) -> Result<authn_audit::ChainKeys, ServerError> {
+    authn_audit::ChainKeys::from_config(&crypto.keys, &config.audit.chain)
+        .map_err(ServerError::Startup)
 }
 
 fn parse_ttl(value: &str) -> Result<std::time::Duration, String> {
@@ -343,8 +386,12 @@ pub async fn run(cli: Cli) -> Result<Outcome, ServerError> {
             ttl,
         } => {
             let (config, pool) = connect(&cli).await?;
-            let audit: Arc<dyn AuditSink> =
-                Arc::new(authn_audit::PgAuditSink::new(pool.clone(), clock.clone()));
+            let keys = chain_keys(&config, &crypto(&config).await?)?;
+            let audit: Arc<dyn AuditSink> = Arc::new(authn_audit::PgAuditSink::keyed(
+                pool.clone(),
+                clock.clone(),
+                keys,
+            ));
             if *passkey_link {
                 let ttl =
                     ttl.unwrap_or(AdminSettings::from_app_config(&config).enrollment_link_ttl);
@@ -528,15 +575,45 @@ pub async fn run(cli: Cli) -> Result<Outcome, ServerError> {
                 report.signing_keys, report.webhook_secrets, report.other
             )))
         }
-        Command::VerifyAuditChain => {
-            let (_config, pool) = connect(&cli).await?;
-            let report = authn_audit::verify_chain(&pool)
-                .await
-                .map_err(ServerError::Startup)?;
+        Command::VerifyAuditChain {
+            anchor,
+            legacy_until_seq,
+        } => {
+            let (config, pool) = connect(&cli).await?;
+            let mut keys = chain_keys(&config, &crypto(&config).await?)?;
+            if legacy_until_seq.is_some() {
+                keys = keys.with_legacy_until_seq(*legacy_until_seq);
+            }
+            let report = match anchor {
+                Some(anchor) => authn_audit::verify_chain_from(&pool, &keys, *anchor).await,
+                None => authn_audit::verify_chain(&pool, &keys).await,
+            }
+            .map_err(ServerError::Startup)?;
             if report.is_intact() {
+                let legacy = if report.legacy_events == 0 {
+                    String::new()
+                } else if keys.legacy_until_seq().is_some() {
+                    format!(
+                        "; {} unkeyed (legacy) events, all within the pinned prefix",
+                        report.legacy_events
+                    )
+                } else {
+                    format!(
+                        "; WARNING: {} unkeyed (legacy) events accepted, first keyed event {}: pin audit.chain.legacy_until_seq",
+                        report.legacy_events,
+                        report
+                            .keyed_from_seq
+                            .map_or_else(|| "none".to_owned(), |seq| seq.to_string())
+                    )
+                };
                 Ok(Outcome::Message(format!(
-                    "audit chain intact; {} events verified",
-                    report.events_verified
+                    "audit chain intact; {} events verified; head {}:{} (key version {}){legacy}",
+                    report.events_verified,
+                    report.head.seq,
+                    report.head.hash_hex(),
+                    report
+                        .head_key_version
+                        .map_or_else(|| "none".to_owned(), |v| v.to_string()),
                 )))
             } else {
                 Err(ServerError::Integrity(format!(
@@ -544,6 +621,29 @@ pub async fn run(cli: Cli) -> Result<Outcome, ServerError> {
                     report.events_verified, report.broken
                 )))
             }
+        }
+        Command::RotateAuditChainKey => {
+            let (config, pool) = connect(&cli).await?;
+            let keys = chain_keys(&config, &crypto(&config).await?)?;
+            let activation = authn_audit::PgAuditSink::keyed(pool, clock.clone(), keys)
+                .activate_chain_key()
+                .await
+                .map_err(ServerError::Startup)?;
+            let from = activation
+                .from_version
+                .map_or_else(|| "unkeyed".to_owned(), |v| format!("version {v}"));
+            Ok(Outcome::Message(match activation.switch {
+                None => format!(
+                    "audit chain already uses key version {} (configured {})",
+                    activation.to_version, config.audit.chain.key_version
+                ),
+                Some(switch) => format!(
+                    "audit chain switched from {from} to key version {}; keep this checkpoint outside the database: {}:{}",
+                    activation.to_version,
+                    switch.seq,
+                    switch.hash_hex()
+                ),
+            }))
         }
         Command::MigrateLegacyHashes { input } => {
             let text = std::fs::read_to_string(input)?;
@@ -659,7 +759,7 @@ mod tests {
             .unwrap();
         assert_eq!(cli.command.name(), "seal-apple-key");
 
-        let cases: [(&[&str], &str); 9] = [
+        let cases: [(&[&str], &str); 12] = [
             (&["serve"], "serve"),
             (&["migrate"], "migrate"),
             (&["check-config"], "check-config"),
@@ -671,6 +771,19 @@ mod tests {
             (&["rotate-kek"], "rotate-kek"),
             (&["reencrypt"], "rotate-kek"),
             (&["verify-audit-chain"], "verify-audit-chain"),
+            (
+                &[
+                    "verify-audit-chain",
+                    "--anchor",
+                    "12:00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+                ],
+                "verify-audit-chain",
+            ),
+            (
+                &["verify-audit-chain", "--legacy-until-seq", "41"],
+                "verify-audit-chain",
+            ),
+            (&["rotate-audit-chain-key"], "rotate-audit-chain-key"),
             (
                 &["migrate-legacy-hashes", "--input", "hashes.csv"],
                 "migrate-legacy-hashes",
@@ -708,7 +821,11 @@ mod tests {
             },
             Command::RotateSigningKey { emergency: false },
             Command::RotateKek,
-            Command::VerifyAuditChain,
+            Command::VerifyAuditChain {
+                anchor: None,
+                legacy_until_seq: None,
+            },
+            Command::RotateAuditChainKey,
         ] {
             let err = run(Cli {
                 config: Some("/nonexistent/authn.toml".into()),
@@ -739,6 +856,25 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(err, ServerError::Io(_)), "{err}");
+    }
+
+    #[test]
+    fn k_77_verify_anchor_argument_is_strict() {
+        let hash = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+        let short = "00112233445566778899aabbccddeeff00112233445566778899aabbccddee";
+        let anchor = parse_anchor(&format!("12:{hash}")).unwrap();
+        assert_eq!(anchor.seq, 12);
+        assert_eq!(anchor.hash_hex(), hash);
+        for bad in [
+            "12",
+            "x:00",
+            &format!("-1:{hash}"),
+            &format!("12:{short}"),
+            &format!("12:{hash}00"),
+            &format!("12:{short}zz"),
+        ] {
+            assert!(parse_anchor(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

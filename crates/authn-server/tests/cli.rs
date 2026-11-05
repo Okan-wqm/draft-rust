@@ -39,7 +39,12 @@ impl Run {
 }
 
 fn run(pool: Option<&PgPool>, args: &[&str], stdin: Option<&str>) -> Run {
+    run_env(pool, args, stdin, &[])
+}
+
+fn run_env(pool: Option<&PgPool>, args: &[&str], stdin: Option<&str>, env: &[(&str, &str)]) -> Run {
     let mut command = Command::new(env!("CARGO_BIN_EXE_rust-authentication"));
+    command.envs(env.iter().copied());
     command
         .arg("--config")
         .arg(example_config())
@@ -500,4 +505,123 @@ async fn adm_05_k76_cli_grant_and_revoke_admin(pool: PgPool) {
     assert_eq!(out.code, 69, "{}", out.all());
     assert!(out.stderr.contains("last admin"), "{}", out.all());
     assert!(is_admin("glass@example.com").await);
+}
+
+/// K-77: `rotate-audit-chain-key` switches the chain to the configured key
+/// version and prints the switch checkpoint; `verify-audit-chain` verifies
+/// the keyed chain (also after a rotation, with an anchor, and with a
+/// pinned legacy prefix), reports tampering with a non-zero exit, and the
+/// chain key never reaches the output, even at `RUST_LOG=trace`.
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn k_77_cli_rotates_and_verifies_the_keyed_audit_chain(pool: PgPool) {
+    async fn cli(
+        pool: &PgPool,
+        args: &'static [&'static str],
+        env: &'static [(&'static str, &'static str)],
+    ) -> Run {
+        let p = pool.clone();
+        tokio::task::spawn_blocking(move || run_env(Some(&p), args, None, env))
+            .await
+            .unwrap()
+    }
+    let mut output = String::new();
+
+    let first = cli(&pool, &["rotate-audit-chain-key"], &[]).await;
+    assert_eq!(first.code, 0, "{}", first.all());
+    assert!(
+        first
+            .stdout
+            .contains("switched from unkeyed to key version 1"),
+        "{}",
+        first.all()
+    );
+    let anchor = first.stdout.trim().rsplit(' ').next().unwrap().to_owned();
+    assert!(anchor.starts_with("1:"), "{anchor}");
+    output.push_str(&first.all());
+    let again = cli(&pool, &["rotate-audit-chain-key"], &[]).await;
+    assert!(
+        again.stdout.contains("already uses key version 1"),
+        "{}",
+        again.all()
+    );
+
+    let rotated = cli(
+        &pool,
+        &["rotate-audit-chain-key"],
+        &[("AUTHN__AUDIT__CHAIN__KEY_VERSION", "2")],
+    )
+    .await;
+    assert_eq!(rotated.code, 0, "{}", rotated.all());
+    assert!(
+        rotated
+            .stdout
+            .contains("switched from version 1 to key version 2"),
+        "{}",
+        rotated.all()
+    );
+    output.push_str(&rotated.all());
+
+    // Verifies with the old configuration too: every version is derivable.
+    let verified = cli(
+        &pool,
+        &["verify-audit-chain", "--legacy-until-seq", "0"],
+        &[],
+    )
+    .await;
+    assert_eq!(verified.code, 0, "{}", verified.all());
+    assert!(
+        verified.stdout.contains("2 events verified")
+            && verified.stdout.contains("(key version 2)"),
+        "{}",
+        verified.all()
+    );
+    output.push_str(&verified.all());
+    let anchor: &'static str = Box::leak(anchor.into_boxed_str());
+    let args: &'static [&'static str] =
+        Box::leak(Box::new(["verify-audit-chain", "--anchor", anchor]));
+    let from_anchor = cli(&pool, args, &[]).await;
+    assert_eq!(from_anchor.code, 0, "{}", from_anchor.all());
+    assert!(
+        from_anchor.stdout.contains("1 events verified"),
+        "{}",
+        from_anchor.all()
+    );
+
+    // Tampering: a non-zero exit naming the defect.
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query("ALTER TABLE audit_events DISABLE TRIGGER audit_events_append_only")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE audit_events SET outcome = 'failure' WHERE seq = 1")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query("ALTER TABLE audit_events ENABLE TRIGGER audit_events_append_only")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let broken = cli(&pool, &["verify-audit-chain"], &[]).await;
+    assert_ne!(broken.code, 0, "{}", broken.all());
+    assert!(broken.all().contains("HashMismatch"), "{}", broken.all());
+    output.push_str(&broken.all());
+
+    // The chain keys never reach the output.
+    let config = authn_core::config::AppConfig::load(Some(example_config().as_path())).unwrap();
+    let ring = authn_crypto::kdf::KeyRing::from_config(&config.crypto).unwrap();
+    let family = ring.audit_chain_keys().unwrap();
+    let mut secrets = vec![
+        *ring
+            .key(authn_crypto::kdf::KeyPurpose::AuditChain)
+            .unwrap()
+            .expose(),
+    ];
+    for v in 1..=2 {
+        secrets.push(*family.version(v).unwrap().expose());
+    }
+    for secret in secrets {
+        let hex: String = secret.iter().map(|b| format!("{b:02x}")).collect();
+        assert!(!output.contains(&hex), "chain key leaked");
+    }
 }

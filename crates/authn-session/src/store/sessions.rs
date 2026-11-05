@@ -2,7 +2,7 @@
 
 use std::net::IpAddr;
 
-use authn_core::domain::{AuthMethodRef, ClientKind, LoginMethod};
+use authn_core::domain::{AuthMethodRef, ClientKind, FactorKind, LoginMethod};
 use authn_core::id::{OrgId, SessionId, UserId};
 use authn_crypto::token::TokenHash;
 use authn_store::StoreError;
@@ -16,7 +16,8 @@ macro_rules! session_columns {
         "s.id, s.user_id, s.client_kind, s.remember_me, s.shared_device, s.amr, s.acr, \
          s.auth_time, s.active_org_id, s.impersonator_user_id, s.impersonation_read_only, \
          s.device_id, s.device_name, s.created_ip, s.last_seen_ip, s.created_at, \
-         s.last_seen_at, s.idle_expires_at, s.absolute_expires_at, s.login_method, s.scopes"
+         s.last_seen_at, s.idle_expires_at, s.absolute_expires_at, s.login_method, s.scopes, \
+         s.mfa_factors"
     };
 }
 
@@ -69,6 +70,7 @@ pub(crate) struct NewSession<'a> {
     pub(crate) absolute_expires_at: OffsetDateTime,
     pub(crate) login_method: Option<LoginMethod>,
     pub(crate) scopes: &'a [String],
+    pub(crate) mfa_factors: &'a [FactorKind],
 }
 
 /// Inserts a session and returns it.
@@ -81,9 +83,9 @@ pub(crate) async fn insert(
          shared_device, amr, acr, auth_time, active_org_id, impersonator_user_id, \
          impersonation_read_only, impersonation_reason, device_id, device_name, user_agent, \
          created_ip, last_seen_ip, created_at, last_seen_at, idle_expires_at, \
-         absolute_expires_at, login_method, scopes) \
+         absolute_expires_at, login_method, scopes, mfa_factors) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, \
-         $17, $18, $18, $19, $20, $21, $22) RETURNING ",
+         $17, $18, $18, $19, $20, $21, $22, $23) RETURNING ",
         session_columns!()
     );
     Ok(sqlx::query_as::<_, SessionRecord>(sql)
@@ -109,6 +111,7 @@ pub(crate) async fn insert(
         .bind(new.absolute_expires_at)
         .bind(new.login_method)
         .bind(new.scopes)
+        .bind(new.mfa_factors)
         .fetch_one(conn)
         .await?)
 }
@@ -226,6 +229,7 @@ pub(crate) async fn touch(
 pub(crate) struct SessionUpdate<'a> {
     pub(crate) new_token_hash: Option<&'a TokenHash>,
     pub(crate) amr: &'a [AuthMethodRef],
+    pub(crate) mfa_factors: &'a [FactorKind],
     pub(crate) auth_time: OffsetDateTime,
     pub(crate) active_org_id: Option<OrgId>,
     pub(crate) absolute_expires_at: OffsetDateTime,
@@ -245,7 +249,7 @@ pub(crate) async fn apply_update(
         "UPDATE sessions AS s SET token_hash = COALESCE($2, s.token_hash), amr = $3, \
          auth_time = $4, active_org_id = $5, absolute_expires_at = $6, \
          idle_expires_at = LEAST($7, $6), last_seen_at = $8, \
-         last_seen_ip = COALESCE($9, s.last_seen_ip) \
+         last_seen_ip = COALESCE($9, s.last_seen_ip), mfa_factors = $10 \
          WHERE s.id = $1 AND s.revoked_at IS NULL RETURNING ",
         session_columns!()
     );
@@ -259,6 +263,7 @@ pub(crate) async fn apply_update(
         .bind(update.idle_expires_at)
         .bind(update.now)
         .bind(update.ip)
+        .bind(update.mfa_factors)
         .fetch_one(conn)
         .await?)
 }

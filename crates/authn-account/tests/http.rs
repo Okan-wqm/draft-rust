@@ -13,6 +13,23 @@ use http::StatusCode;
 use sqlx::PgPool;
 use utoipa::OpenApi;
 
+/// K-79: the API description tells clients that the export is a `POST`
+/// (no `GET` operation is documented, the change is explained).
+#[test]
+fn acc_10_k79_openapi_documents_the_export_as_post_only() {
+    let doc = serde_json::to_value(AccountApi::openapi()).unwrap();
+    let export = &doc["paths"]["/v1/me/export"];
+    assert!(export.get("post").is_some(), "{export}");
+    assert!(export.get("get").is_none(), "{export}");
+    let post = &export["post"];
+    let text = format!("{} {}", post["summary"], post["description"]);
+    assert!(text.contains("POST"), "{text}");
+    assert!(text.contains("405"), "{text}");
+    for status in ["200", "401", "403", "405", "429"] {
+        assert!(post["responses"].get(status).is_some(), "{status}");
+    }
+}
+
 #[test]
 fn acc_01_openapi_documents_every_route() {
     let doc = AccountApi::openapi();

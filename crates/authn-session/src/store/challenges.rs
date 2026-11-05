@@ -33,6 +33,7 @@ pub(crate) struct ChallengeRow {
     pub(crate) created_at: OffsetDateTime,
     pub(crate) expires_at: OffsetDateTime,
     pub(crate) primary_method: Option<LoginMethod>,
+    pub(crate) mfa_factors: Vec<FactorKind>,
 }
 
 /// Input of [`insert`].
@@ -110,7 +111,7 @@ pub(crate) async fn lock_open(
     let sql = "SELECT id, kind, user_id, session_id, client_kind, amr, first_factor_at, \
          allowed_factors, required_actions, remember_me, shared_device, requested_org_id, \
          risk_level, attempts, max_attempts, device_id, metadata, created_at, expires_at, \
-         primary_method FROM auth_challenges WHERE token_hash = $1 AND consumed_at IS NULL \
+         primary_method, mfa_factors FROM auth_challenges WHERE token_hash = $1 AND consumed_at IS NULL \
          AND expires_at > $2 AND attempts < max_attempts FOR UPDATE";
     Ok(sqlx::query_as::<_, ChallengeRow>(sql)
         .bind(token_hash.as_bytes().as_slice())
@@ -147,16 +148,18 @@ pub(crate) async fn update_progress(
     allowed_factors: &[FactorKind],
     required_actions: &[RequiredAction],
     metadata: &serde_json::Value,
+    mfa_factors: &[FactorKind],
 ) -> Result<bool, StoreError> {
     let result = sqlx::query(
         "UPDATE auth_challenges SET amr = $2, allowed_factors = $3, required_actions = $4, \
-         metadata = $5 WHERE id = $1 AND consumed_at IS NULL",
+         metadata = $5, mfa_factors = $6 WHERE id = $1 AND consumed_at IS NULL",
     )
     .bind(id)
     .bind(amr)
     .bind(allowed_factors)
     .bind(required_actions)
     .bind(metadata)
+    .bind(mfa_factors)
     .execute(conn)
     .await?;
     Ok(result.rows_affected() == 1)

@@ -12,11 +12,14 @@
 //!   `tower::ServiceExt::oneshot`, parse the error envelope.
 //! * [`timing`] — statistical timing comparison for account-enumeration
 //!   tests (TST-02).
+//! * [`bench`] — latency statistics, the micro-benchmark runner of the
+//!   bench targets and the SQL statement counter (K-70).
 //!
 //! Panicking on misuse is the desired behaviour of test helpers, so the
 //! workspace bans on `unwrap`/`expect`/`panic` are lifted for this crate.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+pub mod bench;
 pub mod clock;
 pub mod config;
 pub mod fakes;

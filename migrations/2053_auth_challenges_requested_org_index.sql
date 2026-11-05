@@ -1,0 +1,18 @@
+-- no-transaction
+-- K-70 (authn-session): index the referencing column of a foreign key so
+-- that deleting the referenced row (here: an organization;
+-- the same pattern as the session purge) does not scan the whole table
+-- once per deleted row. Measured for the refresh-token chain
+-- on 100k sessions / 300k refresh tokens: deleting 100 sessions took
+-- 23.8 s without the refresh_tokens indexes and 17 ms with them
+-- (docs/operations/performance.md).
+--
+-- CONCURRENTLY: no write lock on a live table; it cannot run inside a
+-- transaction, hence the no-transaction marker and one statement per file.
+-- If it is interrupted (deploy killed mid-build, statement timeout, deadlock
+-- with a second instance migrating at the same time), PostgreSQL leaves an
+-- INVALID index behind and the migration is not recorded. No IF NOT EXISTS
+-- on purpose: it would skip over the INVALID index and record the migration
+-- as applied; the re-run fails with "already exists" instead. Then drop it
+-- (DROP INDEX CONCURRENTLY auth_challenges_requested_org_idx;) and run the migrations again.
+CREATE INDEX CONCURRENTLY auth_challenges_requested_org_idx ON auth_challenges (requested_org_id) WHERE requested_org_id IS NOT NULL;

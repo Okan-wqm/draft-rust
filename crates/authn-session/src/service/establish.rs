@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use authn_core::domain::{AuthMethodRef, ClientKind, LoginMethod};
+use authn_core::domain::{AuthMethodRef, ClientKind, FactorKind, LoginMethod};
 use authn_core::error::{AuthError, codes};
 use authn_core::http::RequestContext;
 use authn_core::id::{OrgId, RefreshTokenId, SessionId, UserId};
@@ -90,6 +90,10 @@ pub struct EstablishSession {
     pub method: LoginMethod,
     /// Every method proven during this login (RFC 8176); at least one.
     pub amr: Vec<AuthMethodRef>,
+    /// Second factors verified during this login (K-78): what produced
+    /// `mfa`, never a risk confirmation (RSK-03). Organization policies
+    /// with allowed factors are checked against this list.
+    pub mfa_factors: Vec<FactorKind>,
     /// Authentication context class, if any.
     pub acr: Option<String>,
     /// Time of authentication (normally now; never in the future).
@@ -104,6 +108,56 @@ pub struct EstablishSession {
     pub org: Option<VerifiedOrg>,
     /// Device facts (normally [`DeviceInfo::from_context`]).
     pub device: DeviceInfo,
+}
+
+/// Deduplicated second factors, order kept (K-78).
+pub(crate) fn normalize_factors(factors: &[FactorKind]) -> Vec<FactorKind> {
+    let mut out = Vec::with_capacity(factors.len());
+    for f in factors {
+        if !out.contains(f) {
+            out.push(*f);
+        }
+    }
+    out
+}
+
+/// The second factor the primary login method itself is (K-78): an e-mail
+/// link or code proves the mailbox, a passkey the authenticator.
+pub(crate) fn primary_factor(method: Option<LoginMethod>) -> Option<FactorKind> {
+    match method {
+        Some(LoginMethod::MagicLink | LoginMethod::EmailCode) => Some(FactorKind::Email),
+        Some(LoginMethod::Passkey) => Some(FactorKind::Webauthn),
+        Some(LoginMethod::Password | LoginMethod::Social) | None => None,
+    }
+}
+
+/// Records a verified **second factor** `kind` (login challenge, enrollment
+/// during login, step-up; never a risk confirmation) and merges what it
+/// proved into `amr` (K-78).
+///
+/// `mfa` is added when the factor differs from the one the primary method
+/// already is ([`primary_factor`]) — decided on factor kinds, not on `amr`
+/// overlaps: the e-mail of a risk confirmation (RSK-03) in `amr` neither
+/// counts as a factor nor hides a later e-mail factor, and an e-mail code
+/// login's `otp` no longer hides a TOTP.
+pub(crate) fn record_second_factor(
+    amr: &[AuthMethodRef],
+    mfa_factors: &mut Vec<FactorKind>,
+    primary_method: Option<LoginMethod>,
+    kind: FactorKind,
+    proven: &[AuthMethodRef],
+) -> Result<Vec<AuthMethodRef>, AuthError> {
+    let mut out = authn_mfa::amr::combine(amr, proven);
+    if !mfa_factors.contains(&kind) {
+        mfa_factors.push(kind);
+    }
+    if !amr.is_empty()
+        && primary_factor(primary_method) != Some(kind)
+        && !out.contains(&AuthMethodRef::Mfa)
+    {
+        out.push(AuthMethodRef::Mfa);
+    }
+    normalize_amr(&out)
 }
 
 /// Normalizes an `amr` list: deduplicated, order kept, at most 16 values.
@@ -220,6 +274,7 @@ impl SessionService {
     ) -> Result<EstablishedSession, AuthError> {
         let now = self.now();
         let amr = normalize_amr(&request.amr)?;
+        let mfa_factors = normalize_factors(&request.mfa_factors);
         if request.auth_time > now {
             return Err(AuthError::internal("auth_time lies in the future"));
         }
@@ -306,6 +361,7 @@ impl SessionService {
                 absolute_expires_at: absolute,
                 login_method: Some(request.method),
                 scopes: &scopes,
+                mfa_factors: &mfa_factors,
             },
         )
         .await?;
@@ -502,5 +558,77 @@ impl SessionService {
         )
         .await?;
         Ok((successor, token, idle))
+    }
+}
+
+#[cfg(test)]
+mod k78_tests {
+    use super::*;
+    use AuthMethodRef::{Email, Fed, Mfa, Otp, Pwd};
+
+    fn second(
+        amr: &[AuthMethodRef],
+        method: LoginMethod,
+        kind: FactorKind,
+    ) -> (Vec<AuthMethodRef>, Vec<FactorKind>) {
+        let mut factors = Vec::new();
+        let amr = record_second_factor(
+            amr,
+            &mut factors,
+            Some(method),
+            kind,
+            &authn_mfa::amr::for_factor(kind),
+        )
+        .unwrap();
+        (amr, factors)
+    }
+
+    #[test]
+    fn k_78_mfa_is_decided_on_factor_kinds() {
+        // Password + TOTP.
+        assert_eq!(
+            second(&[Pwd], LoginMethod::Password, FactorKind::Totp),
+            (vec![Pwd, Otp, Mfa], vec![FactorKind::Totp])
+        );
+        // Password + risk confirmation (amr `email`) + the e-mail factor:
+        // the confirmation neither counts nor hides the factor.
+        assert_eq!(
+            second(&[Pwd, Email], LoginMethod::Password, FactorKind::Email),
+            (vec![Pwd, Email, Mfa], vec![FactorKind::Email])
+        );
+        // E-mail code login + the e-mail factor: the same mailbox twice.
+        assert_eq!(
+            second(&[Email, Otp], LoginMethod::EmailCode, FactorKind::Email),
+            (vec![Email, Otp], vec![FactorKind::Email])
+        );
+        assert_eq!(
+            second(&[Email], LoginMethod::MagicLink, FactorKind::Email).0,
+            vec![Email]
+        );
+        // E-mail code login + TOTP: two different factors.
+        assert_eq!(
+            second(&[Email, Otp], LoginMethod::EmailCode, FactorKind::Totp),
+            (vec![Email, Otp, Mfa], vec![FactorKind::Totp])
+        );
+        // Social login + SMS.
+        assert_eq!(
+            second(&[Fed], LoginMethod::Social, FactorKind::Sms).0,
+            vec![Fed, AuthMethodRef::Sms, Mfa]
+        );
+        // Recorded once.
+        let mut factors = vec![FactorKind::Totp];
+        record_second_factor(
+            &[Pwd, Otp, Mfa],
+            &mut factors,
+            Some(LoginMethod::Password),
+            FactorKind::Totp,
+            &[Otp],
+        )
+        .unwrap();
+        assert_eq!(factors, vec![FactorKind::Totp]);
+        assert_eq!(
+            normalize_factors(&[FactorKind::Sms, FactorKind::Sms, FactorKind::Email]),
+            vec![FactorKind::Sms, FactorKind::Email]
+        );
     }
 }

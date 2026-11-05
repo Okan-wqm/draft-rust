@@ -51,8 +51,8 @@ pub use self::challenge::{
     CHALLENGE_LOCK_TIMEOUT, ChallengeKind, ChallengeProgress, ChallengeState, IssuedChallenge,
     NewChallenge,
 };
-pub(crate) use self::establish::normalize_amr;
 pub use self::establish::{ClientChannel, EstablishSession, VerifiedOrg};
+pub(crate) use self::establish::{normalize_amr, record_second_factor};
 pub use self::introspect::IntrospectionResponse;
 pub use self::issuer::org_mfa_policy;
 pub(crate) use self::issuer::{primary_amr, strictest_membership_policy};

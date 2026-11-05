@@ -94,6 +94,9 @@ pub struct AdminServiceDeps {
     /// emergency and admin-targeting actions, chain verification and
     /// enrollment links (K-08, K-09, K-11).
     pub rate_limiter: Arc<dyn RateLimiter>,
+    /// Keys of the keyed audit hash chain for verification (AUD-02, K-77):
+    /// `authn_audit::ChainKeys::from_config(&crypto.keys, &config.audit.chain)`.
+    pub audit_chain_keys: authn_audit::ChainKeys,
 }
 
 struct Inner {
@@ -154,6 +157,10 @@ impl AdminService {
 
     pub(crate) fn pool(&self) -> &PgPool {
         &self.inner.deps.pool
+    }
+
+    pub(crate) fn chain_keys(&self) -> &authn_audit::ChainKeys {
+        &self.inner.deps.audit_chain_keys
     }
 
     pub(crate) fn now(&self) -> OffsetDateTime {

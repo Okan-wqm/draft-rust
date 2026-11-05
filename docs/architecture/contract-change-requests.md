@@ -512,6 +512,14 @@ Dalga A'nın tüm talepleri işlendi; her kaydın **Durum** satırı güncellend
 - **Geriye uyumluluk:** (1) imza değişikliği — tek uygulayıcı henüz yazılmamış server adaptörü; (2) ekleme; (3)–(5) davranış sıkılaştırması.
 - **Durum:** Uygulandı (2026-11-01)
 
+### 2026-11-05 — K-77: anahtarlı audit zinciri (wave 5A) — Uygulandı
+
+- **Talep eden:** authn-audit (sahibi olduğu dosyalarda uygulandı; mimarın belgelerinde güncellenmesi gerekenler aşağıda). **Etkilenen:** authn-crypto (`KeyPurpose::AuditChain`), `crates/authn-core/src/config/audit.rs` (`[audit.chain]`), `crates/authn-core/src/ports/audit.rs` (yeni olay türü `audit.chain_key_rotated`, ekleme), authn-admin (`AdminServiceDeps.audit_chain_keys`), authn-server (bağlama, CLI).
+- **Gerekçe:** veritabanına yazabilen biri anahtarsız zinciri baştan hesaplayabiliyordu (K-58 / wave 4B denetimi 4B-A4).
+- **Değişiklik:** migration `1703_audit_keyed_chain.sql`. Kırıcı imzalar (aynı dalgada tüm çağıranlar güncellendi): `verify_chain(pool, &ChainKeys)`, `verify_chain_from(pool, &ChainKeys, anchor)`, `purge_before(pool, &ChainKeys, …)`, `purge_expired(pool, &ChainKeys, …)`, `AuditServiceParts.chain_keys`. Üretim yazıcısı `PgAuditSink::keyed`. `PgAuditSink::new` anahtarsızdır ve yalnızca testler içindir.
+- **Mimardan istenen:** contracts §6 migration tablosuna `1703` (audit) ve `2002` (session, K-78) satırları. §15 admin satırına `audit_chain_keys`. §15 CLI notuna `verify-audit-chain` (anahtarlarla, `--anchor`, `--legacy-until-seq`) ve `rotate-audit-chain-key`. Ayrıntı: `crates/authn-audit/README.md` "K-77: anahtarlı zincir", `docs/handoff/module-apis.md` §6.
+- **Geriye uyumluluk:** eski satırlar değişmez ve eski kuralla doğrulanır. Admin doğrulama yanıtına yalnızca alan eklendi.
+
 ## authn-notify
 
 ### 2026-11-01 — `Notifier::notify_sms_in_tx` ve SMS bildirim tipleri (port eklemesi)

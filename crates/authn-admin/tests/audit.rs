@@ -221,9 +221,10 @@ async fn adm_07_chain_verification_detects_tampering(pool: sqlx::PgPool) {
 #[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
 async fn adm_05_break_glass_admin_creation(pool: sqlx::PgPool) {
     let h = Harness::new(pool).await;
-    let audit: Arc<dyn AuditSink> = Arc::new(authn_audit::PgAuditSink::new(
+    let audit: Arc<dyn AuditSink> = Arc::new(authn_audit::PgAuditSink::keyed(
         h.pool.clone(),
         h.ports.clock.clone(),
+        h.chain_keys.clone(),
     ));
     let created = create_break_glass_admin(
         &h.pool,

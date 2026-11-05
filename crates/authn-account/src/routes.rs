@@ -710,17 +710,29 @@ pub async fn cancel_deletion(
 }
 
 /// Machine-readable export of all personal data (ACC-10, KVKK/GDPR).
-/// `POST` (K-58 audit): a "safe" `GET` would skip the CSRF checks and be
-/// sent cross-site with the session cookie, letting any page spend the
-/// user's daily export quota.
+///
+/// **`POST` since the wave 4B audit (K-58, client note K-79); it used to be
+/// a `GET`, which now answers `405 Method Not Allowed`.** A safe method
+/// would skip the CSRF checks and be sent cross-site with the session
+/// cookie, letting any page spend the user's daily export quota.
+///
+/// No request body. Web clients send the session cookie, the
+/// `X-CSRF-Token` header and a same-origin `Origin`; native clients a
+/// bearer access token. Requires a recent re-authentication
+/// (`401 step_up_required` → `POST /v1/reauth`, then retry); never under
+/// impersonation; rate limited per user (`account.export_per_user`,
+/// default 2 per day). The response is a JSON attachment
+/// (`personal-data-export.json`, `Cache-Control: no-store`).
 #[utoipa::path(
     post,
     path = "/v1/me/export",
     tag = "account",
     responses(
-        (status = 200, description = "Export document (JSON attachment)", body = serde_json::Value),
-        (status = 401, description = "`step_up_required`", body = authn_core::error::ErrorEnvelope),
-        (status = 429, description = "Rate limited", body = authn_core::error::ErrorEnvelope),
+        (status = 200, description = "Export document (JSON attachment, `format` = `rust-authentication/personal-data-export/v1`)", body = serde_json::Value),
+        (status = 401, description = "`unauthenticated` / `step_up_required`", body = authn_core::error::ErrorEnvelope),
+        (status = 403, description = "`csrf_failed` (web request without the CSRF header or same-origin `Origin`) / `forbidden` (impersonation)", body = authn_core::error::ErrorEnvelope),
+        (status = 405, description = "`GET` (the method before K-58/K-79) is not allowed"),
+        (status = 429, description = "Rate limited (`Retry-After`)", body = authn_core::error::ErrorEnvelope),
     )
 )]
 pub async fn export_data(

@@ -228,3 +228,31 @@ async fn cry_08_rotate_kek_rewraps_every_row_across_pages(pool: PgPool) {
             .unwrap();
     }
 }
+
+/// K-77: production code never builds an unkeyed (legacy SHA-256) audit
+/// writer; every `src/` file uses `PgAuditSink::keyed` (or the service's
+/// sink). `PgAuditSink::new` is for tests of other modules only.
+#[test]
+fn k_77_production_code_never_builds_an_unkeyed_audit_sink() {
+    let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let mut offenders = Vec::new();
+    let mut stack: Vec<std::path::PathBuf> = std::fs::read_dir(&crates)
+        .unwrap()
+        .map(|e| e.unwrap().path().join("src"))
+        .filter(|p| p.is_dir())
+        .collect();
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                let text = std::fs::read_to_string(&path).unwrap();
+                if text.contains("PgAuditSink::new(") {
+                    offenders.push(path.display().to_string());
+                }
+            }
+        }
+    }
+    assert!(offenders.is_empty(), "unkeyed audit sink in {offenders:?}");
+}

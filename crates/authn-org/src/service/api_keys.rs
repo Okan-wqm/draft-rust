@@ -23,7 +23,9 @@
 //!   `401 unauthenticated`. Failures with well-formed keys are
 //!   rate-limited per IP and audited (bounded by that limit).
 //!   `last_used_at` / `last_used_ip` are written at most once per
-//!   `last_used_update_interval` per key.
+//!   `last_used_update_interval` per key; within the interval a successful
+//!   authentication is that single statement (the owner's status is
+//!   joined in, the throttled write is skipped client-side; K-70).
 
 use std::collections::BTreeSet;
 use std::net::IpAddr;
@@ -37,7 +39,6 @@ use authn_core::id::{ApiKeyId, OrgId, ServiceAccountId, UserId};
 use authn_core::ports::{Actor, DomainEventKind, RateLimitKey, SecurityEvent, SecurityEventKind};
 use authn_core::secret::constant_time_eq;
 use authn_crypto::token::TokenHash;
-use authn_store::UserRepository;
 use ipnet::IpNet;
 use serde::Deserialize;
 use sqlx::PgConnection;
@@ -182,7 +183,11 @@ struct AuthRow {
     org_status: OrgStatus,
     sa_status: Option<ServiceAccountStatus>,
     member_status: Option<MemberStatus>,
+    /// Status of the owning user (personal keys; `None` for service
+    /// accounts or a missing row), read in the same statement (K-70).
+    user_status: Option<AccountStatus>,
     ip_allowlist: Option<Vec<IpNet>>,
+    last_used_at: Option<OffsetDateTime>,
 }
 
 /// Why an authentication with a well-formed key failed (audit reason).
@@ -543,10 +548,12 @@ impl OrgService {
         let row = sqlx::query_as::<_, AuthRow>(
             "SELECT k.id, k.org_id, k.service_account_id, k.user_id, k.secret_hash, k.scopes, \
              k.expires_at, k.revoked_at, k.rotation_grace_until, o.status AS org_status, \
-             sa.status AS sa_status, m.status AS member_status, p.ip_allowlist \
+             sa.status AS sa_status, m.status AS member_status, u.status AS user_status, \
+             p.ip_allowlist, k.last_used_at \
              FROM api_keys k JOIN organizations o ON o.id = k.org_id \
              LEFT JOIN service_accounts sa ON sa.id = k.service_account_id AND sa.org_id = k.org_id \
              LEFT JOIN memberships m ON m.org_id = k.org_id AND m.user_id = k.user_id \
+             LEFT JOIN users u ON u.id = k.user_id \
              LEFT JOIN org_policies p ON p.org_id = k.org_id \
              WHERE k.secret_hash = $1",
         )
@@ -592,17 +599,15 @@ impl OrgService {
                 if row.member_status != Some(MemberStatus::Active) {
                     return Ok(Err((AuthFailure::OwnerInactive, ids)));
                 }
-                let active = UserRepository::find_by_id(self.pool(), user_id)
-                    .await?
-                    .is_some_and(|u| u.status == AccountStatus::Active);
-                if !active {
+                if row.user_status != Some(AccountStatus::Active) {
                     return Ok(Err((AuthFailure::OwnerInactive, ids)));
                 }
                 Subject::User { user_id }
             }
             _ => return Ok(Err((AuthFailure::OwnerInactive, ids))),
         };
-        self.touch_last_used(row.id, ctx.client_ip, now).await;
+        self.touch_last_used(row.id, row.last_used_at, ctx.client_ip, now)
+            .await;
         Ok(Ok(Principal {
             subject,
             credential: PrincipalCredential::ApiKey { api_key_id: row.id },
@@ -621,10 +626,22 @@ impl OrgService {
     }
 
     /// Throttled `last_used_*` update (a single conditional statement; a
-    /// failure is logged, never fails the request).
-    async fn touch_last_used(&self, key: ApiKeyId, ip: IpAddr, now: OffsetDateTime) {
+    /// failure is logged, never fails the request). `seen` is the value
+    /// read with the key: when it is within the interval no statement is
+    /// sent at all (K-70: one round trip less per authenticated request);
+    /// the SQL condition stays as the guard against concurrent writers.
+    async fn touch_last_used(
+        &self,
+        key: ApiKeyId,
+        seen: Option<OffsetDateTime>,
+        ip: IpAddr,
+        now: OffsetDateTime,
+    ) {
         let interval = self.config().api_keys.last_used_update_interval;
         let threshold = now - interval;
+        if seen.is_some_and(|t| t > threshold) {
+            return;
+        }
         let net = IpNet::from(canonical_ip(ip));
         let result = sqlx::query(
             "UPDATE api_keys SET last_used_at = $2, last_used_ip = $3 \

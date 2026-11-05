@@ -478,3 +478,35 @@ Migration `2900`: `authn_apply_least_privilege(app_role, maintenance_role)`; run
 ### Tests (crates/authn-server/tests)
 `social_e2e.rs`, `admin_e2e.rs` (passkey feature), `console_cors.rs`, `least_privilege.rs`, `operations.rs`, plus additions to `http_stack.rs` (SSRF, OpenAPI). See remaining-work.md §10 K-50 … K-54 rows for names.
 
+
+## 6. Wave 5A — anahtarlı audit zinciri (K-77), MFA faktörleri (K-78), dışa aktarma belgesi (K-79)
+
+### authn-crypto (K-77)
+- `KeyPurpose::AuditChain` (HKDF `info` = `authn/v1/audit-chain`). `KeyRing::audit_chain_keys() -> AuditChainKeys`; `AuditChainKeys::version(v: u16) -> HmacKey` (v ≥ 1; `HKDF-SHA256(salt = "authn/v1/audit-chain/versions", ikm = K_AuditChain, info = "v<v>")`). Her sürüm yeniden türetilebilir; `Debug` redakte.
+
+### authn-core (K-77)
+- `[audit.chain]`: `key_version` (varsayılan 1, 1…32767), `legacy_until_seq` (isteğe bağlı). `AuditConfig.chain: AuditChainConfig`.
+- `SecurityEventKind::AuditChainKeyRotated` (`audit.chain_key_rotated`).
+
+### authn-audit (K-77)
+- `ChainKeys::from_config(&KeyRing, &AuditChainConfig)`, `ChainKeys::new(AuditChainKeys, version)`, `.with_legacy_until_seq(Option<i64>)`, `current_version()`, `legacy_until_seq()`.
+- `PgAuditSink::keyed(pool, clock, ChainKeys)` üretimin tek yazıcısıdır. `PgAuditSink::new(pool, clock)` artık **anahtarsız** (eski SHA-256) yazar, yalnızca başka modüllerin testleri içindir ve anahtarlı bir zincire eklemeyi reddeder (`k_77_production_code_never_builds_an_unkeyed_audit_sink` `src/` içinde kullanımını yasaklar).
+- `PgAuditSink::activate_chain_key() -> ChainKeyActivation { from_version, to_version, switch: Option<ChainAnchor> }`; `AuditService::activate_chain_key()`, `AuditService::verify_chain()`, `AuditService::chain_keys()`.
+- İmza değişiklikleri: `verify_chain(pool, &ChainKeys)`, `verify_chain_from(pool, &ChainKeys, anchor)`, `purge_before(pool, &ChainKeys, before, batch, now)`, `purge_expired(pool, &ChainKeys, clock, retention)`. `AuditServiceParts.chain_keys` zorunlu alan.
+- `ChainReport` yeni alanlar: `legacy_events`, `keyed_from_seq`, `head_key_version`. `ChainProblem` yeni değerler: `KeyDowngrade`, `UnkeyedEvent`, `KeySwitchUnrecorded`.
+- Migration `1703`: `audit_events.chain_key_version`, `audit_chain_head.key_version`, `audit_chain_checkpoints.key_version` + `chain_key_switch` nedeni; baş satırında sürüm değişince kontrol noktası yazan `SECURITY DEFINER` tetikleyici.
+
+### authn-admin (K-77)
+- `AdminServiceDeps.audit_chain_keys: authn_audit::ChainKeys` zorunlu alan. `ChainVerification` yeni alanlar: `legacy_events`, `keyed_from_seq`, `head_key_version`.
+
+### authn-server (K-77)
+- `Services::build*` zincir anahtarlarını `crypto.keys` + `config.audit.chain`'den kurar; tüm modüllere giden `AuditSink` anahtarlıdır. `serve` açılışta `services.audit.activate_chain_key()` çağırır.
+- CLI: `verify-audit-chain [--anchor <seq>:<64 hex>] [--legacy-until-seq <seq>]`, `rotate-audit-chain-key`; `create-admin` anahtarlı yazıcı kullanır.
+
+### authn-session (K-78)
+- `SessionRecord.mfa_factors: Vec<FactorKind>`, `EstablishSession.mfa_factors: Vec<FactorKind>` (yeni zorunlu alan), `ChallengeState.mfa_factors`, `ChallengeProgress.mfa_factors`. `StepUpProof::factor()`.
+- Migration `2002`: `sessions.mfa_factors`, `auth_challenges.mfa_factors` (`text[]`, varsayılan `'{}'`).
+- Kural: ikinci faktör olarak doğrulanan tür (giriş challenge'ı, giriş sırasında kayıt, step-up) kaydedilir; risk onayı e-postası (RSK-03) asla. `mfa`, faktör türü birincil yöntemin kendi faktöründen (e-posta link/kodu → `email`, passkey → `webauthn`) farklıysa eklenir. Kuruluş değiştirme `allowed_mfa_factors`'ı `mfa_factors`'a göre denetler.
+
+### authn-account (K-79)
+- `POST /v1/me/export` (önceden güvenli yöntem; o yöntem `405`). OpenAPI açıklaması ve README istemci bölümü güncellendi; geçiş notu `docs/api-changelog.md`.

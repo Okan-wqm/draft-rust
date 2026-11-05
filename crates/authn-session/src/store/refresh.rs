@@ -157,19 +157,18 @@ pub(crate) async fn link_successor(
     successor: RefreshTokenId,
     successor_ciphertext: Option<&[u8]>,
 ) -> Result<(), StoreError> {
+    // One statement, one round trip (K-70). The two updates touch disjoint
+    // rows: `id` itself, and its parent (the row whose `replaced_by_id` is
+    // `id`; a row never replaces itself), so the data-modifying CTE is
+    // well defined.
     sqlx::query(
-        "UPDATE refresh_tokens SET replaced_by_id = $2, successor_ciphertext = $3 WHERE id = $1",
+        "WITH wiped AS (UPDATE refresh_tokens SET successor_ciphertext = NULL \
+         WHERE replaced_by_id = $1 AND successor_ciphertext IS NOT NULL) \
+         UPDATE refresh_tokens SET replaced_by_id = $2, successor_ciphertext = $3 WHERE id = $1",
     )
     .bind(id)
     .bind(successor)
     .bind(successor_ciphertext)
-    .execute(&mut *conn)
-    .await?;
-    sqlx::query(
-        "UPDATE refresh_tokens SET successor_ciphertext = NULL \
-         WHERE replaced_by_id = $1 AND successor_ciphertext IS NOT NULL",
-    )
-    .bind(id)
     .execute(&mut *conn)
     .await?;
     Ok(())

@@ -8,7 +8,8 @@
 //! | Module | Requirement | What |
 //! |--------|-------------|------|
 //! | [`sink`] | AUD-01, AUD-02, AUD-03, AUD-05 | [`PgAuditSink`] — the `AuditSink` port: sanitization, pseudonyms, hash-chained append |
-//! | [`chain`], [`canonical`] | AUD-02 | Record layout, canonical JSON, `SHA-256(prev_hash ‖ canonical_json(event))` |
+//! | [`chain`], [`canonical`] | AUD-02 | Record layout, canonical JSON, `HMAC-SHA-256(K_v, prev_hash ‖ canonical_json(event))` (legacy rows: `SHA-256(…)`) |
+//! | [`keys`] | AUD-02, K-77 | [`ChainKeys`] — versioned chain keys from the key ring |
 //! | [`sanitize`] | AUD-03 | Structural "no secrets, no personal data" enforcement |
 //! | [`verify`] | AUD-02 | Full / from-anchor chain verification |
 //! | [`retention`] | AUD-05 | Retention purge through the checkpointed escape hatch |
@@ -33,6 +34,7 @@ pub mod api;
 pub mod canonical;
 pub mod chain;
 pub mod holds;
+pub mod keys;
 pub mod outbox;
 pub mod policy;
 pub mod query;
@@ -53,8 +55,9 @@ pub use policy::{AccessDecision, AuditAccessPolicy, AuditPermission, DenyAllAudi
 pub use query::{AuditEventDetail, AuditEventFilter, list_events};
 pub use service::{AuditService, AuditServiceParts, MaintenanceReport};
 
+pub use keys::ChainKeys;
 pub use retention::{PurgeReport, create_checkpoint, purge_before, purge_expired};
-pub use sink::{AppendedEvent, PgAuditSink};
+pub use sink::{AppendedEvent, ChainKeyActivation, PgAuditSink};
 pub use verify::{
     ChainAnchor, ChainBreak, ChainProblem, ChainReport, verify_chain, verify_chain_from,
 };

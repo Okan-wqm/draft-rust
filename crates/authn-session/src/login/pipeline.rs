@@ -420,6 +420,8 @@ impl SessionService {
                         user_id: user.id,
                         method: auth.method,
                         amr,
+                        // No second factor was verified in this request.
+                        mfa_factors: Vec::new(),
                         acr: None,
                         auth_time: now,
                         client,

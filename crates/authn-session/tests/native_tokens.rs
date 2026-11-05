@@ -394,6 +394,55 @@ async fn ses_05_grace_window_closes(pool: PgPool) {
     let _ = report;
 }
 
+/// K-70 regression (successor link and parent wipe in one statement): with
+/// the grace window on, only the newest retired token keeps a sealed
+/// successor; its parent's is wiped by the same rotation, and the links of
+/// the chain stay intact.
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn ses_05_rotation_keeps_only_the_latest_sealed_successor(pool: PgPool) {
+    let h = Harness::with(pool, |c| {
+        c.session.refresh_reuse_grace = Duration::from_secs(10);
+    })
+    .await;
+    let user = h.user("alice@example.com").await;
+    let login = h.native_login(user).await;
+    let mut token = login.refresh.clone();
+    for rotation in 1..=3_i64 {
+        let next: serde_json::Value = refresh(&h, &token).await.json();
+        token = next["refresh_token"].as_str().unwrap().to_owned();
+        assert_eq!(
+            h.count(
+                "SELECT count(*) FROM refresh_tokens WHERE session_id = $1 \
+                 AND successor_ciphertext IS NOT NULL",
+                login.session_id.as_uuid(),
+            )
+            .await,
+            1,
+            "rotation {rotation}: only the newest retired token keeps a sealed successor"
+        );
+        assert_eq!(
+            h.count(
+                "SELECT count(*) FROM refresh_tokens WHERE session_id = $1 \
+                 AND replaced_by_id IS NOT NULL",
+                login.session_id.as_uuid(),
+            )
+            .await,
+            rotation,
+            "every retired token stays linked to its successor"
+        );
+    }
+    // The newest retired token's sealed successor still serves a retry.
+    h.advance(Duration::from_secs(1));
+    let live: i64 = h
+        .count(
+            "SELECT count(*) FROM refresh_tokens WHERE session_id = $1 \
+             AND used_at IS NULL AND revoked_at IS NULL",
+            login.session_id.as_uuid(),
+        )
+        .await;
+    assert_eq!(live, 1);
+}
+
 #[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
 async fn ses_06_refresh_never_extends_the_absolute_expiry(pool: PgPool) {
     let h = Harness::new(pool).await;

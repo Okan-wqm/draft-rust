@@ -246,10 +246,15 @@ async fn adm_08_retention_purge_still_removes_justifications(pool: sqlx::PgPool)
     h.send(&admin, TestRequest::get(&format!("/v1/admin/users/{user}")))
         .await
         .assert_status(StatusCode::OK);
-    let report =
-        authn_audit::purge_before(&h.pool, h.now() - Duration::from_secs(60), 100, h.now())
-            .await
-            .unwrap();
+    let report = authn_audit::purge_before(
+        &h.pool,
+        &h.chain_keys,
+        h.now() - Duration::from_secs(60),
+        100,
+        h.now(),
+    )
+    .await
+    .unwrap();
     assert!(report.events_deleted >= 1, "{report:?}");
     assert!(h.admin_events("revoke_user_sessions").await.is_empty());
     assert!(h.justification(event).await.is_none());

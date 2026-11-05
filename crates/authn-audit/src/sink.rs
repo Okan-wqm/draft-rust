@@ -12,6 +12,15 @@
 //! 4. the chain head row is locked (`SELECT … FOR UPDATE`), the record is
 //!    hashed onto the current head, inserted, and the head is advanced — all
 //!    in one transaction, so concurrent writers can never fork the chain.
+//!
+//! K-77: a keyed sink ([`PgAuditSink::keyed`]) MACs every event with the
+//! chain key (`HMAC-SHA-256(K_v, prev_hash ‖ record)`) and records `v`.
+//! The version is `max(version at the head, configured version)`, so
+//! versions never decrease — also while instances with the old and the new
+//! configuration run side by side during a rotation. An unkeyed sink
+//! ([`PgAuditSink::new`]) writes legacy SHA-256 events and **refuses** to
+//! append once the chain is keyed (that would be a downgrade the verifier
+//! reports as a break).
 
 use std::collections::HashSet;
 use std::net::IpAddr;
@@ -21,7 +30,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use authn_core::error::AuthError;
 use authn_core::id::UserId;
-use authn_core::ports::{Actor, AuditSink, Clock, EventOutcome, SecurityEvent};
+use authn_core::ports::{Actor, AuditSink, Clock, EventOutcome, SecurityEvent, SecurityEventKind};
 use authn_store::StoreError;
 use serde_json::Value;
 use sqlx::{Connection as _, PgConnection, PgPool};
@@ -29,7 +38,9 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::chain::{self, ChainRecord};
+use crate::keys::{self, ChainKeys};
 use crate::sanitize::{self, StringCheck};
+use crate::verify::ChainAnchor;
 
 /// Session-local setting listing users pseudonymised in the current
 /// transaction (see [`PgAuditSink::pseudonymize_subject`]).
@@ -54,16 +65,31 @@ pub struct AppendedEvent {
     pub duplicate: bool,
 }
 
+/// Result of [`PgAuditSink::activate_chain_key`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChainKeyActivation {
+    /// Key version at the head before (`None` = legacy, unkeyed).
+    pub from_version: Option<u16>,
+    /// Key version at the head now.
+    pub to_version: u16,
+    /// The `chain_key_switch` checkpoint `(seq, hash)` of the rotation
+    /// event; `None` when nothing changed.
+    pub switch: Option<ChainAnchor>,
+}
+
 /// The PostgreSQL audit sink.
 #[derive(Clone)]
 pub struct PgAuditSink {
     pool: PgPool,
     clock: Arc<dyn Clock>,
+    keys: Option<ChainKeys>,
 }
 
 impl std::fmt::Debug for PgAuditSink {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PgAuditSink").finish_non_exhaustive()
+        f.debug_struct("PgAuditSink")
+            .field("keyed", &self.keys.is_some())
+            .finish_non_exhaustive()
     }
 }
 
@@ -115,10 +141,32 @@ struct CandidateRow {
 }
 
 impl PgAuditSink {
-    /// Creates the sink.
+    /// An **unkeyed** sink: legacy SHA-256 chaining, for tests and tools of
+    /// other modules that never see a keyed chain. It refuses to append to
+    /// a keyed chain. Production code uses [`PgAuditSink::keyed`].
     #[must_use]
     pub fn new(pool: PgPool, clock: Arc<dyn Clock>) -> Self {
-        Self { pool, clock }
+        Self {
+            pool,
+            clock,
+            keys: None,
+        }
+    }
+
+    /// A keyed sink (K-77): events are MACed with the chain key.
+    #[must_use]
+    pub fn keyed(pool: PgPool, clock: Arc<dyn Clock>, keys: ChainKeys) -> Self {
+        Self {
+            pool,
+            clock,
+            keys: Some(keys),
+        }
+    }
+
+    /// The chain keys of a keyed sink.
+    #[must_use]
+    pub fn chain_keys(&self) -> Option<&ChainKeys> {
+        self.keys.as_ref()
     }
 
     /// Appends an event in the caller's transaction and reports where it
@@ -131,7 +179,8 @@ impl PgAuditSink {
         let kind = event.kind;
         let outcome = event.outcome;
         let prepared = self.prepare(conn, event).await?;
-        let appended = append_prepared(conn, prepared, self.clock.now()).await?;
+        let appended =
+            append_prepared(conn, prepared, self.clock.now(), self.keys.as_ref()).await?;
         if !appended.duplicate {
             metrics::counter!(
                 "authn_audit_events_total",
@@ -144,6 +193,63 @@ impl PgAuditSink {
             .increment(1);
         }
         Ok(appended)
+    }
+
+    /// Switches the chain to the configured key version (K-77), at start-up
+    /// of the server and from the `rotate-audit-chain-key` command: when the
+    /// head is unkeyed (legacy) or uses an older version, appends one
+    /// `audit.chain_key_rotated` event MACed with the new key (the first
+    /// event of the new version; the database records a `chain_key_switch`
+    /// checkpoint for it). Idempotent and safe on several instances (the
+    /// head is locked); a no-op when the head already uses this or a newer
+    /// version.
+    pub async fn activate_chain_key(&self) -> Result<ChainKeyActivation, AuthError> {
+        let Some(keys) = &self.keys else {
+            return Err(AuthError::internal(
+                "audit chain key activation needs a keyed audit sink",
+            ));
+        };
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(RECORD_LOCK_TIMEOUT).execute(&mut *tx).await?;
+        let (_, head_version) = lock_head(&mut tx).await?;
+        let from =
+            match head_version {
+                None => None,
+                Some(v) => Some(keys::version_from_db(v).ok_or_else(|| {
+                    AuthError::internal("audit chain head key version is malformed")
+                })?),
+            };
+        let to = next_version(keys, head_version)?;
+        if from == Some(to) {
+            tx.commit().await?;
+            return Ok(ChainKeyActivation {
+                from_version: from,
+                to_version: to,
+                switch: None,
+            });
+        }
+        let event = SecurityEvent::new(SecurityEventKind::AuditChainKeyRotated, self.clock.now())
+            .with_actor(Actor::System)
+            .with_meta("from_version", from.map_or(0, u64::from))
+            .with_meta("to_version", u64::from(to));
+        let appended = self.append(&mut tx, event).await?;
+        tx.commit().await?;
+        let switch = ChainAnchor {
+            seq: appended.seq,
+            hash: appended.hash,
+        };
+        tracing::warn!(
+            from_version = from.map_or(0, u64::from),
+            to_version = to,
+            checkpoint_seq = switch.seq,
+            checkpoint_hash = %switch.hash_hex(),
+            "audit chain key version switched; export this checkpoint (and, after the first switch, set audit.chain.legacy_until_seq = checkpoint_seq - 1)"
+        );
+        Ok(ChainKeyActivation {
+            from_version: from,
+            to_version: to,
+            switch: Some(switch),
+        })
     }
 
     async fn prepare(
@@ -443,20 +549,41 @@ async fn create_mapping(
     })
 }
 
+/// The chain head, locked until the transaction ends (serializes every
+/// append: no forks).
+pub(crate) async fn lock_head(
+    conn: &mut PgConnection,
+) -> Result<(Vec<u8>, Option<i16>), AuthError> {
+    let head: Option<(i64, Vec<u8>, Option<i16>)> = sqlx::query_as(
+        "SELECT last_seq, last_hash, key_version FROM audit_chain_head WHERE id FOR UPDATE",
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some((_, last_hash, key_version)) = head else {
+        return Err(AuthError::internal("audit chain head row is missing"));
+    };
+    Ok((last_hash, key_version))
+}
+
+/// The key version for the next event (K-77): never lower than the
+/// version at the head.
+fn next_version(keys: &ChainKeys, head_version: Option<i16>) -> Result<u16, AuthError> {
+    let at_head = match head_version {
+        None => 0,
+        Some(v) => keys::version_from_db(v)
+            .ok_or_else(|| AuthError::internal("audit chain head key version is malformed"))?,
+    };
+    Ok(at_head.max(keys.current_version()))
+}
+
 async fn append_prepared(
     conn: &mut PgConnection,
     prepared: Prepared,
     now: OffsetDateTime,
+    keys: Option<&ChainKeys>,
 ) -> Result<AppendedEvent, AuthError> {
     let Prepared { record, pii } = prepared;
-    // Serializes every append (no forks): held until the transaction ends.
-    let head: Option<(i64, Vec<u8>)> =
-        sqlx::query_as("SELECT last_seq, last_hash FROM audit_chain_head WHERE id FOR UPDATE")
-            .fetch_optional(&mut *conn)
-            .await?;
-    let Some((_, last_hash)) = head else {
-        return Err(AuthError::internal("audit chain head row is missing"));
-    };
+    let (last_hash, head_version) = lock_head(conn).await?;
     let prev_hash = chain::hash_from_slice(&last_hash)
         .ok_or_else(|| AuthError::internal("audit chain head hash is malformed"))?;
 
@@ -475,14 +602,34 @@ async fn append_prepared(
         });
     }
 
-    let hash = record
-        .hash(&prev_hash)
-        .map_err(|e| AuthError::internal("audit record not canonicalizable").with_source(e))?;
+    let (hash, version) = match keys {
+        Some(keys) => {
+            let version = next_version(keys, head_version)?;
+            let key = keys.key(version)?;
+            let hash = record.keyed_hash(&key, &prev_hash).map_err(|e| {
+                AuthError::internal("audit record not canonicalizable").with_source(e)
+            })?;
+            (hash, Some(keys::version_to_db(version)?))
+        }
+        // An unkeyed writer never extends a keyed chain (downgrade).
+        None if head_version.is_some() => {
+            return Err(AuthError::internal(
+                "audit chain is keyed but this audit writer has no chain key",
+            ));
+        }
+        None => (
+            record.hash(&prev_hash).map_err(|e| {
+                AuthError::internal("audit record not canonicalizable").with_source(e)
+            })?,
+            None,
+        ),
+    };
     let seq: i64 = sqlx::query_scalar(
         "INSERT INTO audit_events (id, occurred_at, recorded_at, kind, outcome, reason, \
          actor_type, actor_pseudonym, actor_ref, impersonator_pseudonym, subject_pseudonym, \
-         org_id, resource_type, resource_id, request_id, metadata, pii_digest, prev_hash, hash) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19) \
+         org_id, resource_type, resource_id, request_id, metadata, pii_digest, prev_hash, hash, \
+         chain_key_version) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20) \
          RETURNING seq",
     )
     .bind(record.id)
@@ -504,6 +651,7 @@ async fn append_prepared(
     .bind(record.pii_digest.as_ref().map(<[u8; 32]>::as_slice))
     .bind(prev_hash.as_slice())
     .bind(hash.as_slice())
+    .bind(version)
     .fetch_one(&mut *conn)
     .await?;
 
@@ -521,12 +669,16 @@ async fn append_prepared(
         .await?;
     }
 
+    // A change of the key version records a `chain_key_switch` checkpoint
+    // (trigger of migration 1703).
     sqlx::query(
-        "UPDATE audit_chain_head SET last_seq = $1, last_hash = $2, updated_at = $3 WHERE id",
+        "UPDATE audit_chain_head SET last_seq = $1, last_hash = $2, updated_at = $3, \
+         key_version = $4 WHERE id",
     )
     .bind(seq)
     .bind(hash.as_slice())
     .bind(now)
+    .bind(version)
     .execute(&mut *conn)
     .await?;
 

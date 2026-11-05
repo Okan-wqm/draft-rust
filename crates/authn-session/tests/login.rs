@@ -2122,3 +2122,143 @@ async fn ses_01_concurrent_logins_never_starve_the_connection_pool(pool: PgPool)
         started.elapsed()
     );
 }
+
+/// The `mfa_factors` recorded for a session (K-78).
+async fn session_factors(h: &Harness, user: UserId) -> Vec<String> {
+    sqlx::query_scalar(
+        "SELECT mfa_factors::text[] FROM sessions WHERE user_id = $1 AND revoked_at IS NULL",
+    )
+    .bind(user)
+    .fetch_one(&h.pool)
+    .await
+    .unwrap()
+}
+
+/// K-78 regression: the e-mailed confirmation of a risky login (RSK-03)
+/// adds `email` to `amr`, but it is no second factor. A session that got
+/// `mfa` from a TOTP step-up must not enter an organization that only
+/// allows the e-mail factor because the risk confirmation's `email` sits in
+/// its `amr` (before K-78 the factor was read from `amr`).
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn k_78_risk_confirmation_never_counts_as_an_allowed_second_factor(pool: PgPool) {
+    let h = Harness::new(pool).await;
+    let owner = h.user("owner@example.com").await;
+    let alice = h.user("alice@example.com").await;
+    let org = h.org(owner, "acme").await;
+    h.add_member(org, alice).await;
+    h.ports.risk.set(medium_risk());
+
+    // Password + risk confirmation e-mail: amr [pwd, email], no factor.
+    let mut browser = Browser::new(&h);
+    let body: Value = web_password_login(&h, &mut browser, "alice@example.com")
+        .await
+        .json();
+    assert_eq!(body["allowed_factors"], json!(["email"]));
+    browser
+        .send(
+            &h,
+            browser.post(
+                "/v1/login/challenge/send-code",
+                &json!({"channel": "email_confirmation"}),
+            ),
+        )
+        .await
+        .assert_status(StatusCode::ACCEPTED);
+    let code = login_code(&h);
+    let done: Value = browser
+        .send(
+            &h,
+            browser.post(
+                "/v1/login/challenge/verify",
+                &json!({"method": "email_confirmation", "code": code}),
+            ),
+        )
+        .await
+        .json();
+    assert_eq!(done["status"], "authenticated", "{done}");
+    assert_eq!(done["amr"], json!(["pwd", "email"]));
+    assert!(session_factors(&h, alice).await.is_empty());
+
+    // A TOTP step-up: now `mfa`, produced by the TOTP.
+    let secret = h.enroll_totp(alice).await;
+    let code = h.totp_code(&secret);
+    let stepped = browser
+        .send(
+            &h,
+            browser.post("/v1/reauth", &json!({ "method": "totp", "code": code })),
+        )
+        .await;
+    stepped.assert_status(StatusCode::OK);
+    let amr = stepped.json::<Value>()["amr"].clone();
+    assert!(amr.as_array().unwrap().contains(&json!("mfa")), "{amr}");
+    assert!(amr.as_array().unwrap().contains(&json!("email")), "{amr}");
+    assert_eq!(session_factors(&h, alice).await, vec!["totp".to_owned()]);
+
+    // The organization only allows the e-mail factor.
+    let mut policy = empty_policy();
+    policy.mfa_required = true;
+    policy.allowed_mfa_factors = Some(vec![FactorKind::Email]);
+    h.set_policy(owner, org, policy).await;
+    browser
+        .send(
+            &h,
+            browser.post("/v1/session/org", &json!({ "org_id": org })),
+        )
+        .await
+        .assert_error(StatusCode::FORBIDDEN, "org_policy_mfa_required");
+
+    // An organization allowing the TOTP that produced `mfa` is fine.
+    let mut policy = empty_policy();
+    policy.mfa_required = true;
+    policy.allowed_mfa_factors = Some(vec![FactorKind::Totp]);
+    h.set_policy(owner, org, policy).await;
+    browser
+        .send(
+            &h,
+            browser.post("/v1/session/org", &json!({ "org_id": org })),
+        )
+        .await
+        .assert_status(StatusCode::OK);
+}
+
+/// K-78: the second factor verified at login is recorded for the session
+/// and is what organization policies see.
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn k_78_verified_login_factor_is_recorded_for_the_session(pool: PgPool) {
+    let h = Harness::new(pool).await;
+    let owner = h.user("owner@example.com").await;
+    let alice = h.user("alice@example.com").await;
+    let org = h.org(owner, "acme").await;
+    h.add_member(org, alice).await;
+    let secret = h.enroll_totp(alice).await;
+    let mut browser = Browser::new(&h);
+    let body: Value = web_password_login(&h, &mut browser, "alice@example.com")
+        .await
+        .json();
+    assert_eq!(body["required_actions"], json!(["verify_mfa"]));
+    let code = h.totp_code(&secret);
+    let done: Value = browser
+        .send(
+            &h,
+            browser.post(
+                "/v1/login/challenge/verify",
+                &json!({"method": "totp", "code": code}),
+            ),
+        )
+        .await
+        .json();
+    assert_eq!(done["amr"], json!(["pwd", "otp", "mfa"]));
+    assert_eq!(session_factors(&h, alice).await, vec!["totp".to_owned()]);
+
+    let mut policy = empty_policy();
+    policy.mfa_required = true;
+    policy.allowed_mfa_factors = Some(vec![FactorKind::RecoveryCode]);
+    h.set_policy(owner, org, policy).await;
+    browser
+        .send(
+            &h,
+            browser.post("/v1/session/org", &json!({ "org_id": org })),
+        )
+        .await
+        .assert_error(StatusCode::FORBIDDEN, "org_policy_mfa_required");
+}

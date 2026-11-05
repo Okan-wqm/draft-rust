@@ -57,6 +57,10 @@ pub enum KeyPurpose {
     /// the "new device" signal: the key is independent of
     /// [`KeyPurpose::RateLimitKey`], which device hashes used before.
     KnownDevice,
+    /// Base key of the keyed audit hash chain (AUD-02, K-77). The chain
+    /// itself is MACed with per-version keys derived from it
+    /// ([`AuditChainKeys::version`]), never with this key directly.
+    AuditChain,
 }
 
 impl KeyPurpose {
@@ -73,6 +77,7 @@ impl KeyPurpose {
         Self::OAuthState,
         Self::WebhookSecret,
         Self::KnownDevice,
+        Self::AuditChain,
     ];
 
     /// The HKDF `info` label.
@@ -90,6 +95,7 @@ impl KeyPurpose {
             Self::OAuthState => "authn/v1/oauth-state",
             Self::WebhookSecret => "authn/v1/webhook-secret",
             Self::KnownDevice => "authn/v1/known-device",
+            Self::AuditChain => "authn/v1/audit-chain",
         }
     }
 }
@@ -223,6 +229,13 @@ impl KeyRing {
         Self::derive(&root)
     }
 
+    /// The versioned keys of the audit hash chain (K-77).
+    pub fn audit_chain_keys(&self) -> Result<AuditChainKeys, CryptoError> {
+        Ok(AuditChainKeys::new(
+            self.key(KeyPurpose::AuditChain)?.clone(),
+        ))
+    }
+
     /// The key for `purpose`.
     pub fn key(&self, purpose: KeyPurpose) -> Result<&HmacKey, CryptoError> {
         // Every variant is inserted by `derive`; the error is unreachable
@@ -230,6 +243,51 @@ impl KeyRing {
         self.keys
             .get(&purpose)
             .ok_or(CryptoError::Internal("purpose key missing"))
+    }
+}
+
+/// The versioned keys of the keyed audit hash chain (AUD-02, K-77).
+///
+/// Version `v` is `HKDF-SHA256(salt = "authn/v1/audit-chain/versions",
+/// ikm = K_AuditChain, info = "v<v>")`, where `K_AuditChain` is the
+/// [`KeyPurpose::AuditChain`] key of the [`KeyRing`]. Every version is
+/// therefore re-derivable for verification (old keys are never lost), and
+/// the keys of different versions are independent: a leaked version key
+/// reveals neither the base key nor any other version. Rotation (a new
+/// version for new rows) protects later rows against a leaked *version*
+/// key; a leaked root key compromises every version (rotate the root, K-96).
+#[derive(Clone)]
+pub struct AuditChainKeys {
+    base: HmacKey,
+}
+
+/// Salt of the per-version audit chain key derivation.
+const AUDIT_CHAIN_VERSION_SALT: &[u8] = b"authn/v1/audit-chain/versions";
+
+impl AuditChainKeys {
+    /// Wraps the [`KeyPurpose::AuditChain`] base key.
+    #[must_use]
+    pub fn new(base: HmacKey) -> Self {
+        Self { base }
+    }
+
+    /// The MAC key of chain key version `version` (`>= 1`).
+    pub fn version(&self, version: u16) -> Result<HmacKey, CryptoError> {
+        if version == 0 {
+            return Err(CryptoError::InvalidKey);
+        }
+        let info = format!("v{version}");
+        Ok(HmacKey::new(hkdf_sha256(
+            Some(AUDIT_CHAIN_VERSION_SALT),
+            self.base.expose(),
+            info.as_bytes(),
+        )?))
+    }
+}
+
+impl fmt::Debug for AuditChainKeys {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "AuditChainKeys({})", crate::secret::REDACTED)
     }
 }
 
@@ -339,6 +397,37 @@ mod tests {
         assert_eq!(labels.len(), KeyPurpose::ALL.len());
         assert!(KeyRing::derive(&[1_u8; 31]).is_err());
         assert!(!format!("{ring:?}").contains("07"));
+    }
+
+    #[test]
+    fn k_77_audit_chain_version_keys_are_independent_and_deterministic() {
+        let ring = KeyRing::derive(&[9_u8; 32]).unwrap();
+        let family = ring.audit_chain_keys().unwrap();
+        let again = KeyRing::derive(&[9_u8; 32])
+            .unwrap()
+            .audit_chain_keys()
+            .unwrap();
+        let base = *ring.key(KeyPurpose::AuditChain).unwrap().expose();
+        let mut seen = HashSet::new();
+        for version in 1..=5_u16 {
+            let key = family.version(version).unwrap();
+            assert_eq!(key, again.version(version).unwrap());
+            assert_ne!(key.expose(), &base, "never the base key itself");
+            assert!(seen.insert(*key.expose()), "v{version} collides");
+            for purpose in KeyPurpose::ALL {
+                assert_ne!(key.expose(), ring.key(*purpose).unwrap().expose());
+            }
+        }
+        assert!(family.version(0).is_err());
+        // Another root gives other keys.
+        let other = KeyRing::derive(&[8_u8; 32])
+            .unwrap()
+            .audit_chain_keys()
+            .unwrap();
+        assert_ne!(other.version(1).unwrap(), family.version(1).unwrap());
+        let debug = format!("{family:?}");
+        assert!(debug.contains(crate::secret::REDACTED));
+        assert!(!debug.contains(&hex(&base)));
     }
 
     #[test]

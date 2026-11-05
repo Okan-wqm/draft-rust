@@ -88,3 +88,11 @@ required-features = ["passkey"]
 [[test]]
 name = "admin_e2e"
 required-features = ["passkey"]
+
+# K-70 hot-path latency benchmarks (`cargo bench -p authn-server`). With
+# `test = true` a plain `cargo test` also runs the target, without
+# `--bench`: every case then runs twice as a functional smoke test (CI).
+[[bench]]
+name = "hot_paths"
+harness = false
+test = true

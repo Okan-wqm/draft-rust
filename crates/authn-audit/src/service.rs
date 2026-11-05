@@ -11,12 +11,14 @@ use authn_core::ports::{Clock, HttpClient, RateLimitKey, RateLimitPolicy, RateLi
 use authn_crypto::envelope::EnvelopeCipher;
 use sqlx::PgPool;
 
+use crate::keys::ChainKeys;
 use crate::outbox::{
     DOMAIN_EVENT_TOPIC, OutboxEventPublisher, OutboxHandlers, OutboxRepository, OutboxWorker,
 };
 use crate::policy::AuditAccessPolicy;
 use crate::retention::{self, PurgeReport};
-use crate::sink::PgAuditSink;
+use crate::sink::{ChainKeyActivation, PgAuditSink};
+use crate::verify::{self, ChainReport};
 use crate::webhooks::{WEBHOOK_TOPIC_PREFIX, WebhookDeliverer, WebhookFanout, WebhookManager};
 
 /// Construction parameters of [`AuditService`].
@@ -37,6 +39,9 @@ pub struct AuditServiceParts {
     pub config: AuditConfig,
     /// Step-up window for webhook changes (`session.step_up_max_age`).
     pub step_up_max_age: Duration,
+    /// Keys of the keyed hash chain (K-77): `ChainKeys::from_config(&key_ring,
+    /// &config.audit.chain)`.
+    pub chain_keys: ChainKeys,
 }
 
 struct Inner {
@@ -49,6 +54,7 @@ struct Inner {
     webhooks: WebhookManager,
     config: AuditConfig,
     step_up_max_age: Duration,
+    chain_keys: ChainKeys,
 }
 
 /// The audit module's service.
@@ -78,7 +84,11 @@ impl AuditService {
     /// Builds the service.
     #[must_use]
     pub fn new(parts: AuditServiceParts) -> Self {
-        let sink = PgAuditSink::new(parts.pool.clone(), parts.clock.clone());
+        let sink = PgAuditSink::keyed(
+            parts.pool.clone(),
+            parts.clock.clone(),
+            parts.chain_keys.clone(),
+        );
         let webhooks = WebhookManager::new(
             parts.pool.clone(),
             parts.clock.clone(),
@@ -97,6 +107,7 @@ impl AuditService {
                 webhooks,
                 config: parts.config,
                 step_up_max_age: parts.step_up_max_age,
+                chain_keys: parts.chain_keys,
             }),
         }
     }
@@ -105,6 +116,23 @@ impl AuditService {
     #[must_use]
     pub fn sink(&self) -> PgAuditSink {
         self.inner.sink.clone()
+    }
+
+    /// Keys of the keyed hash chain (K-77), for verification.
+    #[must_use]
+    pub fn chain_keys(&self) -> &ChainKeys {
+        &self.inner.chain_keys
+    }
+
+    /// Full chain verification (AUD-02, K-77).
+    pub async fn verify_chain(&self) -> Result<ChainReport, AuthError> {
+        verify::verify_chain(&self.inner.pool, &self.inner.chain_keys).await
+    }
+
+    /// Switches the chain to the configured key version (K-77); see
+    /// [`PgAuditSink::activate_chain_key`]. Called at server start-up.
+    pub async fn activate_chain_key(&self) -> Result<ChainKeyActivation, AuthError> {
+        self.inner.sink.activate_chain_key().await
     }
 
     /// The `EventPublisher` implementation.
@@ -195,6 +223,7 @@ impl AuditService {
         let now = inner.clock.now();
         let audit = retention::purge_expired(
             maintenance_pool,
+            &inner.chain_keys,
             inner.clock.as_ref(),
             inner.config.retention,
         )

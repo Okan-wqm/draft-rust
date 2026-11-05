@@ -56,6 +56,13 @@ pub async fn serve(config: AppConfig) -> Result<(), ServerError> {
         Services::build_with_maintenance_pool(config.clone(), pool, maintenance_pool, ports)
             .await
             .map_err(ServerError::Startup)?;
+    // K-77: the chain uses the configured key version before the first
+    // event of this instance (legacy → keyed, or a rotation).
+    services
+        .audit
+        .activate_chain_key()
+        .await
+        .map_err(ServerError::Startup)?;
     // CRY-10: a signing key must exist before the first token is issued.
     jobs::rotate_signing_keys(&services)
         .await

@@ -317,6 +317,8 @@ backend = "memory"                     # postgres (default) | redis | memory (si
 # outbox = { poll_interval = "1s", batch_size = 100, max_attempts = 10, backoff_base = "2s", backoff_max = "1h", lease = "60s", concurrency = 16, delivered_retention = "7d", dead_retention = "30d" }
 # webhooks = { timeout = "10s", max_attempts = 8, secret_rotation_overlap = "24h", max_endpoints_per_org = 10, backoff_base = "1m", backoff_max = "6h", disable_after_failures = 20, disable_after = "24h", delivery_retention = "30d" }
 # rate_limits = { events_read = { limit = 60, period = "1m" }, webhook_write = { limit = 60, period = "1h" }, webhook_redeliver = { limit = 30, period = "1h" } }
+# chain = { key_version = 1 }          # keyed hash chain (K-77): HMAC-SHA-256 with key version N derived from crypto.hmac_root_key; rotate = N+1 + restart
+                                       # add legacy_until_seq = <seq> (seq before the logged chain_key_switch checkpoint) to reject unkeyed rows after the upgrade
 
 [notify]                               # NTF-*
 # app_name = "rust-authentication"     # product name shown in e-mails and SMS

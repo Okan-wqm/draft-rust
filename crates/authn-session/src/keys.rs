@@ -269,16 +269,21 @@ impl KeyCache {
         snapshot.signer.clone().ok_or_else(no_active_key)
     }
 
-    /// The verifier, reloaded early if it does not know `kid`.
-    pub(crate) async fn verifier_for(&self, kid: Option<&str>) -> Result<JwtVerifier, AuthError> {
+    /// The key snapshot whose verifier ([`KeySnapshot::verifier`]) checks
+    /// a token with `kid`, reloaded early if it does not know `kid`. The
+    /// shared snapshot is handed out (no per-request copy of the key map,
+    /// K-70); it is immutable, so a concurrent reload never changes it
+    /// under the caller.
+    pub(crate) async fn verifier_for(
+        &self,
+        kid: Option<&str>,
+    ) -> Result<Arc<KeySnapshot>, AuthError> {
         let snapshot = self.snapshot(None, Source::Pool).await?;
         match kid {
-            Some(kid) if !snapshot.verifier.contains(kid) => Ok(self
-                .snapshot(Some(MIN_RELOAD_INTERVAL), Source::Pool)
-                .await?
-                .verifier
-                .clone()),
-            _ => Ok(snapshot.verifier.clone()),
+            Some(kid) if !snapshot.verifier.contains(kid) => {
+                self.snapshot(Some(MIN_RELOAD_INTERVAL), Source::Pool).await
+            }
+            _ => Ok(snapshot),
         }
     }
 

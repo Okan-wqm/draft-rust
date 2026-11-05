@@ -265,6 +265,10 @@ text_enum! {
         SigningKeyRevoked => "keys.signing_key_revoked",
         /// Key-encryption key rotated / data re-encrypted.
         KekRotated => "keys.kek_rotated",
+        /// The audit chain started using a new chain key version (K-77):
+        /// the first event MACed with the new key (legacy → keyed, or a
+        /// rotation). Metadata `from_version` / `to_version`.
+        AuditChainKeyRotated => "audit.chain_key_rotated",
         /// Rate limit triggered (PRT-01).
         RateLimitTriggered => "protect.rate_limited",
         /// CAPTCHA failed.

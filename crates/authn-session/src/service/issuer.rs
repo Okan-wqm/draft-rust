@@ -313,6 +313,7 @@ impl SessionService {
                 absolute_expires_at: absolute,
                 login_method: None,
                 scopes: &scopes,
+                mfa_factors: &[],
             },
         )
         .await?;

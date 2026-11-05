@@ -169,8 +169,17 @@ pub struct ChainVerification {
     pub head: VerifiedAnchor,
     /// Sequence number of the first defect.
     pub broken_at_seq: Option<i64>,
-    /// The first defect (`hash_mismatch`, `prev_hash_mismatch`, …).
+    /// The first defect (`hash_mismatch`, `prev_hash_mismatch`,
+    /// `key_downgrade`, `unkeyed_event`, `key_switch_unrecorded`, …).
     pub problem: Option<String>,
+    /// Unkeyed (legacy SHA-256, written before K-77) events accepted.
+    /// Non-zero only for the prefix written before the upgrade; pin its end
+    /// with `audit.chain.legacy_until_seq`.
+    pub legacy_events: u64,
+    /// Sequence number of the first keyed (HMAC) event verified (K-77).
+    pub keyed_from_seq: Option<i64>,
+    /// Chain key version recorded at the head (K-77; `null` = unkeyed).
+    pub head_key_version: Option<u16>,
 }
 
 impl From<ChainReport> for ChainVerification {
@@ -183,6 +192,9 @@ impl From<ChainReport> for ChainVerification {
             head: r.head.into(),
             broken_at_seq: r.broken.map(|b| b.seq),
             problem: r.broken.map(|b| b.problem.as_str().to_owned()),
+            legacy_events: r.legacy_events,
+            keyed_from_seq: r.keyed_from_seq,
+            head_key_version: r.head_key_version,
         }
     }
 }
@@ -321,8 +333,8 @@ impl AdminService {
         }
         let verification = async {
             match anchor {
-                Some(a) => authn_audit::verify_chain_from(self.pool(), a).await,
-                None => authn_audit::verify_chain(self.pool()).await,
+                Some(a) => authn_audit::verify_chain_from(self.pool(), self.chain_keys(), a).await,
+                None => authn_audit::verify_chain(self.pool(), self.chain_keys()).await,
             }
         };
         let verified = tokio::select! {

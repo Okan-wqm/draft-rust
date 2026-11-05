@@ -1,4 +1,5 @@
-//! Personal data export (ACC-10): `GET /v1/me/export`.
+//! Personal data export (ACC-10): `POST /v1/me/export` (K-58 audit / K-79:
+//! not a safe method, so it passes the CSRF checks).
 //!
 //! Session + step-up (SES-13), never under impersonation, rate limited per
 //! user (`account.export_per_user`). All sections (this crate's `account`

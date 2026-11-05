@@ -105,6 +105,14 @@ pub struct Harness {
     pub config: AuditConfig,
 }
 
+/// The chain keys of the test configuration (K-77).
+pub fn chain_keys(config: &AuditConfig) -> authn_audit::ChainKeys {
+    let ring =
+        authn_crypto::kdf::KeyRing::from_config(&authn_testkit::config::test_config().crypto)
+            .unwrap();
+    authn_audit::ChainKeys::from_config(&ring, &config.chain).unwrap()
+}
+
 pub fn cipher() -> EnvelopeCipher {
     EnvelopeCipher::from_config(&authn_testkit::config::test_config().crypto).unwrap()
 }
@@ -127,6 +135,7 @@ impl Harness {
             rate_limiter: ports.rate_limiter.clone() as Arc<dyn RateLimiter>,
             config: *config,
             step_up_max_age: Duration::from_secs(600),
+            chain_keys: chain_keys(config),
         });
         Self {
             pool,
@@ -136,6 +145,10 @@ impl Harness {
             cipher,
             config: *config,
         }
+    }
+
+    pub fn keys(&self) -> &authn_audit::ChainKeys {
+        self.service.chain_keys()
     }
 
     pub fn now(&self) -> OffsetDateTime {

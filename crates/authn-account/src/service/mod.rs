@@ -11,7 +11,7 @@
 //! | [`AccountService::request_email_change`], `confirm_*`, [`AccountService::revert_email_change`] | ACC-07 | `/v1/me/email*`, `/v1/email/change/*` |
 //! | [`AccountService::profile`] / [`AccountService::update_profile`] | ACC-08 | `/v1/me/profile` |
 //! | [`AccountService::request_deletion`], `cancel_*`, [`AccountService::purge_due_deletions`] | ACC-09 | `DELETE /v1/me`, `/v1/me/deletion*`, server job |
-//! | [`AccountService::export_data`] | ACC-10 | `GET /v1/me/export` |
+//! | [`AccountService::export_data`] | ACC-10 | `POST /v1/me/export` |
 //! | [`AccountService::record_consent`], [`AccountService::terms_requirements`] | ACC-11 | `/v1/me/consents`, authn-session |
 //! | [`AccountService::purge_unverified_accounts`] | ACC-05 | server job |
 //!

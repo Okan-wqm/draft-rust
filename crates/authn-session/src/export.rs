@@ -34,6 +34,7 @@ impl DataExporter for SessionDataExporter {
                     "created_ip": s.created_ip.map(|ip| ip.to_string()),
                     "last_seen_ip": s.last_seen_ip.map(|ip| ip.to_string()),
                     "amr": s.amr,
+                    "mfa_factors": s.mfa_factors,
                     "active_org_id": s.active_org_id,
                     "impersonated_by": s.impersonator_user_id,
                     "absolute_expires_at": s.absolute_expires_at.unix_timestamp(),

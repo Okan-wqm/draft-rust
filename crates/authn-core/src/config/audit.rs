@@ -127,6 +127,38 @@ impl Default for AuditRateLimits {
     }
 }
 
+/// `[audit.chain]` — keyed audit hash chain (AUD-02, K-77).
+///
+/// New events are chained with `HMAC-SHA-256(K_v, prev_hash ‖ record)`,
+/// where `K_v` is version `key_version` of the chain key derived from
+/// `crypto.hmac_root_key` (`KeyPurpose::AuditChain`). Older versions stay
+/// derivable, so earlier events keep verifying after a rotation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AuditChainConfig {
+    /// Chain key version for new events (`1..=32767`). Rotation: increase
+    /// by one and restart; events already written are never re-hashed.
+    /// Default `1`.
+    pub key_version: u16,
+    /// The last sequence number that may still be an unkeyed (legacy
+    /// SHA-256) event, i.e. the `seq` before the `chain_key_switch`
+    /// checkpoint logged at the first keyed event. When set, verification
+    /// rejects every unkeyed event after it, which also catches an attacker
+    /// who rewrote the whole chain into the unkeyed form. Pin it (outside
+    /// the database) after the upgrade. Default: unset (an unkeyed prefix
+    /// before the first keyed event is accepted and reported).
+    pub legacy_until_seq: Option<i64>,
+}
+
+impl Default for AuditChainConfig {
+    fn default() -> Self {
+        Self {
+            key_version: 1,
+            legacy_until_seq: None,
+        }
+    }
+}
+
 /// `[audit]` section.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -143,6 +175,8 @@ pub struct AuditConfig {
     pub webhooks: WebhookConfig,
     /// Rate limits of the HTTP endpoints.
     pub rate_limits: AuditRateLimits,
+    /// Keyed hash chain (K-77).
+    pub chain: AuditChainConfig,
 }
 
 impl Default for AuditConfig {
@@ -153,6 +187,7 @@ impl Default for AuditConfig {
             outbox: OutboxConfig::default(),
             webhooks: WebhookConfig::default(),
             rate_limits: AuditRateLimits::default(),
+            chain: AuditChainConfig::default(),
         }
     }
 }
@@ -169,6 +204,16 @@ fn require_policy(p: &mut ConfigProblems, policy: RateLimitPolicy, key: &str) {
 impl AuditConfig {
     /// Validates the section.
     pub fn validate(&self, p: &mut ConfigProblems) {
+        p.require(
+            (1..=32_767).contains(&self.chain.key_version),
+            "audit.chain.key_version",
+            "must be between 1 and 32767",
+        );
+        p.require(
+            self.chain.legacy_until_seq.is_none_or(|seq| seq >= 0),
+            "audit.chain.legacy_until_seq",
+            "must not be negative",
+        );
         p.require(
             self.retention >= self.user_visible_window,
             "audit.retention",

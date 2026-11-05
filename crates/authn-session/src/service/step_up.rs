@@ -32,7 +32,7 @@ use serde::Deserialize;
 use utoipa::ToSchema;
 
 use super::SessionService;
-use super::establish::normalize_amr;
+use super::establish::{normalize_amr, record_second_factor};
 use super::issuer::{org_mfa_policy, strictest_membership_policy};
 use super::manage::session_user;
 use super::org_switch::PrivilegeChange;
@@ -93,6 +93,17 @@ impl StepUpProof {
             Self::Totp { .. } => "totp",
             Self::RecoveryCode { .. } => "recovery_code",
             Self::Passkey { .. } => "passkey",
+        }
+    }
+
+    /// The second factor this proof is (`None` for the password).
+    #[must_use]
+    pub const fn factor(&self) -> Option<FactorKind> {
+        match self {
+            Self::Password { .. } => None,
+            Self::Totp { .. } => Some(FactorKind::Totp),
+            Self::RecoveryCode { .. } => Some(FactorKind::RecoveryCode),
+            Self::Passkey { .. } => Some(FactorKind::Webauthn),
         }
     }
 }
@@ -158,13 +169,7 @@ impl SessionService {
             if policy.phishing_resistant_required && !passkey {
                 return Err(not_allowed("organization requires a passkey"));
             }
-            let factor = match proof {
-                StepUpProof::Password { .. } => None,
-                StepUpProof::Totp { .. } => Some(FactorKind::Totp),
-                StepUpProof::RecoveryCode { .. } => Some(FactorKind::RecoveryCode),
-                StepUpProof::Passkey { .. } => Some(FactorKind::Webauthn),
-            };
-            if let Some(factor) = factor
+            if let Some(factor) = proof.factor()
                 && policy
                     .allowed_factors
                     .as_ref()
@@ -405,6 +410,7 @@ impl SessionService {
             .step_up_policy(user, current.record.active_org_id)
             .await?;
         let label = proof.label();
+        let factor = proof.factor();
         Self::step_up_allowed(principal, policy.as_ref(), &proof)?;
         let proven = match self
             .verify_step_up_proof(ctx, user, current, proof, binding_cookie)
@@ -434,7 +440,19 @@ impl SessionService {
             .ok_or_else(|| AuthError::new(codes::common::UNAUTHENTICATED))?;
         Self::check_current_token(&mut tx, current).await?;
         let record = live.record;
-        let amr = normalize_amr(&authn_mfa::amr::combine(&record.amr, &proven))?;
+        // K-78: a verified second factor is recorded (what produced `mfa`);
+        // a password re-authentication is no second factor.
+        let mut mfa_factors = record.mfa_factors.clone();
+        let amr = match factor {
+            Some(kind) => record_second_factor(
+                &record.amr,
+                &mut mfa_factors,
+                record.login_method,
+                kind,
+                &proven,
+            )?,
+            None => normalize_amr(&authn_mfa::amr::combine(&record.amr, &proven))?,
+        };
         let (updated, credentials) = self
             .apply_privilege_change(
                 &mut tx,
@@ -442,6 +460,7 @@ impl SessionService {
                 &record,
                 PrivilegeChange {
                     amr: &amr,
+                    mfa_factors: &mfa_factors,
                     auth_time: now,
                     active_org_id: record.active_org_id,
                     absolute_expires_at: record.absolute_expires_at,

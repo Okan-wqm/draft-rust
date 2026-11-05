@@ -30,6 +30,7 @@ use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
 use crate::chain;
+use crate::keys::ChainKeys;
 use crate::verify::{self, ChainAnchor};
 
 /// Advisory lock key of the purge (`'authn-audit-purge'` as a constant).
@@ -63,17 +64,20 @@ pub enum PurgeError {
 /// the newest event of the chain while younger events exist after it.
 pub async fn purge_expired(
     pool: &PgPool,
+    keys: &ChainKeys,
     clock: &dyn Clock,
     retention: Duration,
 ) -> Result<PurgeReport, AuthError> {
     let before = clock.now() - retention;
-    purge_before(pool, before, DEFAULT_PURGE_BATCH, clock.now()).await
+    purge_before(pool, keys, before, DEFAULT_PURGE_BATCH, clock.now()).await
 }
 
 /// Deletes the chain prefix whose events all occurred before `before`, in
-/// transactions of at most `batch` events.
+/// transactions of at most `batch` events. The segment is verified with
+/// `keys` first (K-77).
 pub async fn purge_before(
     pool: &PgPool,
+    keys: &ChainKeys,
     before: OffsetDateTime,
     batch: i64,
     now: OffsetDateTime,
@@ -112,7 +116,7 @@ pub async fn purge_before(
             break;
         };
 
-        let segment = verify::verify_range(&mut tx, start, Some(cutoff), false).await?;
+        let segment = verify::verify_range(&mut tx, keys, start, Some(cutoff), false).await?;
         if let Some(broken) = segment.broken {
             tx.rollback().await?;
             tracing::error!(

@@ -18,6 +18,8 @@ TST-01 (altyapı), TST-08
 | `http::TestRequest` / `TestResponse` | İstek oluşturma, `tower::ServiceExt::oneshot` ile gönderme, hata zarfını ayrıştırma (`assert_error`) |
 | `http::with_request_context` | Router'ı `RequestContext` middleware'i ile sarar |
 | `timing::compare_timings` | Hesap varlığı sızıntısı testleri için istatistiksel zamanlama karşılaştırması |
+| `bench::{Stats, bench_sync, bench_async, BenchMode}` | K-70 performans ölçümü: gecikme örnekleri → ortalama / p50 / p95 / p99; `harness = false` bench hedeflerinin bağımlılıksız ölçüm döngüsü (`cargo bench` ölçer, `cargo test --benches` her durumu iki kez çalıştıran duman testidir) |
+| `bench::count_queries` | Bir future'ın kendi görevinde çalıştırdığı SQL ifadelerini sayar (sqlx'in `sqlx::query` tracing olayları); uç başına sorgu bütçesi testleri için gürültüsüz, yapısal gerileme kontrolü |
 
 ## Örnek
 

@@ -184,6 +184,55 @@ async fn org_08_last_use_updates_are_throttled(pool: PgPool) {
     assert_eq!(s.last_used_ip, Some("198.51.100.1".parse().unwrap()));
 }
 
+/// K-70: a successful authentication is one statement while the key's
+/// last use is within `last_used_update_interval` (the owner's status is
+/// joined in; the throttled write is not sent), two when the write is due.
+/// The owner's status still decides (suspension stops the key at once).
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn org_08_k_70_recently_used_key_authenticates_in_one_statement(pool: PgPool) {
+    use authn_testkit::bench::count_queries;
+    let h = Harness::new(pool).await;
+    let alice = h.user("alice@example.com").await;
+    let org = h.org(alice, "acme").await;
+    let created = h
+        .service
+        .create_api_key(&h.ctx(), &h.fresh(alice), org, key("ci", &["org:read"]))
+        .await
+        .unwrap();
+    let raw = created.key.expose().to_owned();
+    let (result, log) = count_queries(h.service.authenticate_api_key(&h.ctx(), &raw)).await;
+    result.unwrap();
+    assert_eq!(log.count(), 2, "first use: lookup + last-use write\n{log}");
+    h.advance(Duration::from_secs(30));
+    let (result, log) = count_queries(h.service.authenticate_api_key(&h.ctx(), &raw)).await;
+    result.unwrap();
+    assert_eq!(
+        log.count(),
+        1,
+        "within the interval: the lookup only\n{log}"
+    );
+    h.advance(Duration::from_secs(31));
+    let (result, log) = count_queries(h.service.authenticate_api_key(&h.ctx(), &raw)).await;
+    result.unwrap();
+    assert_eq!(
+        log.count(),
+        2,
+        "interval over: the write is due again\n{log}"
+    );
+    // Within the interval again, the joined owner status still applies.
+    sqlx::query("UPDATE users SET status = 'suspended' WHERE id = $1")
+        .bind(alice)
+        .execute(&h.pool)
+        .await
+        .unwrap();
+    let err = h
+        .service
+        .authenticate_api_key(&h.ctx(), &raw)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), codes::common::UNAUTHENTICATED);
+}
+
 #[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
 async fn org_08_every_failure_is_the_same_401_and_failures_are_limited(pool: PgPool) {
     let h = Harness::with(pool, |s| {

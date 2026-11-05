@@ -346,10 +346,14 @@ impl SessionService {
         session: &SessionRecord,
     ) -> Result<MeResponse, AuthError> {
         let (user_id, _) = session_user(principal)?;
-        let user = UserRepository::find_by_id(self.pool(), user_id)
+        // The profile view carries the user's e-mail, verification and
+        // status: no second read of the same `users` row (K-70).
+        let profile = self
+            .deps()
+            .accounts
+            .profile_of(user_id)
             .await?
             .ok_or_else(|| AuthError::new(codes::common::UNAUTHENTICATED))?;
-        let profile = self.deps().accounts.profile_of(user_id).await?;
         let password = UserRepository::find_password(self.pool(), user_id)
             .await?
             .is_some();
@@ -385,18 +389,14 @@ impl SessionService {
             }),
             None => None,
         };
-        let (display_name, locale, time_zone) = match profile {
-            Some(p) => (p.display_name, p.locale, p.time_zone),
-            None => (None, Locale::default(), "UTC".to_owned()),
-        };
         Ok(MeResponse {
             user_id,
-            email: user.email.clone(),
-            email_verified: user.is_email_verified(),
-            display_name,
-            locale,
-            time_zone,
-            status: user.status,
+            email: profile.email,
+            email_verified: profile.email_verified,
+            display_name: profile.display_name,
+            locale: profile.locale,
+            time_zone: profile.time_zone,
+            status: profile.status,
             is_platform_admin: principal.is_platform_admin,
             methods: MeMethods {
                 password,

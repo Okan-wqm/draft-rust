@@ -136,6 +136,8 @@ pub struct ChallengeState {
     pub first_factor_at: Option<OffsetDateTime>,
     /// Usable second factors.
     pub allowed_factors: Vec<FactorKind>,
+    /// Second factors verified so far (K-78; never a risk confirmation).
+    pub mfa_factors: Vec<FactorKind>,
     /// Outstanding steps.
     pub required_actions: Vec<RequiredAction>,
     /// "Remember me".
@@ -176,6 +178,7 @@ impl ChallengeState {
             amr: row.amr,
             first_factor_at: row.first_factor_at,
             allowed_factors: row.allowed_factors,
+            mfa_factors: row.mfa_factors,
             required_actions: row.required_actions,
             remember_me: row.remember_me,
             shared_device: row.shared_device,
@@ -207,6 +210,8 @@ pub struct ChallengeProgress {
     pub required_actions: Vec<RequiredAction>,
     /// Extra state.
     pub metadata: serde_json::Map<String, serde_json::Value>,
+    /// Second factors verified so far (K-78).
+    pub mfa_factors: Vec<FactorKind>,
 }
 
 /// Longest wait for a challenge row lock in
@@ -292,6 +297,7 @@ impl SessionService {
                 amr: new.amr,
                 first_factor_at: new.first_factor_at,
                 allowed_factors: new.allowed_factors,
+                mfa_factors: Vec::new(),
                 required_actions: new.required_actions,
                 remember_me: new.remember_me,
                 shared_device: new.shared_device,
@@ -372,6 +378,7 @@ impl SessionService {
             &progress.allowed_factors,
             &progress.required_actions,
             &metadata,
+            &progress.mfa_factors,
         )
         .await?
         {

@@ -1,6 +1,11 @@
-//! The hash chain (AUD-02).
+//! The hash chain (AUD-02, K-77).
 //!
-//! `hash = SHA-256(prev_hash || canonical_json(record))` where `prev_hash` is
+//! Keyed events (`chain_key_version = v`, every event written since K-77):
+//! `hash = HMAC-SHA-256(K_v, prev_hash || canonical_json(record))` with the
+//! chain key `K_v` ([`crate::keys::ChainKeys`]), so nobody without the key
+//! can recompute the chain. Legacy events (`chain_key_version IS NULL`,
+//! written before K-77) keep the unkeyed rule
+//! `hash = SHA-256(prev_hash || canonical_json(record))`. In both, `prev_hash` is
 //! the 32-byte hash of the previous event (32 zero bytes for the first event,
 //! or the hash stored in the latest retention checkpoint after a purge) and
 //! `record` is the [`ChainRecord`] below: every stored column of
@@ -15,6 +20,7 @@
 
 use std::net::IpAddr;
 
+use authn_crypto::kdf::HmacKey;
 use serde_json::{Map, Value, json};
 use sha2::{Digest as _, Sha256};
 use time::{OffsetDateTime, UtcOffset};
@@ -135,13 +141,28 @@ impl ChainRecord {
         Ok(canonical::to_canonical_vec(&value)?)
     }
 
-    /// `SHA-256(prev_hash || canonical_json(record))`.
+    /// `HMAC-SHA-256(key, prev_hash || canonical_json(record))` (K-77).
+    pub fn keyed_hash(&self, key: &HmacKey, prev_hash: &[u8; 32]) -> Result<[u8; 32], ChainError> {
+        Ok(keyed_chain_hash(key, prev_hash, &self.canonical_bytes()?))
+    }
+
+    /// `SHA-256(prev_hash || canonical_json(record))` (legacy rule).
     pub fn hash(&self, prev_hash: &[u8; 32]) -> Result<[u8; 32], ChainError> {
         Ok(chain_hash(prev_hash, &self.canonical_bytes()?))
     }
 }
 
-/// `SHA-256(prev_hash || canonical)`.
+/// `HMAC-SHA-256(key, prev_hash || canonical)` (K-77). `prev_hash` has a
+/// fixed length, so the concatenation is unambiguous.
+#[must_use]
+pub fn keyed_chain_hash(key: &HmacKey, prev_hash: &[u8; 32], canonical: &[u8]) -> [u8; 32] {
+    let mut data = Vec::with_capacity(prev_hash.len() + canonical.len());
+    data.extend_from_slice(prev_hash);
+    data.extend_from_slice(canonical);
+    key.sign(&data)
+}
+
+/// `SHA-256(prev_hash || canonical)` — the legacy (unkeyed) rule.
 #[must_use]
 pub fn chain_hash(prev_hash: &[u8; 32], canonical: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
@@ -232,6 +253,24 @@ mod tests {
         other.reason = Some("unknown_account".into());
         assert_ne!(other.hash(&prev).unwrap(), expected);
         assert_ne!(r.hash(&GENESIS_HASH).unwrap(), expected);
+    }
+
+    #[test]
+    fn k_77_keyed_hash_is_hmac_sha256_of_prev_hash_and_canonical_json() {
+        let r = record();
+        let prev = [7_u8; 32];
+        let key = HmacKey::new(authn_crypto::secret::SecretKey::from_bytes([0x42; 32]));
+        let mut data = prev.to_vec();
+        data.extend_from_slice(&r.canonical_bytes().unwrap());
+        let expected = authn_crypto::kdf::hmac_sha256(&[0x42; 32], &data).unwrap();
+        assert_eq!(r.keyed_hash(&key, &prev).unwrap(), expected);
+        // Differs from the unkeyed rule and from another key.
+        assert_ne!(r.keyed_hash(&key, &prev).unwrap(), r.hash(&prev).unwrap());
+        let other = HmacKey::new(authn_crypto::secret::SecretKey::from_bytes([0x43; 32]));
+        assert_ne!(
+            r.keyed_hash(&key, &prev).unwrap(),
+            r.keyed_hash(&other, &prev).unwrap()
+        );
     }
 
     #[test]

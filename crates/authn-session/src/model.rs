@@ -4,7 +4,8 @@ use std::net::IpAddr;
 use std::time::Duration;
 
 use authn_core::domain::{
-    AuthMethodRef, ClientKind, Impersonation, LoginMethod, Principal, PrincipalCredential, Subject,
+    AuthMethodRef, ClientKind, FactorKind, Impersonation, LoginMethod, Principal,
+    PrincipalCredential, Subject,
 };
 use authn_core::id::{OrgId, SessionId, UserId};
 use authn_core::secret::SensitiveString;
@@ -58,6 +59,11 @@ pub struct SessionRecord {
     pub login_method: Option<LoginMethod>,
     /// Scopes of the access tokens (SES-08).
     pub scopes: Vec<String>,
+    /// Second factors verified for this session (K-78): what produced its
+    /// `mfa`. Never a risk confirmation e-mail (RSK-03). Empty for sessions
+    /// whose `mfa` has no recorded factor (passkey login, provider MFA,
+    /// sessions created before migration 2002).
+    pub mfa_factors: Vec<FactorKind>,
 }
 
 impl SessionRecord {
