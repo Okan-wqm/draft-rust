@@ -178,5 +178,5 @@ Denetçinin baktığı sınıflar: hesap varlığı sızıntısı (gövde/durum/
   - **Lisans:** `libfuzzer-sys` NCSA istisnası onaylı (yalnızca `fuzz/`); tüm üçüncü taraf lisans şartları harfi harfine karşılanır (`licenses/README.md`). Depo adı `draft-rust` kalır.
 
 - Kullanıcı Türkçe konuşuyor; kısa, doğrudan ilerleme raporu bekliyor. İlerlemeyi "yüzde kaç bitti, ne kaldı" gibi sorarak takip ediyor — dürüst ol, bitmemiş şeyi bitmiş gösterme.
-- İsteği: "profesyonel kalite, güvenlik takıntılı, her özellik test edilsin, dokümantasyon eksiksiz, her bölüm için uzman agent". Faz 1 bu repoda; Faz 2/3 (OAuth 2.1/OIDC **sağlayıcısı**, kurumsal SSO, SCIM, DPoP, Single Logout, SAML) ayrı bir iş olarak planlandı (`docs/roadmap.md`, DOC-09 yazılacak).
+- İsteği: "profesyonel kalite, güvenlik takıntılı, her özellik test edilsin, dokümantasyon eksiksiz, her bölüm için uzman agent". Faz 1 bu repoda; Faz 2/3 (OAuth 2.1/OIDC **sağlayıcısı**, kurumsal SSO, SCIM, DPoP, Single Logout, SAML) ayrı bir iş olarak planlandı — özellik karşılaştırması ve öncelikli yol haritası: [`docs/roadmap.md`](roadmap.md) (DOC-09, K-71).
 - Üretime çıkmadan önce **bağımsız bir dış güvenlik denetimi (pentest)** önerildi ve bu repo bunun yerine geçmez.
