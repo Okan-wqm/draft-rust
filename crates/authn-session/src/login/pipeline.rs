@@ -19,7 +19,7 @@
 //!
 //! After a session was established the device and network are recorded
 //! and a new-device notification with a "this wasn't me" link is queued
-//! (RSK-04, [`SessionService::after_login`]).
+//! (RSK-04, `SessionService::after_login`).
 
 use authn_core::domain::{
     AccountStatus, AuthMethodRef, ClientKind, EmailAddress, FactorKind, LoginMethod,

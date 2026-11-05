@@ -323,6 +323,7 @@ async fn rate_limits(mode: BenchMode, app: &App) {
             clock.clone(),
             hasher.clone(),
         ));
+    #[cfg_attr(not(feature = "redis"), allow(unused_mut))] // redis pushes a third backend
     let mut backends = vec![("memory", memory), ("postgres", postgres)];
     #[cfg(feature = "redis")]
     {

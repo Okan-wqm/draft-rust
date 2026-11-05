@@ -1,0 +1,18 @@
+-- no-transaction
+-- K-103 (authn-session, range 2000-2099): index the referencing column(s) of a foreign key of
+-- auth_challenges.
+-- Deleting a user cascades to the user's login challenges, consumed ones
+-- included; the existing auth_challenges_user_idx only covers unconsumed
+-- challenges, which the cascade cannot use.
+-- Without the index every delete of a referenced row scans the whole
+-- table once per row (the foreign-key action has to find the referencing rows).
+--
+-- CONCURRENTLY: no write lock on a live table; it cannot run inside a
+-- transaction, hence the no-transaction marker and one statement per file.
+-- If it is interrupted (deploy killed mid-build, statement timeout, deadlock
+-- with a second instance migrating at the same time), PostgreSQL leaves an
+-- INVALID index behind and the migration is not recorded. No IF NOT EXISTS
+-- on purpose: it would skip over the INVALID index and record the migration
+-- as applied; the re-run fails with "already exists" instead. Then drop it
+-- (DROP INDEX CONCURRENTLY auth_challenges_user_id_idx;) and run the migrations again.
+CREATE INDEX CONCURRENTLY auth_challenges_user_id_idx ON auth_challenges (user_id);

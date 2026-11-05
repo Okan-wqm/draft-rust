@@ -20,47 +20,23 @@ use std::collections::BTreeSet;
 
 use sqlx::PgPool;
 
-/// Foreign keys (constraint names) that have no index yet, with the
-/// owning module. Never add an entry for a new foreign key: index it
-/// (`CREATE INDEX CONCURRENTLY`, `-- no-transaction`, see migrations
-/// 2050–2053 and 1402–1404).
+/// Foreign keys (constraint names) without an index whose referencing
+/// columns are exactly its leading columns, with the owning module and
+/// the reason the gap is accepted. Never add an entry for a new foreign
+/// key: index it (`CREATE INDEX CONCURRENTLY`, `-- no-transaction`, see
+/// migrations 2050–2053, 1402–1404 and the K-103 set).
+///
+/// K-103 (wave 7) indexed the 21 other keys that were listed here
+/// (`0016`, `1202`, `1301`, `1502`–`1513`, `1704`, `2054`–`2057`, `2103`).
 const KNOWN_UNINDEXED: &[(&str, &str)] = &[
-    // authn-org (1500–1599): audit-style "who did it" references to users
-    // (ON DELETE SET NULL), role references to small per-org tables
-    // (ON DELETE RESTRICT) and the api-key composite references.
-    ("api_keys_created_by_fkey", "authn-org"),
-    ("api_keys_member_fk", "authn-org"),
-    ("api_keys_rotated_from_id_fkey", "authn-org"),
-    ("api_keys_service_account_fk", "authn-org"),
-    ("invitations_accepted_by_fkey", "authn-org"),
-    ("invitations_invited_by_fkey", "authn-org"),
-    ("invitations_role_id_fkey", "authn-org"),
-    ("memberships_invited_by_fkey", "authn-org"),
-    ("org_policies_updated_by_fkey", "authn-org"),
-    ("organizations_created_by_fkey", "authn-org"),
-    ("service_accounts_created_by_fkey", "authn-org"),
-    ("service_accounts_role_id_fkey", "authn-org"),
-    // authn-account (1200–1299): terms versions are never deleted while
-    // consents reference them (ON DELETE RESTRICT).
-    ("consents_terms_version_id_fkey", "authn-account"),
-    // Only partial indexes of the *active* rows (`WHERE revoked_at IS
-    // NULL` / `consumed_at IS NULL`), which the cascade from a deleted user
-    // or org cannot use (wave 6B audit; the check counted them before).
-    // Every user deletion (ACC-05 purge, ACC-09 erasure) scans these tables
-    // once per user. authn-session (2000–2099):
-    ("auth_challenges_user_id_fkey", "authn-session"),
-    ("sessions_active_org_id_fkey", "authn-session"),
-    ("sessions_impersonator_user_id_fkey", "authn-session"),
-    ("sessions_user_id_fkey", "authn-session"),
-    // `one_time_tokens` is shared (architect, 0001–0099).
-    ("one_time_tokens_user_id_fkey", "architect"),
-    // authn-mfa (1300–1399).
-    ("trusted_devices_user_id_fkey", "authn-mfa"),
-    // authn-oidc-client (2100–2199).
-    ("oauth_states_user_id_fkey", "authn-oidc-client"),
-    // authn-audit (1700–1799).
+    // authn-audit (1700–1799). The composite key (endpoint_id, org_id)
+    // only pins the tenant: endpoint_id alone is unique (primary key), so
+    // the foreign-key action is served by webhook_deliveries_endpoint_created_idx
+    // and webhook_deliveries_endpoint_event_key, which both lead with
+    // endpoint_id. A third index on the busiest webhook table would only
+    // add write cost; `k_103_webhook_endpoint_deletion_uses_an_endpoint_index`
+    // pins the plan.
     ("webhook_deliveries_endpoint_fk", "authn-audit"),
-    ("webhook_endpoints_created_by_fkey", "authn-audit"),
 ];
 
 /// Foreign keys of the migrated schema whose referencing columns are not
@@ -195,7 +171,10 @@ fn concurrent_index_migrations() -> Vec<(i64, String, String)> {
 async fn k_70_concurrent_index_migrations_never_keep_an_invalid_index(pool: PgPool) {
     let migrations = concurrent_index_migrations();
     let versions: Vec<i64> = migrations.iter().map(|(v, _, _)| *v).collect();
-    for expected in [1402, 1403, 1404, 2050, 2051, 2052, 2053] {
+    for expected in [
+        16, 1202, 1301, 1402, 1403, 1404, 1502, 1503, 1504, 1505, 1506, 1507, 1508, 1509, 1510,
+        1511, 1512, 1513, 1704, 2050, 2051, 2052, 2053, 2054, 2055, 2056, 2057, 2103,
+    ] {
         assert!(versions.contains(&expected), "{expected}: {versions:?}");
     }
     for (version, index, statement) in migrations {
@@ -275,4 +254,99 @@ async fn k_70_the_foreign_key_check_ignores_unusable_indexes(pool: PgPool) {
             .await
             .contains("k70_probe_user_id_fkey")
     );
+}
+
+/// Plans of `statement` with sequential scans disabled: a remaining
+/// `Seq Scan` means no index can serve it at all.
+async fn plan_without_seq_scan(pool: &PgPool, statement: String) -> String {
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::raw_sql("SET LOCAL enable_seqscan = off")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let plan: Vec<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!("EXPLAIN {statement}")))
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap();
+    tx.rollback().await.unwrap();
+    plan.join("\n")
+}
+
+/// K-103: deleting a user (ACC-09 erasure, ACC-05 placeholder purge) runs
+/// one foreign-key action per referencing column — `DELETE … WHERE col = $1`
+/// for `ON DELETE CASCADE`, `UPDATE … SET col = NULL WHERE col = $1` for
+/// `SET NULL`. Every one of them (read from the catalog, so a new reference
+/// to `users` is covered) is planned as an index scan, not a scan of the
+/// whole table per deleted user. Before the K-103 migrations 14 of them
+/// (sessions, auth challenges, one-time tokens, trusted devices, OAuth
+/// states and the "who did it" columns of the org and webhook tables)
+/// could only scan.
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn k_103_user_deletion_cascades_use_indexes(pool: PgPool) {
+    let references: Vec<(String, String)> = sqlx::query_as(
+        "SELECT quote_ident(r.relname), quote_ident(a.attname) FROM pg_constraint c \
+         JOIN pg_class r ON r.oid = c.conrelid \
+         JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = c.conkey[1] \
+         WHERE c.contype = 'f' AND c.confrelid = 'users'::regclass \
+         AND cardinality(c.conkey) = 1 ORDER BY 1, 2",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert!(references.len() >= 30, "{references:?}");
+    let mut scanned = Vec::new();
+    for (table, column) in &references {
+        let plan = plan_without_seq_scan(
+            &pool,
+            format!(
+                "DELETE FROM ONLY {table} \
+                 WHERE {column} = '00000000-0000-7000-8000-000000000001'::uuid"
+            ),
+        )
+        .await;
+        if plan.contains("Seq Scan") {
+            scanned.push(format!("{table}.{column}:\n{plan}"));
+        }
+    }
+    assert!(scanned.is_empty(), "{}", scanned.join("\n\n"));
+    // A representative plan names the new index.
+    let plan = plan_without_seq_scan(
+        &pool,
+        "DELETE FROM ONLY sessions WHERE user_id = '00000000-0000-7000-8000-000000000001'::uuid"
+            .to_owned(),
+    )
+    .await;
+    assert!(plan.contains("sessions_user_id_idx"), "{plan}");
+}
+
+/// K-103: the composite foreign keys indexed by K-103 (member and service
+/// account API keys) and the one kept in [`KNOWN_UNINDEXED`] (webhook
+/// deliveries of an endpoint) are served by an index whose leading
+/// columns are the key.
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn k_103_webhook_endpoint_deletion_uses_an_endpoint_index(pool: PgPool) {
+    for (statement, index) in [
+        (
+            "DELETE FROM ONLY webhook_deliveries \
+             WHERE endpoint_id = '00000000-0000-7000-8000-000000000001'::uuid \
+             AND org_id = '00000000-0000-7000-8000-000000000002'::uuid",
+            "webhook_deliveries_endpoint_",
+        ),
+        (
+            "DELETE FROM ONLY api_keys \
+             WHERE user_id = '00000000-0000-7000-8000-000000000001'::uuid \
+             AND org_id = '00000000-0000-7000-8000-000000000002'::uuid",
+            "api_keys_",
+        ),
+        (
+            "DELETE FROM ONLY api_keys \
+             WHERE service_account_id = '00000000-0000-7000-8000-000000000001'::uuid \
+             AND org_id = '00000000-0000-7000-8000-000000000002'::uuid",
+            "api_keys_",
+        ),
+    ] {
+        let plan = plan_without_seq_scan(&pool, statement.to_owned()).await;
+        assert!(!plan.contains("Seq Scan"), "{plan}");
+        assert!(plan.contains(index), "{plan}");
+    }
 }

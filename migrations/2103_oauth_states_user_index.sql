@@ -1,0 +1,19 @@
+-- no-transaction
+-- K-103 (authn-oidc-client, range 2100-2199): index the referencing column(s) of a foreign key of
+-- oauth_states.
+-- Deleting a user cascades to the user's pending social-login / linking
+-- states (SOC-02 state, SOC-06 linking).
+-- Without the index every delete of a referenced row scans the whole
+-- table once per row (the foreign-key action has to find the referencing rows).
+-- Partial: the column is NULL for many rows, and the foreign-key action
+-- only ever looks for non-NULL values.
+--
+-- CONCURRENTLY: no write lock on a live table; it cannot run inside a
+-- transaction, hence the no-transaction marker and one statement per file.
+-- If it is interrupted (deploy killed mid-build, statement timeout, deadlock
+-- with a second instance migrating at the same time), PostgreSQL leaves an
+-- INVALID index behind and the migration is not recorded. No IF NOT EXISTS
+-- on purpose: it would skip over the INVALID index and record the migration
+-- as applied; the re-run fails with "already exists" instead. Then drop it
+-- (DROP INDEX CONCURRENTLY oauth_states_user_id_idx;) and run the migrations again.
+CREATE INDEX CONCURRENTLY oauth_states_user_id_idx ON oauth_states (user_id) WHERE user_id IS NOT NULL;

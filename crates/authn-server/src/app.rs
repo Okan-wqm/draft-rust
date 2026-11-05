@@ -3,7 +3,9 @@
 //! Order, outermost first:
 //!
 //! 1. request context (request id, client IP, locale; error envelopes) — authn-core
-//! 2. tracing (`TraceLayer`, path only — query strings may carry OAuth codes)
+//! 2. request latency histogram (OPS-04, [`crate::metrics`]; route template
+//!    labels only) and tracing (`TraceLayer`, path only — query strings may
+//!    carry OAuth codes)
 //! 3. panic catcher (500 → standard envelope)
 //! 4. timeout (PRT-11)
 //! 5. global concurrency limit (PRT-11)
@@ -34,7 +36,7 @@ use authn_protect::web::{
 };
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
-use axum::middleware::from_fn_with_state;
+use axum::middleware::{from_fn, from_fn_with_state};
 use axum::routing::get;
 use http::StatusCode;
 use tower::limit::GlobalConcurrencyLimitLayer;
@@ -138,6 +140,8 @@ pub fn build_router(state: AppState) -> Result<Router, AuthError> {
                 })
                 .on_response(DefaultOnResponse::new().level(Level::INFO)),
         )
+        // (2) latency histogram: times everything below the request context.
+        .layer(from_fn(crate::metrics::http_metrics))
         .layer(from_fn_with_state(
             Arc::new(config.server.request_context()),
             request_context_middleware,

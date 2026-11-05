@@ -1,0 +1,5 @@
+# Requirement ids of docs/spec/requirements.md that are deliberately not
+# covered by a test in this repository, one per line: `<ID> <reason>`.
+# Only ids that are Phase 2 / out of scope per docs/roadmap.md belong here;
+# scripts/check-requirement-coverage.sh fails when a listed id gains a test
+# or disappears from the specification.

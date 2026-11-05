@@ -1,0 +1,19 @@
+-- no-transaction
+-- K-103 (authn-org, range 1500-1599): index the referencing column(s) of a foreign key of
+-- api_keys.
+-- Deleting a membership (member removal, ORG-02; user deletion) cascades
+-- to the member's API keys through the composite key (org_id, user_id).
+-- Full index with the key columns leading (user_id first, the selective
+-- one); a partial index cannot serve a composite foreign-key action.
+-- Without the index every delete of a referenced row scans the whole
+-- table once per row (the foreign-key action has to find the referencing rows).
+--
+-- CONCURRENTLY: no write lock on a live table; it cannot run inside a
+-- transaction, hence the no-transaction marker and one statement per file.
+-- If it is interrupted (deploy killed mid-build, statement timeout, deadlock
+-- with a second instance migrating at the same time), PostgreSQL leaves an
+-- INVALID index behind and the migration is not recorded. No IF NOT EXISTS
+-- on purpose: it would skip over the INVALID index and record the migration
+-- as applied; the re-run fails with "already exists" instead. Then drop it
+-- (DROP INDEX CONCURRENTLY api_keys_member_idx;) and run the migrations again.
+CREATE INDEX CONCURRENTLY api_keys_member_idx ON api_keys (user_id, org_id);

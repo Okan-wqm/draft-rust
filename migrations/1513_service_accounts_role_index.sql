@@ -1,0 +1,17 @@
+-- no-transaction
+-- K-103 (authn-org, range 1500-1599): index the referencing column(s) of a foreign key of
+-- service_accounts.
+-- Deleting a custom role (ON DELETE RESTRICT) must check that no service
+-- account references it.
+-- Without the index every delete of a referenced row scans the whole
+-- table once per row (the foreign-key action has to find the referencing rows).
+--
+-- CONCURRENTLY: no write lock on a live table; it cannot run inside a
+-- transaction, hence the no-transaction marker and one statement per file.
+-- If it is interrupted (deploy killed mid-build, statement timeout, deadlock
+-- with a second instance migrating at the same time), PostgreSQL leaves an
+-- INVALID index behind and the migration is not recorded. No IF NOT EXISTS
+-- on purpose: it would skip over the INVALID index and record the migration
+-- as applied; the re-run fails with "already exists" instead. Then drop it
+-- (DROP INDEX CONCURRENTLY service_accounts_role_idx;) and run the migrations again.
+CREATE INDEX CONCURRENTLY service_accounts_role_idx ON service_accounts (role_id);

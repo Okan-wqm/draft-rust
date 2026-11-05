@@ -1,0 +1,20 @@
+-- no-transaction
+-- K-103 (authn-session, range 2000-2099): index the referencing column(s) of a foreign key of
+-- sessions.
+-- Deleting a user cascades to the sessions the user opened as an
+-- impersonating admin (ADM-04), revoked ones included; the existing
+-- sessions_impersonator_active_idx only covers unrevoked sessions.
+-- Without the index every delete of a referenced row scans the whole
+-- table once per row (the foreign-key action has to find the referencing rows).
+-- Partial: the column is NULL for many rows, and the foreign-key action
+-- only ever looks for non-NULL values.
+--
+-- CONCURRENTLY: no write lock on a live table; it cannot run inside a
+-- transaction, hence the no-transaction marker and one statement per file.
+-- If it is interrupted (deploy killed mid-build, statement timeout, deadlock
+-- with a second instance migrating at the same time), PostgreSQL leaves an
+-- INVALID index behind and the migration is not recorded. No IF NOT EXISTS
+-- on purpose: it would skip over the INVALID index and record the migration
+-- as applied; the re-run fails with "already exists" instead. Then drop it
+-- (DROP INDEX CONCURRENTLY sessions_impersonator_user_id_idx;) and run the migrations again.
+CREATE INDEX CONCURRENTLY sessions_impersonator_user_id_idx ON sessions (impersonator_user_id) WHERE impersonator_user_id IS NOT NULL;

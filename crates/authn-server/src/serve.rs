@@ -33,6 +33,13 @@ pub async fn serve(config: AppConfig) -> Result<(), ServerError> {
 
     if let Some(addr) = config.server.metrics_bind_addr {
         metrics_exporter_prometheus::PrometheusBuilder::new()
+            .set_buckets_for_metric(
+                metrics_exporter_prometheus::Matcher::Full(
+                    crate::metrics::HTTP_REQUEST_DURATION.to_owned(),
+                ),
+                crate::metrics::LATENCY_BUCKETS,
+            )
+            .map_err(|e| ServerError::Telemetry(e.to_string()))?
             .with_http_listener(addr)
             .install()
             .map_err(|e| ServerError::Telemetry(e.to_string()))?;

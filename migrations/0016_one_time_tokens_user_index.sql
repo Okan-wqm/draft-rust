@@ -1,0 +1,21 @@
+-- no-transaction
+-- K-103 (architect, range 0001-0099): index the referencing column(s) of a foreign key of
+-- one_time_tokens.
+-- Deleting a user (account erasure, ACC-09; purge of unverified
+-- placeholders, ACC-05) cascades to the user's one-time tokens. The
+-- existing one_time_tokens_active_user_idx only covers unconsumed,
+-- unrevoked tokens, which the cascade (it must find every token) cannot use.
+-- Without the index every delete of a referenced row scans the whole
+-- table once per row (the foreign-key action has to find the referencing rows).
+-- Partial: the column is NULL for many rows, and the foreign-key action
+-- only ever looks for non-NULL values.
+--
+-- CONCURRENTLY: no write lock on a live table; it cannot run inside a
+-- transaction, hence the no-transaction marker and one statement per file.
+-- If it is interrupted (deploy killed mid-build, statement timeout, deadlock
+-- with a second instance migrating at the same time), PostgreSQL leaves an
+-- INVALID index behind and the migration is not recorded. No IF NOT EXISTS
+-- on purpose: it would skip over the INVALID index and record the migration
+-- as applied; the re-run fails with "already exists" instead. Then drop it
+-- (DROP INDEX CONCURRENTLY one_time_tokens_user_idx;) and run the migrations again.
+CREATE INDEX CONCURRENTLY one_time_tokens_user_idx ON one_time_tokens (user_id) WHERE user_id IS NOT NULL;

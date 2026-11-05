@@ -1,0 +1,18 @@
+-- no-transaction
+-- K-103 (authn-account, range 1200-1299): index the referencing column(s) of a foreign key of
+-- consents.
+-- Deleting (or re-keying) a terms version (ON DELETE RESTRICT) must check
+-- that no consent references it; consents grow with every user x terms
+-- version, and consents_user_terms_key leads with user_id.
+-- Without the index every delete of a referenced row scans the whole
+-- table once per row (the foreign-key action has to find the referencing rows).
+--
+-- CONCURRENTLY: no write lock on a live table; it cannot run inside a
+-- transaction, hence the no-transaction marker and one statement per file.
+-- If it is interrupted (deploy killed mid-build, statement timeout, deadlock
+-- with a second instance migrating at the same time), PostgreSQL leaves an
+-- INVALID index behind and the migration is not recorded. No IF NOT EXISTS
+-- on purpose: it would skip over the INVALID index and record the migration
+-- as applied; the re-run fails with "already exists" instead. Then drop it
+-- (DROP INDEX CONCURRENTLY consents_terms_version_idx;) and run the migrations again.
+CREATE INDEX CONCURRENTLY consents_terms_version_idx ON consents (terms_version_id);
