@@ -194,3 +194,35 @@ async fn ses_10_api_keys_authenticate_only_on_organization_routes(pool: PgPool) 
     .await
     .assert_error(StatusCode::UNAUTHORIZED, "unauthenticated");
 }
+
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn ses_10_empty_oversized_and_refresh_hinted_tokens_are_inactive(pool: PgPool) {
+    let h = Harness::new(pool).await;
+    let owner = h.user("owner@example.com").await;
+    let org = h.org(owner, "acme").await;
+    let key = h.api_key(owner, org).await;
+    let login = org_login(&h, owner, org).await;
+    let inactive = serde_json::json!({ "active": false });
+    let send = |body: String| {
+        let request = TestRequest::post("/v1/token/introspect")
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(body)
+            .bearer(&key);
+        h.send(request)
+    };
+    // The same access token is active with the access hint …
+    let active: serde_json::Value = send(format!("token={}", login.access)).await.json();
+    assert_eq!(active["active"], true);
+    // … but refresh tokens are never introspected, and empty or oversized
+    // input is answered without any lookup.
+    for body in [
+        format!("token={}&token_type_hint=refresh_token", login.access),
+        format!("token={}&token_type_hint=refresh_token", login.refresh),
+        "token=".to_owned(),
+        format!("token={}", "a".repeat(20_000)),
+    ] {
+        let response = send(body).await;
+        response.assert_status(StatusCode::OK);
+        assert_eq!(response.json::<serde_json::Value>(), inactive);
+    }
+}

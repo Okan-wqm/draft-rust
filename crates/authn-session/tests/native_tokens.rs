@@ -555,3 +555,26 @@ async fn ses_09_rotated_keys_keep_verifying_and_revoked_keys_stop(pool: PgPool) 
     assert_eq!(header["kid"], new_key.kid());
     probe(&h, &fresh.access).await.assert_status(StatusCode::OK);
 }
+
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn ses_08_repeated_or_non_ascii_authorization_headers_are_rejected(pool: PgPool) {
+    let h = Harness::new(pool).await;
+    let user = h.user("alice@example.com").await;
+    let login = h.native_login(user).await;
+    probe(&h, &login.access).await.assert_status(StatusCode::OK);
+    // Two Authorization headers (even identical ones): never pick one.
+    h.send(
+        TestRequest::get("/v1/probe")
+            .bearer(&login.access)
+            .bearer(&login.access),
+    )
+    .await
+    .assert_error(StatusCode::UNAUTHORIZED, "unauthenticated");
+    // A header value that is not visible ASCII.
+    h.send(
+        TestRequest::get("/v1/probe")
+            .header("authorization", &format!("Bearer {}\u{e9}", login.access)),
+    )
+    .await
+    .assert_error(StatusCode::UNAUTHORIZED, "unauthenticated");
+}

@@ -1327,3 +1327,50 @@ async fn aud_02_k_128_duplicate_event_id_is_appended_once(pool: PgPool) {
         .unwrap();
     assert_eq!(count, 1);
 }
+
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn aud_02_forged_head_hash_or_checkpoint_hash_is_detected(pool: PgPool) {
+    let h = Harness::new(pool.clone());
+    let sink = h.service.sink();
+    let user = create_user(&pool).await;
+    let events = record_n(&sink, &h, user, 3).await;
+    let last = seq_of(&pool, &events[2]).await;
+    let (head_hash,): (Vec<u8>,) = sqlx::query_as("SELECT last_hash FROM audit_chain_head")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+    // The head keeps the right sequence number but a different hash.
+    sqlx::query("UPDATE audit_chain_head SET last_hash = $1")
+        .bind(vec![0_u8; head_hash.len()])
+        .execute(&pool)
+        .await
+        .unwrap();
+    let broken = verify_chain(&pool, h.keys()).await.unwrap().broken.unwrap();
+    assert_eq!(broken.problem, ChainProblem::HeadMismatch);
+    assert_eq!(broken.seq, last);
+    sqlx::query("UPDATE audit_chain_head SET last_hash = $1")
+        .bind(&head_hash)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(verify_chain(&pool, h.keys()).await.unwrap().is_intact());
+
+    // A checkpoint inside the chain whose recorded hash differs from the
+    // recomputed one (the event rows themselves are consistent).
+    let anchor = create_checkpoint(&pool, h.ports.clock.as_ref())
+        .await
+        .unwrap();
+    assert_eq!(anchor.seq, last);
+    record_n(&sink, &h, user, 2).await;
+    assert!(verify_chain(&pool, h.keys()).await.unwrap().is_intact());
+    sqlx::query("UPDATE audit_chain_checkpoints SET hash = $2 WHERE seq = $1")
+        .bind(anchor.seq)
+        .bind(vec![0_u8; head_hash.len()])
+        .execute(&pool)
+        .await
+        .unwrap();
+    let broken = verify_chain(&pool, h.keys()).await.unwrap().broken.unwrap();
+    assert_eq!(broken.problem, ChainProblem::CheckpointMismatch);
+    assert_eq!(broken.seq, anchor.seq);
+}

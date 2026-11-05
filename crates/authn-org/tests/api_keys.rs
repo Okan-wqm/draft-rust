@@ -960,3 +960,57 @@ async fn org_08_revoking_a_key_revokes_its_whole_rotation_chain(pool: PgPool) {
         assert_eq!(summary.state, ApiKeyState::Revoked);
     }
 }
+
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn org_08_keys_of_suspended_or_deleting_organizations_are_refused(pool: PgPool) {
+    let h = Harness::new(pool).await;
+    let alice = h.user("alice@example.com").await;
+    let org = h.org(alice, "acme").await;
+    let created = h
+        .service
+        .create_api_key(&h.ctx(), &h.fresh(alice), org, key("ci", &["org:read"]))
+        .await
+        .unwrap();
+    h.service
+        .authenticate_api_key(&h.ctx(), created.key.expose())
+        .await
+        .unwrap();
+    for status in ["suspended", "pending_deletion"] {
+        sqlx::query(
+            "UPDATE organizations SET status = $2, deletion_scheduled_for = \
+             CASE WHEN $2 = 'pending_deletion' THEN now() + interval '30 days' END \
+             WHERE id = $1",
+        )
+        .bind(org.as_uuid())
+        .bind(status)
+        .execute(&h.pool)
+        .await
+        .unwrap();
+        let err = h
+            .service
+            .authenticate_api_key(&h.ctx(), created.key.expose())
+            .await
+            .unwrap_err();
+        // The same uniform 401 as an unknown key.
+        assert_eq!(err.code(), codes::common::UNAUTHENTICATED, "{status}");
+    }
+    let failures = h.ports.audit.of_kind(SecurityEventKind::ApiKeyAuthFailed);
+    assert_eq!(failures.len(), 2);
+    assert!(
+        failures
+            .iter()
+            .all(|e| e.reason.as_deref() == Some("org_inactive"))
+    );
+    // Reactivated: the key works again (it was never revoked).
+    sqlx::query(
+        "UPDATE organizations SET status = 'active', deletion_scheduled_for = NULL WHERE id = $1",
+    )
+    .bind(org.as_uuid())
+    .execute(&h.pool)
+    .await
+    .unwrap();
+    h.service
+        .authenticate_api_key(&h.ctx(), created.key.expose())
+        .await
+        .unwrap();
+}

@@ -234,3 +234,70 @@ async fn prt_12_errors_never_contain_the_url_query() {
     let debug = format!("{err:?} {err}");
     assert!(!debug.contains("s3cr3t"), "{debug}");
 }
+
+/// A server that streams a chunked body without `Content-Length`: the
+/// size cap must hold while reading, not only on the declared length.
+#[tokio::test]
+async fn prt_12_streamed_response_without_length_is_capped_while_reading() {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut request = vec![0_u8; 4096];
+        let _ = socket.read(&mut request).await.unwrap();
+        let mut response =
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n".to_vec();
+        for _ in 0..8 {
+            response.extend_from_slice(b"200\r\n");
+            response.extend_from_slice(&[b'x'; 0x200]);
+            response.extend_from_slice(b"\r\n");
+        }
+        response.extend_from_slice(b"0\r\n\r\n");
+        // The client may hang up as soon as the cap is exceeded.
+        let _ = socket.write_all(&response).await;
+        let _ = socket.shutdown().await;
+    });
+    let client = client(true, Arc::new(StaticResolver::new()));
+    let err = client
+        .execute(get(
+            &format!("http://{addr}/stream"),
+            OutboundTarget::Trusted,
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), codes::common::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        err.context(),
+        Some("outbound response exceeds the size limit")
+    );
+    server.await.unwrap();
+}
+
+#[test]
+fn prt_12_user_supplied_urls_with_credentials_or_port_zero_are_refused() {
+    use authn_protect::outbound::validate_user_supplied_url;
+
+    let ok = Url::parse("https://hooks.example.com/in").unwrap();
+    assert!(validate_user_supplied_url(&ok, false).is_ok());
+    for bad in [
+        "https://user@hooks.example.com/in",
+        "https://user:pw@hooks.example.com/in",
+        "https://:pw@hooks.example.com/in",
+        "https://hooks.example.com:0/in",
+        "http://hooks.example.com/in",
+        "ftp://hooks.example.com/in",
+    ] {
+        let url = Url::parse(bad).unwrap();
+        let err = validate_user_supplied_url(&url, false).unwrap_err();
+        assert_eq!(
+            err.code(),
+            codes::protect::OUTBOUND_DESTINATION_NOT_ALLOWED,
+            "{bad}"
+        );
+    }
+    // The development switch allows plain http, never credentials.
+    let url = Url::parse("http://user:pw@localhost/in").unwrap();
+    assert!(validate_user_supplied_url(&url, true).is_err());
+}

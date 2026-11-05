@@ -60,8 +60,9 @@ Sayıya göre ~%73, efora göre ~%65 bitti: kalan iş (entegrasyon, uçtan uca t
 
 - `cargo fmt --all -- --check` ✅, `cargo clippy --workspace --all-targets --all-features -- -D warnings` ✅, `cargo test --workspace --all-features` ✅ (1181), `cargo deny check` ✅ (advisories/bans/licenses/sources), `cargo audit` ✅.
 - GitHub Actions: son 4 commit yeşil (https://github.com/Okan-wqm/draft-rust/actions).
-- Fuzz: 13 hedef derleniyor; kısa süreli (30 sn–2 dk) koşturuldu, çökme yok (bir bulgu düzeltildi: RP id `0x`).
-- **Henüz hiç koşulmadı:** uçtan uca testler (modüller henüz birbirine bağlı değil), Mailpit ile gerçek SMTP (ortamda Docker daemon yoktu), `cargo llvm-cov` kapsam raporunun tamamı (CI'da çalışır ama yerelde tamamlanmadı), uzun fuzz koşuları.
+- Fuzz: 13 hedef derleniyor; K-57 §6'da (2026-11-05) her hedef 10 dk koşturuldu (toplam ~411 milyon çalıştırma). Bir bulgu `return_to`'da çıktı ve düzeltildi (normalleştirilmiş yönlendirme hedefi 2048 bayt sınırını aşabiliyordu); daha önceki kısa koşularda da bir bulgu düzeltilmişti (RP id `0x`).
+- Kapsam: `cargo llvm-cov` yerelde tamamlandı (satır %93,66, dal %81,04); özet ve kapsanmayan dalların incelemesi [`docs/operations/coverage.md`](operations/coverage.md)'de.
+- **Henüz hiç koşulmadı:** Mailpit ile gerçek SMTP (ortamda Docker daemon yoktu).
 
 ### 3.4 Bulunan ve kapatılan güvenlik sorunları (bilgi için)
 

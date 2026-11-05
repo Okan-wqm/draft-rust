@@ -2300,3 +2300,42 @@ async fn k_78_verified_login_factor_is_recorded_for_the_session(pool: PgPool) {
         .await
         .assert_error(StatusCode::FORBIDDEN, "org_policy_mfa_required");
 }
+
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn ses_01_oversized_identifier_or_password_is_refused_like_a_wrong_password(pool: PgPool) {
+    let h = Harness::new(pool).await;
+    h.user("alice@example.com").await;
+    let wrong = h
+        .send(native(
+            "/v1/login/password",
+            &password_body("alice@example.com", WRONG),
+        ))
+        .await;
+    let expected_status = wrong.status;
+    let expected: Value = wrong.json();
+    // Refused before any hashing (no Argon2 work for a 4 KiB+ password),
+    // with the same answer as a wrong password.
+    let long_email = format!("{}@example.com", "a".repeat(400));
+    for (email, password) in [
+        ("alice@example.com", "p".repeat(4097)),
+        (long_email.as_str(), PASSWORD.to_owned()),
+    ] {
+        let response = h
+            .send(native(
+                "/v1/login/password",
+                &password_body(email, &password),
+            ))
+            .await;
+        assert_eq!(response.status, expected_status);
+        let body: Value = response.json();
+        assert_eq!(body["error"]["code"], expected["error"]["code"], "{body}");
+        assert_eq!(body["error"]["message"], expected["error"]["message"]);
+    }
+    // The correct password still works afterwards.
+    h.send(native(
+        "/v1/login/password",
+        &password_body("alice@example.com", PASSWORD),
+    ))
+    .await
+    .assert_status(StatusCode::OK);
+}

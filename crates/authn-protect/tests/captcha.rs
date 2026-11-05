@@ -376,3 +376,32 @@ async fn prt_05_turnstile_through_the_ssrf_safe_client() {
         CaptchaVerdict::Unavailable
     );
 }
+
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn prt_05_pow_refuses_out_of_range_difficulty_and_invalid_action_names(pool: PgPool) {
+    let ports = TestPorts::new();
+    for difficulty in [0, 65, u8::MAX] {
+        assert!(
+            ProofOfWorkCaptcha::new(
+                pool.clone(),
+                ports.clock.clone(),
+                &keys(),
+                difficulty,
+                Duration::from_secs(300),
+            )
+            .is_err(),
+            "{difficulty}"
+        );
+    }
+    let verifier = pow(&pool, &ports);
+    for action in ["", "log in", "login\n", "ünï"] {
+        let err = verifier
+            .issue_challenge(&CaptchaContext {
+                action,
+                ip: "198.51.100.8".parse().unwrap(),
+            })
+            .await
+            .unwrap_err();
+        assert!(err.status().is_server_error(), "{action:?}");
+    }
+}

@@ -220,7 +220,17 @@ impl RedirectValidator {
             relative.push('#');
             relative.push_str(fragment);
         }
-        if !relative.starts_with('/') || relative.starts_with("//") || relative.contains('\\') {
+        // The URL parser percent-encodes some printable bytes (`"` `<` `>`
+        // `` ` `` `{` `}` in the path, `'` in the query), so the normalised
+        // form can be up to three times longer than the input. It must obey
+        // the same limit: otherwise an accepted target fails its own
+        // re-validation (found by the `return_to` fuzz target) and an
+        // over-long `Location` header is emitted.
+        if relative.len() > MAX_REDIRECT_LEN
+            || !relative.starts_with('/')
+            || relative.starts_with("//")
+            || relative.contains('\\')
+        {
             return Err(invalid());
         }
         Ok(relative)
@@ -382,6 +392,35 @@ mod tests {
             v.validate(&format!("/{}", "a".repeat(MAX_REDIRECT_LEN)))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn prt_10_normalised_target_respects_the_length_limit_and_revalidates() {
+        let v = validator();
+        // Each `"` becomes `%22` and each `'` in the query `%27`.
+        let quotes = format!("/{}", "\"".repeat(1000));
+        assert!(v.validate(&quotes).is_err());
+        let query = format!("/a?{}", "'".repeat(700));
+        assert!(v.validate(&query).is_err());
+        // Just under the limit after expansion: still accepted.
+        let fits = format!("/{}", "\"".repeat(682));
+        let Ok(RedirectTarget::Relative(path)) = v.validate(&fits) else {
+            panic!("a target that fits after normalisation is accepted");
+        };
+        assert_eq!(path.len(), 2047);
+        // Minimised `return_to` fuzz crash (1719 bytes → 2049 normalised).
+        let fuzz = include_str!("../../tests/fuzz_regressions/return_to_normalised_overflow.txt");
+        for input in [quotes.as_str(), query.as_str(), fits.as_str(), fuzz] {
+            if let Ok(RedirectTarget::Relative(path)) = v.validate(input) {
+                assert!(path.len() <= MAX_REDIRECT_LEN);
+                assert_eq!(
+                    v.validate(&path).ok(),
+                    Some(RedirectTarget::Relative(path.clone())),
+                    "the normalised form re-validates to itself"
+                );
+            }
+        }
+        assert!(v.validate(fuzz).is_err());
     }
 
     proptest! {

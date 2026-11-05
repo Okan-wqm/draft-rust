@@ -11,7 +11,7 @@
 > - [`docs/operations/performance.md`](../operations/performance.md) "izleme adayları",
 > - [`docs/handoff/remaining-work.md`](../handoff/remaining-work.md) §10.
 >
-> Sonradan **kapatılan** maddeler buraya alınmadı. Örnekler: anahtarsız audit zinciri (K-77), `access_token_session_check = false` ile üretimde çalışma (K-58), imza anahtarı önbelleğinin 30 sn gecikmesi (K-58, LISTEN/NOTIFY), MFA sıfırlamanın passkey'leri silmemesi (K-01), "saldırgan ikinci" kayıt (ADR 0002). Kaynak belgelerde bunlar üstü çizili olarak durur.
+> Sonradan **kapatılan** maddeler buraya alınmadı. Örnekler: anahtarsız audit zinciri (K-77), `access_token_session_check = false` ile üretimde çalışma (K-58), imza anahtarı önbelleğinin 30 sn gecikmesi (K-58, LISTEN/NOTIFY), MFA sıfırlamanın passkey'leri silmemesi (K-01), "saldırgan ikinci" kayıt (ADR 0002), eski L-3 (fuzz hedefleri yalnızca kısa süre koşturulmuştu → K-57 §6: 13 hedef × 10 dk, bir bulgu düzeltildi) ve eski L-4 (kapsam raporu yerelde yoktu → [`docs/operations/coverage.md`](../operations/coverage.md)). Kaynak belgelerde bunlar üstü çizili olarak durur.
 >
 > Her maddede **etki**, **neden kabul edildi / neden kapatılamadı** ve **azaltım** yazılıdır. "Faz 2" maddeleri bir eksik özelliktir, bir hata değildir.
 
@@ -21,9 +21,7 @@
 |---|-----------|---------|-------|
 | L-1 | **Bağımsız dış güvenlik denetimi (pentest) yapılmadı** | Tüm denetimler iç denetimlerdir (modül başına bağımsız denetçi agent + modüller arası K-57). Bunlar bir dış pentest'in yerini tutmaz. Üretimden önce önerilir | K-72 (proje sahibinin kararı) |
 | L-2 | **Docker imajı ve `docker-compose.yml` bu ortamda hiç çalıştırılmadı** | Geliştirme ortamında Docker daemon'u yoktu. Şunlar doğrulanmadı: `Dockerfile`'ın derlenmesi, distroless imajın çalışması, imajda `THIRD_PARTY_LICENSES.txt`'nin bulunması, Mailpit ile gerçek STARTTLS teslimi. Binary'nin yerel PostgreSQL ile `migrate` + `serve` + `/health/ready` akışı çalıştırılarak doğrulandı | K-55 |
-| L-3 | Fuzz hedefleri yalnızca kısa süre koşturuldu | 13 hedef derleniyor; 30 sn – 2 dk koşturuldu. Uzun koşu (10–30 dk/hedef) QA sertleştirmesinde | remaining-work §6 |
-| L-4 | Kapsam raporu yerelde tamamlanmadı | `cargo llvm-cov` CI'da çalışır; kritik yollardaki kapsanmayan dallar ayrıca incelenmedi | remaining-work §6 |
-| L-5 | Zamanlama testleri istatistikseldir | Hesap varlığı süre testleri yüzdelik toleransla çalışır; çok gürültülü makinede dalgalanabilir | HANDOFF §7 |
+| L-5 | Zamanlama testleri istatistikseldir | Hesap varlığı süre testleri yüzdelik toleransla çalışır; çok gürültülü makinede dalgalanabilir. K-57 §6 flaky taramasında (2026-11-05) tam paket 3 kez art arda ve 4 vCPU tam yük altında 1 kez koşturuldu: dalgalanma görülmedi. Tolerans genişletilmedi; gürültüye karşı ölçüm bağımsız turlarda tekrarlanır (`compare_timings_repeated`) | HANDOFF §7 |
 
 ## 2. Kimlik doğrulama ve hesap
 

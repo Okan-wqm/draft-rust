@@ -224,6 +224,53 @@ mod tests {
     }
 
     #[test]
+    fn ses_03_oversized_non_utf8_and_malformed_cookie_headers_are_ignored() {
+        // An oversized header is skipped as a whole, even when it carries
+        // the cookie: a later, normal header still counts.
+        let oversized = format!(
+            "__Host-authn_session=evil; pad={}",
+            "x".repeat(MAX_COOKIE_HEADER_BYTES)
+        );
+        assert_eq!(
+            read_cookie(&headers(&[oversized.as_str()]), SESSION_COOKIE),
+            CookieValue::Absent
+        );
+        assert_eq!(
+            read_cookie(
+                &headers(&[oversized.as_str(), "__Host-authn_session=x"]),
+                SESSION_COOKIE
+            ),
+            CookieValue::One("x".into())
+        );
+        // Non-UTF-8 bytes: skipped, not lossily decoded.
+        let mut map = HeaderMap::new();
+        map.append(
+            COOKIE,
+            HeaderValue::from_bytes(b"__Host-authn_session=\xff\xfe").unwrap(),
+        );
+        assert_eq!(read_cookie(&map, SESSION_COOKIE), CookieValue::Absent);
+        // Pairs without `=` are ignored.
+        assert_eq!(
+            read_cookie(
+                &headers(&["__Host-authn_session; junk; __Host-authn_session=y"]),
+                SESSION_COOKIE
+            ),
+            CookieValue::One("y".into())
+        );
+        // Values that are not cookie-safe are never written.
+        for unsafe_value in [String::new(), "a b".to_owned(), "x".repeat(513)] {
+            let written = session_cookie(&unsafe_value, None);
+            assert!(
+                written
+                    .to_str()
+                    .unwrap()
+                    .starts_with("__Host-authn_session=;"),
+                "{unsafe_value:?}"
+            );
+        }
+    }
+
+    #[test]
     fn ses_03_cookie_tossing_is_ambiguous() {
         assert_eq!(
             read_cookie(&headers(&["a=1; __Host-authn_session=x"]), SESSION_COOKIE),

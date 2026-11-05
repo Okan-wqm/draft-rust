@@ -463,3 +463,110 @@ fn ses_09_jwks_contains_only_public_okp_keys() {
     let back: JwkSet = serde_json::from_value(json).unwrap();
     assert_eq!(back, set);
 }
+
+#[test]
+fn cry_09_oversized_header_is_rejected_before_decoding() {
+    let key = Ed25519SigningKey::generate().unwrap();
+    let s = JwtSigner::new("kid-1", key.clone()).unwrap();
+    let v = verifier(&[&s]);
+    let padding = "x".repeat(MAX_HEADER_LEN);
+    let header = format!(r#"{{"alg":"EdDSA","typ":"at+jwt","kid":"kid-1","p":"{padding}"}}"#);
+    let token = forge(&header, &claims().to_string(), Some(&key));
+    assert_eq!(
+        v.verify::<Value>(&token, &validation(), NOW).unwrap_err(),
+        JwtError::Malformed
+    );
+}
+
+#[test]
+fn cry_09_audience_arrays_must_be_non_empty_and_bounded() {
+    let s = signer("kid-1");
+    let v = verifier(&[&s]);
+    let mut c = claims();
+    c["aud"] = json!([]);
+    let token = s.sign(TYP_ACCESS_TOKEN, &c).unwrap();
+    assert_eq!(
+        v.verify::<Value>(&token, &validation(), NOW).unwrap_err(),
+        JwtError::InvalidClaim("aud")
+    );
+    let mut many: Vec<String> = (0..MAX_AUDIENCES).map(|i| format!("aud-{i}")).collect();
+    many.push(AUD.to_owned());
+    c["aud"] = json!(many);
+    let token = s.sign(TYP_ACCESS_TOKEN, &c).unwrap();
+    assert_eq!(
+        v.verify::<Value>(&token, &validation(), NOW).unwrap_err(),
+        JwtError::InvalidClaim("aud")
+    );
+    // Exactly MAX_AUDIENCES entries including ours is accepted.
+    many.remove(0);
+    c["aud"] = json!(many);
+    let token = s.sign(TYP_ACCESS_TOKEN, &c).unwrap();
+    assert!(v.verify::<Value>(&token, &validation(), NOW).is_ok());
+}
+
+#[test]
+fn cry_09_issued_at_in_the_future_or_after_expiry_is_rejected() {
+    let s = signer("kid-1");
+    let v = verifier(&[&s]);
+    let now = NOW.unix_timestamp();
+    let mut c = claims();
+    // Beyond the 30 s leeway.
+    c["iat"] = json!(now + 31);
+    c["nbf"] = json!(now);
+    let token = s.sign(TYP_ACCESS_TOKEN, &c).unwrap();
+    assert_eq!(
+        v.verify::<Value>(&token, &validation(), NOW).unwrap_err(),
+        JwtError::InvalidIssuedAt
+    );
+    // Within the leeway but after `exp`.
+    c["iat"] = json!(now + 20);
+    c["exp"] = json!(now + 10);
+    let token = s.sign(TYP_ACCESS_TOKEN, &c).unwrap();
+    assert_eq!(
+        v.verify::<Value>(&token, &validation(), NOW).unwrap_err(),
+        JwtError::InvalidIssuedAt
+    );
+}
+
+#[test]
+fn cry_09_lifetime_within_the_maximum_is_accepted() {
+    let s = signer("kid-1");
+    let v = verifier(&[&s]);
+    let token = s.sign(TYP_ACCESS_TOKEN, &claims()).unwrap();
+    // `claims()` lives exactly 600 s: the bound is inclusive.
+    assert!(
+        v.verify::<Value>(
+            &token,
+            &validation().with_max_lifetime(Duration::from_secs(600)),
+            NOW
+        )
+        .is_ok()
+    );
+}
+
+#[test]
+fn cry_09_signer_refuses_bad_typ_and_oversized_tokens() {
+    let s = signer("kid-1");
+    for typ in ["", "at jwt", &"t".repeat(65)] {
+        assert_eq!(
+            s.sign(typ, &claims()).unwrap_err(),
+            JwtError::Signing,
+            "{typ:?}"
+        );
+    }
+    let mut c = claims();
+    c["big"] = json!("x".repeat(MAX_TOKEN_LEN));
+    assert_eq!(s.sign(TYP_ACCESS_TOKEN, &c).unwrap_err(), JwtError::Signing);
+    // Signing failures are internal errors, verification failures a
+    // uniform `unauthenticated`.
+    let signing: authn_core::AuthError = JwtError::Signing.into();
+    assert_eq!(
+        signing.code(),
+        authn_core::error::codes::common::INTERNAL_ERROR
+    );
+    let rejected: authn_core::AuthError = JwtError::BadSignature.into();
+    assert_eq!(
+        rejected.code(),
+        authn_core::error::codes::common::UNAUTHENTICATED
+    );
+}

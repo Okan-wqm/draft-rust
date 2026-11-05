@@ -147,6 +147,51 @@ mod tests {
     use super::*;
 
     #[test]
+    fn prt_12_special_ipv4_ranges_are_refused_exactly_at_their_boundaries() {
+        let v4 = |s: &str| s.parse::<Ipv4Addr>().unwrap();
+        // CGNAT 100.64.0.0/10, 6to4 relay anycast 192.88.99.0/24,
+        // benchmarking 198.18.0.0/15, protocol assignments 192.0.0.0/24,
+        // reserved 240.0.0.0/4: first and last address refused …
+        for blocked in [
+            "100.64.0.0",
+            "100.127.255.255",
+            "192.88.99.0",
+            "192.88.99.255",
+            "198.18.0.0",
+            "198.19.255.255",
+            "192.0.0.0",
+            "192.0.0.255",
+            "240.0.0.0",
+            "255.255.255.254",
+            "0.1.2.3",
+            "168.63.129.16",
+        ] {
+            assert!(!is_public_ipv4(v4(blocked)), "{blocked}");
+            assert!(!is_public_ip(IpAddr::V4(v4(blocked))), "{blocked}");
+        }
+        // … and the public neighbours just outside are not over-blocked.
+        for public in [
+            "100.63.255.255",
+            "100.128.0.0",
+            "100.1.2.3",
+            "192.88.98.255",
+            "192.88.100.0",
+            "198.17.255.255",
+            "198.20.0.0",
+            "192.0.1.0",
+            "223.255.255.255",
+            "168.63.129.17",
+        ] {
+            assert!(is_public_ipv4(v4(public)), "{public}");
+        }
+        // IPv4-mapped IPv6 is judged as IPv4.
+        let mapped: Ipv6Addr = "::ffff:100.64.0.1".parse().unwrap();
+        assert!(!is_public_ipv6(mapped));
+        let mapped: Ipv6Addr = "::ffff:100.128.0.1".parse().unwrap();
+        assert!(is_public_ipv6(mapped));
+    }
+
+    #[test]
     fn aud_07_public_https_urls_are_accepted_and_normalized() {
         let url = validate_webhook_url("https://Hooks.Example.COM:8443/in/abc?x=1").unwrap();
         assert_eq!(url.as_str(), "https://hooks.example.com:8443/in/abc?x=1");

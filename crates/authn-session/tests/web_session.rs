@@ -170,6 +170,20 @@ async fn ses_04_state_changing_cookie_requests_need_origin_and_csrf_token(pool: 
     )
     .await
     .assert_error(StatusCode::FORBIDDEN, "csrf_failed");
+    // A truncated or extended copy of the right token (length mismatch).
+    let mut truncated = login.csrf.clone();
+    truncated.pop();
+    let extended = format!("{}A", login.csrf);
+    for token in [truncated.as_str(), extended.as_str()] {
+        h.send(
+            TestRequest::post("/v1/probe")
+                .cookie(SESSION_COOKIE, &login.cookie)
+                .header("origin", ORIGIN)
+                .header("x-csrf-token", token),
+        )
+        .await
+        .assert_error(StatusCode::FORBIDDEN, "csrf_failed");
+    }
     // Cross-origin with a valid token (e.g. leaked): still refused.
     for origin in [
         "https://evil.example",
