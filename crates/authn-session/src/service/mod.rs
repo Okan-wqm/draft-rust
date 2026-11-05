@@ -208,9 +208,36 @@ impl SessionService {
     }
 
     /// Drops the cached signing keys (next use reloads them). Call after
-    /// an in-process emergency key rotation.
+    /// an in-process emergency key rotation. Other instances learn about
+    /// the rotation from [`Self::run_signing_key_listener`].
     pub fn invalidate_signing_keys(&self) {
         self.inner.keys.invalidate();
+    }
+
+    /// K-58: listens for signing-key changes (PostgreSQL `LISTEN` on
+    /// [`crate::SIGNING_KEYS_CHANNEL`], sent by a trigger on every change
+    /// of `signing_keys` — from this instance, another instance or the CLI)
+    /// and drops this instance's signing-key cache at once, so an
+    /// emergency-revoked key stops verifying everywhere within the
+    /// notification latency. Runs until `shutdown` completes; reconnects
+    /// with backoff (1 s … 30 s); drops the cache on every (re)connection,
+    /// and while disconnected the cache lifetime shrinks to 5 s. Uses one
+    /// dedicated database connection of its own (not one of the pool's).
+    ///
+    /// The server spawns it once per process at startup, e.g.
+    /// `tokio::spawn(async move { sessions.run_signing_key_listener(token.cancelled_owned()).await })`.
+    pub async fn run_signing_key_listener<S>(&self, shutdown: S)
+    where
+        S: std::future::Future<Output = ()> + Send,
+    {
+        self.inner.keys.run_listener(shutdown).await;
+    }
+
+    /// Whether [`Self::run_signing_key_listener`] runs and is connected
+    /// (readiness / diagnostics).
+    #[must_use]
+    pub fn signing_key_listener_connected(&self) -> bool {
+        self.inner.keys.listener_connected()
     }
 
     /// Waits for the background work of passwordless requests (tests,

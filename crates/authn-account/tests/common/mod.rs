@@ -100,6 +100,8 @@ pub struct Harness {
 pub struct Options {
     pub production_argon2: bool,
     pub exporters: Vec<Arc<dyn DataExporter>>,
+    /// Replaces the in-memory rate limiter (pool-pattern tests).
+    pub rate_limiter: Option<Arc<dyn authn_core::ports::RateLimiter>>,
 }
 
 /// Generous limits so that only tests about limits hit them.
@@ -115,6 +117,7 @@ fn relaxed(settings: &mut AccountServiceSettings) {
     a.email_change_per_user = generous;
     a.export_per_user = generous;
     settings.code_failure_floor = Duration::from_millis(5);
+    settings.registration_code_guesses = generous;
 }
 
 impl Harness {
@@ -149,7 +152,9 @@ impl Harness {
             clock: ports.clock.clone(),
             hasher: crypto.passwords.clone(),
             otp: crypto.otp.clone(),
-            rate_limiter: ports.rate_limiter.clone(),
+            rate_limiter: options
+                .rate_limiter
+                .unwrap_or_else(|| ports.rate_limiter.clone()),
             captcha: ports.captcha.clone(),
             password_validator: ports.password_validator.clone(),
             notifier: ports.notifier.clone(),

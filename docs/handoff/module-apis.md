@@ -336,7 +336,7 @@ Unchanged from the implementer's report, with one behaviour change: AccountServi
 - [medium/accepted_risk] Unverified re-registration where the last registrant wins: an attacker who re-registers between the victim's signup and verification gets an account verified with the attacker's password
 - [low/accepted_risk] A pending e-mail change link (24h) survives a password reset or sign-out-everywhere, because those modules do not revoke account purposes; the revert link sent at confirmation limits the damage
 - [low/accepted_risk] Lock-order inversion between purge (deletion row, then user row) and cancel/revert (user row, then deletion row), and between link consumption and re-registration; PostgreSQL deadlock detection aborts one transaction
-- [low/accepted_risk] GET /v1/me/export: a cross-site top-level navigation can use up the victim's daily export quota; no data leaves the victim's browser and step-up is required
+- ~~[low/accepted_risk] GET /v1/me/export: a cross-site top-level navigation can use up the victim’s daily export quota~~ — closed (wave 4B audit): the endpoint is now `POST /v1/me/export`
 
 
 ### authn-mfa

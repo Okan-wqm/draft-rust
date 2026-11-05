@@ -257,6 +257,17 @@ pub fn spawn(services: Services, shutdown: CancellationToken) -> Result<JoinSet<
     let stop = shutdown.clone();
     jobs.spawn(async move { worker.run(stop.cancelled_owned()).await });
 
+    // K-58: signing-key invalidation across instances (PostgreSQL LISTEN on
+    // `authn_session::SIGNING_KEYS_CHANNEL`, one dedicated connection, not
+    // one of the pool's). Serve only: never started by CLI commands.
+    let sessions = services.sessions.clone();
+    let stop = shutdown.clone();
+    jobs.spawn(async move {
+        sessions
+            .run_signing_key_listener(stop.cancelled_owned())
+            .await;
+    });
+
     // Frequent cleanups.
     let s = services.clone();
     let stop = shutdown.clone();

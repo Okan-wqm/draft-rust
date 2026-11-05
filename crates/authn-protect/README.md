@@ -146,6 +146,21 @@ Proof-of-work yanıtı: `SHA-256(challenge ":" solution)` en az `difficulty` sı
 - **CORS kapalıyken** (varsayılan) handler'ların koyduğu `Access-Control-*` başlıkları silinmez; workspace'te bunu yapan handler yoktur.
 - **Bilinen cihaz kimliği çalınırsa** yumuşak kilit o hesap için aşılabilir (şifre yine gerekir); güçlü kanıt MFA-09 güvenilir cihaz token'ıdır.
 
+### K-58 değerlendirmesi (2026-11-05)
+
+Yukarıdaki maddeler yeniden değerlendirildi. Bu dalgada hiçbiri kod değişikliğiyle kapatılmadı. Kararlar:
+
+- **Yumuşak kilitle hedefli engelleme:** PRT-03'ün tasarımıdır. Tanımlayıcıya bağlı olmayan bir kilit, hedefli parola denemesini durduramaz. Hesap kapanmaz: passkey, güvenilir/bilinen cihaz ve şifre sıfırlama çalışır. Gerekçeli kalır.
+- **Risk sinyalinin saldırganca yükseltilmesi:** Sinyal olmasa saldırganın denemeleri görünmez olurdu. Etki, operatörün seçebileceği `high_action = "step_up"` ile sınırlanır. Gerekçeli kalır.
+- **Kilit devreye girişinde küçük iş farkı:** Var olmayan hesaba satır yazmak, hesap tablosunu kirletir. Fark, eşik başına tek seferliktir ve ölçmek için kilidi tetiklemek gerekir. Gerekçeli kalır.
+- **HTTP katmanının açık başarısız olması:** Limiter kesintisi tüm API'yi düşürmemelidir. Güvenlikle ilgili limitler kapalı başarısız olur. Gerekçeli kalır (yapılandırılabilir).
+- **Bellek limiter'ının dolunca reddetmesi:** Sınırsız bellek DoS demektir. Üretimde bellek arka ucu reddedilir. Gerekçeli kalır.
+- **Proof-of-work'ün bot kanıtı olmaması:** Kriptografik iş kanıtının doğası budur, imkânsız. Daha güçlü koruma için Turnstile/hCaptcha.
+- ~~**CAPTCHA `hostname`**~~ — **kapatıldı (wave 4B denetimi):** `[protect.captcha] hostnames` ayarlıysa, sağlayıcının bildirdiği `hostname` bu listede olmalıdır (büyük/küçük harf duyarsız). `hostname` yoksa ya da başka bir siteyse sonuç `Failed` olur. **Üretimde Turnstile/hCaptcha için liste zorunludur** (yapılandırma doğrulaması). Testler: `prt_05_k58_tokens_solved_on_another_site_are_rejected` (düzeltmeden önce başka sitede çözülen token geçiyordu), `prt_05_k58_captcha_hostnames_are_host_names`, `prt_05_k58_captcha_hostnames_are_required_in_production`. `action` denetimi zaten vardı.
+- ~~**`redirect_allow_list` şemaları**~~ — **kapatıldı (wave 4B denetimi):** `javascript:`, `data:`, `vbscript:`, `file:`, `blob:`, `about:` ve `filesystem:` yapılandırma doğrulamasında reddedilir (`authn_core::config::protect::is_forbidden_redirect_scheme`). `RedirectValidator` da bu şemaları derinlemesine savunma olarak reddeder: listeye girmiş olsalar bile hedef olamazlar. Testler: `prt_10_k58_redirect_allow_list_rejects_script_and_document_schemes`, `prt_10_k58_script_and_document_schemes_are_never_redirect_targets` (ikisi de düzeltmeden önce kırmızıydı).
+- **CORS kapalıyken handler başlıkları:** Workspace'te bu başlıkları koyan handler yoktur. Gerekçeli kalır.
+- **Bilinen cihaz kimliği çalınırsa:** Şifre yine gerekir. Güçlü kanıt MFA-09 güvenilir cihaz token'ıdır. Gerekçeli kalır.
+
 ## authn-server'ın bağlaması gerekenler
 
 ```rust,ignore

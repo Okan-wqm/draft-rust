@@ -11,7 +11,7 @@ use authn_core::error::codes;
 use authn_core::id::CredentialId;
 use authn_core::ports::{DataExporter, NotificationKind, SecurityEventKind};
 use authn_webauthn::service::RegistrationIntent;
-use authn_webauthn::{MfaFacts, PasskeyDataExporter};
+use authn_webauthn::{MfaFacts, PasskeyDataExporter, PasskeyRemovalReason};
 use common::Harness;
 use sqlx::PgPool;
 use webauthn_authenticator_rs::softpasskey::SoftPasskey;
@@ -369,7 +369,12 @@ async fn pky_04_remove_all_passkeys_in_tx_for_admin_reset(pool: PgPool) {
     let mut tx = h.pool.begin().await.unwrap();
     let n = h
         .service
-        .remove_all_passkeys_in_tx(&mut tx, &h.ctx(), alice.user)
+        .remove_all_passkeys_in_tx(
+            &mut tx,
+            &h.ctx(),
+            alice.user,
+            PasskeyRemovalReason::AdminReset,
+        )
         .await
         .unwrap();
     assert_eq!(n, 2);
@@ -392,7 +397,12 @@ async fn pky_04_remove_all_passkeys_in_tx_for_admin_reset(pool: PgPool) {
     let mut tx = h.pool.begin().await.unwrap();
     let n = h
         .service
-        .remove_all_passkeys_in_tx(&mut tx, &h.ctx(), alice.user)
+        .remove_all_passkeys_in_tx(
+            &mut tx,
+            &h.ctx(),
+            alice.user,
+            PasskeyRemovalReason::AdminReset,
+        )
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -443,14 +453,24 @@ async fn pky_04_remove_all_passkeys_in_tx_for_admin_reset(pool: PgPool) {
     let mut conn = h.pool.acquire().await.unwrap();
     assert_eq!(
         h.service
-            .remove_all_passkeys_in_tx(&mut conn, &h.ctx(), alice.user)
+            .remove_all_passkeys_in_tx(
+                &mut conn,
+                &h.ctx(),
+                alice.user,
+                PasskeyRemovalReason::AdminReset
+            )
             .await
             .unwrap(),
         0
     );
     let err = h
         .service
-        .remove_all_passkeys_in_tx(&mut conn, &h.ctx(), authn_core::id::UserId::generate())
+        .remove_all_passkeys_in_tx(
+            &mut conn,
+            &h.ctx(),
+            authn_core::id::UserId::generate(),
+            PasskeyRemovalReason::AdminReset,
+        )
         .await
         .unwrap_err();
     assert_eq!(err.code(), codes::common::NOT_FOUND);
@@ -483,7 +503,12 @@ async fn pky_04_remove_all_passkeys_in_tx_cancels_open_ceremonies(pool: PgPool) 
     let mut tx = h.pool.begin().await.unwrap();
     let removed = h
         .service
-        .remove_all_passkeys_in_tx(&mut tx, &h.ctx(), alice.user)
+        .remove_all_passkeys_in_tx(
+            &mut tx,
+            &h.ctx(),
+            alice.user,
+            PasskeyRemovalReason::AdminReset,
+        )
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -502,4 +527,51 @@ async fn pky_04_remove_all_passkeys_in_tx_cancels_open_ceremonies(pool: PgPool) 
             .unwrap()
             .is_empty()
     );
+}
+
+/// K-68 (ACC-07, K-20): the same removal on behalf of the owner's e-mail
+/// change revert is audited with `reason = email_change_reverted`, not as
+/// an admin reset; the stable values of both reasons are pinned.
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn pky_04_k68_revert_removal_is_audited_with_its_own_reason(pool: PgPool) {
+    use authn_core::ports::Actor;
+    assert_eq!(PasskeyRemovalReason::AdminReset.as_str(), "admin_reset");
+    assert_eq!(
+        PasskeyRemovalReason::EmailChangeReverted.as_str(),
+        "email_change_reverted"
+    );
+    let h = Harness::new(pool).await;
+    let alice = h.account("alice@example.com").await;
+    let mut first = SoftPasskey::new(true);
+    h.register(&mut first, alice, RegistrationIntent::Passwordless)
+        .await;
+    let mut second = SoftPasskey::new(false);
+    h.register(&mut second, alice, RegistrationIntent::SecondFactor)
+        .await;
+    let audited_before = h
+        .ports
+        .audit
+        .of_kind(SecurityEventKind::PasskeyRemoved)
+        .len();
+    let mut tx = h.pool.begin().await.unwrap();
+    let removed = h
+        .service
+        .remove_all_passkeys_in_tx(
+            &mut tx,
+            &h.ctx(),
+            alice.user,
+            PasskeyRemovalReason::EmailChangeReverted,
+        )
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(removed, 2);
+    let events = h.ports.audit.of_kind(SecurityEventKind::PasskeyRemoved);
+    let new_events = &events[audited_before..];
+    assert_eq!(new_events.len(), 2);
+    for event in new_events {
+        assert_eq!(event.metadata["reason"], "email_change_reverted");
+        assert_eq!(event.actor, Actor::System);
+        assert_eq!(event.subject_user, Some(alice.user));
+    }
 }

@@ -41,6 +41,7 @@ use authn_store::{PgTx, UserRecord};
 use sqlx::{PgConnection, PgPool};
 use time::OffsetDateTime;
 
+pub use self::manage::PasskeyRemovalReason;
 #[cfg(feature = "passkey")]
 pub use self::registration::VerifiedEnrollment;
 #[cfg(feature = "passkey")]

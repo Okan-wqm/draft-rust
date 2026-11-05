@@ -13,6 +13,7 @@ use authn_crypto::token::OpaqueToken;
 use authn_org::OrgPolicy;
 use sqlx::PgConnection;
 use time::OffsetDateTime;
+use uuid::Uuid;
 
 use super::{SessionService, after, remaining};
 use crate::csrf::LoginCsrfVerified;
@@ -376,10 +377,12 @@ impl SessionService {
         record: &SessionRecord,
         now: OffsetDateTime,
     ) -> Result<IssuedCredentials, AuthError> {
+        let token_id = Uuid::now_v7();
         let (refresh_token, refresh_expires_at) = self
-            .insert_refresh_token(conn, record, None, 0, now)
+            .insert_refresh_token(conn, record, None, 0, token_id, now)
             .await?;
-        let (access_token, access_token_expires_at) = self.issue_access_token(record, now).await?;
+        let (access_token, access_token_expires_at) =
+            self.issue_access_token(conn, record, token_id, now).await?;
         Ok(IssuedCredentials::Native {
             access_token,
             access_token_expires_at,
@@ -396,6 +399,7 @@ impl SessionService {
         record: &SessionRecord,
         parent: Option<RefreshTokenId>,
         generation: i32,
+        access_token_id: Uuid,
         now: OffsetDateTime,
     ) -> Result<(SensitiveString, OffsetDateTime), AuthError> {
         let token = OpaqueToken::generate().map_err(AuthError::from)?;
@@ -412,6 +416,7 @@ impl SessionService {
                 created_at: now,
                 idle_expires_at: idle,
                 absolute_expires_at: record.absolute_expires_at,
+                access_token_id,
             },
         )
         .await?;
@@ -421,23 +426,44 @@ impl SessionService {
     /// Rotates the native credentials of a locked session after a
     /// privilege change: the live refresh token is retired (its successor is
     /// returned) and a fresh access token carries the new state.
+    ///
+    /// `presented_access_token`: the `jti` of the access token that
+    /// authenticated the request. If the family's live refresh token was
+    /// issued with a *different* access token, a concurrent rotation
+    /// (another privilege change or a refresh) overtook this request: it is
+    /// refused with `401` and nothing is rotated — retiring the refresh
+    /// token the concurrent response has just handed out would make the
+    /// client's newest token look like a replay and end the session (K-58).
+    /// While the grace window is on, the successor is sealed like a
+    /// refresh's, so a refresh racing this rotation with the retired token
+    /// gets the same successor back instead of revoking the family.
     pub(crate) async fn rotate_native_credentials(
         &self,
         conn: &mut PgConnection,
         record: &SessionRecord,
+        presented_access_token: Option<Uuid>,
         now: OffsetDateTime,
     ) -> Result<IssuedCredentials, AuthError> {
         let live = refresh::lock_live_of(&mut *conn, record.id)
             .await?
             .ok_or_else(|| AuthError::new(codes::session::INVALID_REFRESH_TOKEN))?;
+        if let (Some(presented), Some(paired)) = (presented_access_token, live.access_token_id)
+            && presented != paired
+        {
+            return Err(AuthError::new(codes::common::UNAUTHENTICATED)
+                .with_context("native credentials rotated concurrently"));
+        }
         if !refresh::retire(&mut *conn, live.id, now).await? {
             return Err(AuthError::new(codes::session::INVALID_REFRESH_TOKEN));
         }
+        let token_id = Uuid::now_v7();
         let (successor, token, idle) = self
-            .insert_successor(&mut *conn, record, live.id, live.generation, now)
+            .insert_successor(&mut *conn, record, live.id, live.generation, token_id, now)
             .await?;
-        refresh::link_successor(&mut *conn, live.id, successor, None).await?;
-        let (access_token, access_token_expires_at) = self.issue_access_token(record, now).await?;
+        let sealed = self.seal_successor(&live, &token).await?;
+        refresh::link_successor(&mut *conn, live.id, successor, sealed.as_deref()).await?;
+        let (access_token, access_token_expires_at) =
+            self.issue_access_token(conn, record, token_id, now).await?;
         Ok(IssuedCredentials::Native {
             access_token,
             access_token_expires_at,
@@ -453,6 +479,7 @@ impl SessionService {
         record: &SessionRecord,
         parent: RefreshTokenId,
         parent_generation: i32,
+        access_token_id: Uuid,
         now: OffsetDateTime,
     ) -> Result<(RefreshTokenId, OpaqueToken, OffsetDateTime), AuthError> {
         let successor = RefreshTokenId::generate();
@@ -470,6 +497,7 @@ impl SessionService {
                 created_at: now,
                 idle_expires_at: idle,
                 absolute_expires_at: record.absolute_expires_at,
+                access_token_id,
             },
         )
         .await?;

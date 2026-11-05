@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use authn_core::error::AuthError;
-use authn_core::id::{OrgId, WebhookDeliveryId, WebhookEndpointId};
+use authn_core::id::{OrgId, OutboxMessageId, WebhookDeliveryId, WebhookEndpointId};
 use authn_core::ports::{Clock, DomainEvent};
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -62,10 +62,27 @@ impl WebhookFanout {
         }
     }
 
-    async fn fan_out(&self, org: OrgId, event: &DomainEvent) -> Result<usize, AuthError> {
+    async fn fan_out(
+        &self,
+        message: OutboxMessageId,
+        org: OrgId,
+        event: &DomainEvent,
+    ) -> Result<usize, AuthError> {
         let body = webhook_body(event)?;
         let now = self.clock.now();
         let mut tx = self.pool.begin().await?;
+        // K-58: an event whose subject's account was erased meanwhile
+        // yields deliveries that are redacted once they finish. The share
+        // lock orders this with the erasure transaction, which flags the
+        // outbox row before it flags the user's deliveries: either the
+        // flag is seen here, or these deliveries are committed before the
+        // erasure looks for them.
+        let subject_erased: bool =
+            sqlx::query_scalar("SELECT subject_erased FROM outbox WHERE id = $1 FOR SHARE")
+                .bind(message)
+                .fetch_optional(&mut *tx)
+                .await?
+                .unwrap_or(false);
         let endpoints: Vec<WebhookEndpointId> = sqlx::query_scalar(
             "SELECT id FROM webhook_endpoints \
              WHERE org_id = $1 AND status = 'active' AND $2 = ANY(event_types) ORDER BY id",
@@ -78,8 +95,9 @@ impl WebhookFanout {
         for endpoint in endpoints {
             let inserted: Option<WebhookDeliveryId> = sqlx::query_scalar(
                 "INSERT INTO webhook_deliveries (id, endpoint_id, org_id, event_id, event_type, \
-                 payload, status, attempts, next_attempt_at, created_at) \
-                 VALUES ($1, $2, $3, $4, $5, $6, 'pending', 0, $7, $7) \
+                 payload, status, attempts, next_attempt_at, created_at, subject_user_id, \
+                 subject_erased_at) \
+                 VALUES ($1, $2, $3, $4, $5, $6, 'pending', 0, $7, $7, $8, $9) \
                  ON CONFLICT (endpoint_id, event_id) DO NOTHING RETURNING id",
             )
             .bind(WebhookDeliveryId::generate())
@@ -89,6 +107,8 @@ impl WebhookFanout {
             .bind(event.kind.as_str())
             .bind(sqlx::types::Json(&body))
             .bind(now)
+            .bind(event.user_id)
+            .bind(subject_erased.then_some(now))
             .fetch_optional(&mut *tx)
             .await?;
             if let Some(delivery) = inserted {
@@ -114,7 +134,7 @@ impl OutboxHandler for WebhookFanout {
             // event yet.
             return Ok(());
         };
-        match self.fan_out(org, &event).await {
+        match self.fan_out(message.id, org, &event).await {
             Ok(created) => {
                 tracing::debug!(event.id = %event.id, deliveries = created, "domain event fanned out");
                 Ok(())

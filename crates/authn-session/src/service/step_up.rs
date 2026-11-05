@@ -445,6 +445,7 @@ impl SessionService {
                     auth_time: now,
                     active_org_id: record.active_org_id,
                     absolute_expires_at: record.absolute_expires_at,
+                    presented_access_token: current.token_id,
                 },
             )
             .await?;

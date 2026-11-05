@@ -66,8 +66,8 @@ use crate::tx::AccountTx;
 
 pub use self::provisioning::{ProvisionOutcome, VerifiedUserProvision};
 pub use self::registration::{
-    CredentialConfirmation, LinkConfirmation, MAX_PASSWORD_CONFIRMATIONS, REGISTRATION_COOKIE,
-    RegistrationReceipt,
+    CredentialConfirmation, LinkConfirmation, MAX_PASSWORD_CONFIRMATIONS,
+    REGISTRATION_CODE_GUESSES_PER_DAY, REGISTRATION_COOKIE, RegistrationReceipt,
 };
 pub use self::revocation::{AccountAwareSessionRevoker, MailboxProof};
 pub use self::verification::VerificationProof;
@@ -90,6 +90,9 @@ pub mod actions {
     pub const VERIFY_IP: &str = "account_verify";
     /// Verification code submissions per address (ACC-04).
     pub const VERIFICATION_CODE: &str = "account_verification_code";
+    /// Daily verification code submissions per address across every
+    /// registration (K-58, ADR 0002: bounds code guessing per target).
+    pub const VERIFICATION_CODE_DAILY: &str = "account_verification_code_daily";
     /// E-mail change requests per user (ACC-07).
     pub const EMAIL_CHANGE: &str = "account_email_change";
     /// E-mail change code submissions per user (ACC-07).
@@ -151,6 +154,11 @@ pub struct AccountServiceSettings {
     /// submission, so that unknown addresses, wrong and locked-out codes
     /// cannot be told apart by timing (ACC-02). Default 250 ms.
     pub code_failure_floor: Duration,
+    /// Registration code submissions per address across every
+    /// registration (K-58, ADR 0002). Default
+    /// [`REGISTRATION_CODE_GUESSES_PER_DAY`] per day; not part of
+    /// the configuration file (a security floor, not a tuning knob).
+    pub registration_code_guesses: RateLimitPolicy,
     /// Loaded disposable-domain block list (ACC-12).
     pub disposable_domains: Option<Arc<DisposableDomains>>,
 }
@@ -164,6 +172,7 @@ impl AccountServiceSettings {
             step_up_max_age: config.session.step_up_max_age,
             captcha_fail_open: config.protect.captcha.fail_open,
             code_failure_floor: DEFAULT_CODE_FAILURE_FLOOR,
+            registration_code_guesses: registration::default_registration_code_guesses(),
             disposable_domains: DisposableDomains::from_config(&config.account)?.map(Arc::new),
         })
     }

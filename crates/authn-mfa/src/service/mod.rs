@@ -13,6 +13,7 @@
 //! | [`MfaService::verify_factor`] | MFA-01…06, MFA-03 | authn-session (login challenge, step-up) |
 //! | [`MfaService::send_code`] | MFA-05/06 | authn-session (login challenge, step-up) |
 //! | [`MfaService::policy_input`] / [`MfaService::evaluate_for_user`] | MFA-08 | authn-session |
+//! | [`MfaService::policy_input_in`] | MFA-07/08, K-69 | authn-server hooks (caller's connection) |
 //! | [`MfaService::trust_device`] / [`MfaService::is_trusted_device`] | MFA-09 | authn-session |
 //! | [`MfaService::revoke_trusted_devices_in_tx`] | MFA-09 | authn-session (`SessionRevoker`, logout-all), password reset via it |
 //! | [`MfaService::reset_user_mfa_in_tx`] | ADM-03 | authn-admin |

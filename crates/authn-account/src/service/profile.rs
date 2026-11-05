@@ -43,6 +43,21 @@ impl AccountService {
         Ok(Some(view(&user, profile, Locale::default())))
     }
 
+    /// [`Self::profile_of`] through the caller's connection (inside its
+    /// transaction): never waits for a second pooled connection while the
+    /// caller holds one (K-58, pool pattern).
+    pub async fn profile_of_in(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        user: UserId,
+    ) -> Result<Option<ProfileView>, AuthError> {
+        let Some(user) = UserRepository::find_by_id(&mut *conn, user).await? else {
+            return Ok(None);
+        };
+        let profile = ProfileRepository::find(&mut *conn, user.id).await?;
+        Ok(Some(view(&user, profile, Locale::default())))
+    }
+
     /// ACC-08: updates the signed-in user's profile. Display names are
     /// checked for confusable / mixed-script / invisible characters
     /// (ACC-03), time zones against the IANA database.

@@ -88,6 +88,13 @@ fn percent_decode(input: &[u8]) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// Whether `value` parses as a URL with a script or local-document scheme
+/// (`javascript:`, `data:` …; unparsable values are not absolute targets).
+fn has_forbidden_scheme(value: &str) -> bool {
+    Url::parse(value)
+        .is_ok_and(|u| authn_core::config::protect::is_forbidden_redirect_scheme(u.scheme()))
+}
+
 /// Checks one decoded layer of a relative path.
 fn layer_is_safe(layer: &str) -> bool {
     if layer.starts_with("//") || layer.contains('\\') {
@@ -149,7 +156,7 @@ impl RedirectValidator {
     /// Whether `value` is an allow-list entry.
     #[must_use]
     pub fn is_allow_listed(&self, value: &str) -> bool {
-        self.allow_list.iter().any(|e| e == value)
+        self.allow_list.iter().any(|e| e == value) && !has_forbidden_scheme(value)
     }
 
     /// `relative` resolved against the base, if it keeps the origin, has
@@ -172,6 +179,11 @@ impl RedirectValidator {
             return Err(invalid());
         }
         if let Some(entry) = self.allow_list.iter().find(|e| e.as_str() == input) {
+            // Defence in depth behind the configuration check (K-58 audit):
+            // a script / local-document scheme is never a target.
+            if has_forbidden_scheme(entry) {
+                return Err(invalid());
+            }
             return Ok(RedirectTarget::Absolute(entry.clone()));
         }
         self.validate_relative(input).map(RedirectTarget::Relative)
@@ -229,6 +241,29 @@ mod tests {
             ],
             Url::parse("https://auth.example.com").unwrap(),
         )
+    }
+
+    #[test]
+    fn prt_10_k58_script_and_document_schemes_are_never_redirect_targets() {
+        // Defence in depth behind the configuration check: even an
+        // allow-listed entry with such a scheme is refused.
+        let entries = [
+            "javascript:alert(document.cookie)",
+            "JAVASCRIPT:alert(1)",
+            "data:text/html,<script>alert(1)</script>",
+            "vbscript:msgbox(1)",
+            "file:///etc/passwd",
+            "blob:https://app.example.com/0d1e",
+            "about:blank",
+        ];
+        let v = RedirectValidator::new(
+            entries.iter().map(|e| (*e).to_owned()).collect(),
+            Url::parse("https://auth.example.com").unwrap(),
+        );
+        for entry in entries {
+            assert!(v.validate(entry).is_err(), "{entry}");
+            assert!(!v.is_allow_listed(entry), "{entry}");
+        }
     }
 
     #[test]

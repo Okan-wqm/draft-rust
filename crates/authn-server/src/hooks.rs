@@ -218,15 +218,27 @@ impl AccountMethodsSource for ServerAccountMethods {
         conn: &mut PgConnection,
         user: UserId,
     ) -> Result<MfaFacts, AuthError> {
+        // Resolve the late-bound service before touching the connection;
+        // then read only through the removal's connection (K-69, contracts
+        // §4): the caller holds the user row lock and a pooled connection,
+        // so a second pooled connection could starve the pool, and its
+        // reads would not belong to the caller's transaction.
+        let mfa = self.mfa.get()?;
         let org_policy = strictest_org_mfa_policy(&mut *conn, user).await?;
-        let input = self
-            .mfa
-            .get()?
-            .policy_input(user, org_policy, false)
+        let input = mfa
+            .policy_input_in(&mut *conn, user, org_policy, false)
             .await?;
+        // Only factors the policy still permits count (MFA-07, as in
+        // `MfaService::remove_factor`): under a phishing-resistant policy
+        // (organization or platform admin) a TOTP / e-mail / SMS factor
+        // does not satisfy MFA, and a kind the deployment switched off
+        // cannot be used at all, so neither may stand in for the last
+        // passkey.
+        let permitted = authn_mfa::policy::permitted_factors(&input);
         let other_factor_count = input
             .enrolled_factors
             .iter()
+            .filter(|k| permitted.contains(k))
             .filter(|k| {
                 !matches!(
                     k,
@@ -362,8 +374,11 @@ impl authn_oidc_client::SessionLiveness for ServerSessionLiveness {
 }
 
 /// `authn_admin::SigningKeyCache` (ADM-06): an emergency rotation drops
-/// this instance's cached signing keys at once; other instances refresh
-/// after `session.signing_key_cache_ttl`.
+/// this instance's cached signing keys at once; other serving instances
+/// drop theirs when the `signing_keys` change notification arrives (K-58,
+/// listener started by [`crate::jobs::spawn`]), at the latest after
+/// `session.signing_key_cache_ttl` (5 s while the listener is
+/// disconnected).
 #[derive(Clone)]
 pub struct ServerSigningKeyCache(pub SessionService);
 
@@ -405,7 +420,12 @@ impl authn_account::EmailChangeRevertHook for ServerRevertHook {
         let oidc = self.oidc.get()?;
         let passkeys = self
             .webauthn
-            .remove_all_passkeys_in_tx(&mut *conn, ctx, user)
+            .remove_all_passkeys_in_tx(
+                &mut *conn,
+                ctx,
+                user,
+                authn_webauthn::PasskeyRemovalReason::EmailChangeReverted,
+            )
             .await?;
         let mfa = self.mfa.reset_user_mfa_in_tx(&mut *conn, ctx, user).await?;
         let identities = oidc

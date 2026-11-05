@@ -205,23 +205,7 @@ impl OidcClientService {
             settings.redirect_allow_list.clone(),
             settings.public_base_url.clone(),
         );
-        let error_redirect =
-            match settings.config.error_redirect.as_deref() {
-                None => None,
-                Some(target) => {
-                    let absolute = absolute_redirect(&redirects, &settings.public_base_url, target)
-                        .map_err(|_| {
-                            AuthError::internal(
-                                "oidc_client.error_redirect is not an allowed redirect target \
-                             (same-origin path or protect.redirect_allow_list / \
-                             oidc_client.allowed_return_to entry)",
-                            )
-                        })?;
-                    Some(Url::parse(&absolute).map_err(|_| {
-                        AuthError::internal("oidc_client.error_redirect is not a URL")
-                    })?)
-                }
-            };
+        let error_redirect = resolve_error_redirect(&redirects, &settings)?;
         let jwks = JwksCache::new(
             settings.config.jwks_cache_ttl,
             settings.jwks_refresh_min_interval,
@@ -543,6 +527,48 @@ impl OidcClientService {
     }
 }
 
+/// Validates `oidc_client.error_redirect` against the redirect rules of
+/// the web flow (K-36, K-73): a same-origin path, or an absolute URL listed
+/// in `protect.redirect_allow_list` / `oidc_client.allowed_return_to`, at
+/// most 2048 characters. Returns the absolute target (`None` when not
+/// configured).
+///
+/// Pure and dependency-free (no database, no network, no keys): `serve`
+/// runs it while building the service and `check-config` runs it on its
+/// own, so both refuse the same configurations.
+///
+/// # Errors
+///
+/// `internal_error` naming the setting (never its value) when the target
+/// is not allowed.
+pub fn validate_error_redirect(settings: &OidcClientSettings) -> Result<Option<Url>, AuthError> {
+    let redirects = RedirectValidator::new(
+        settings.redirect_allow_list.clone(),
+        settings.public_base_url.clone(),
+    );
+    resolve_error_redirect(&redirects, settings)
+}
+
+fn resolve_error_redirect(
+    redirects: &RedirectValidator,
+    settings: &OidcClientSettings,
+) -> Result<Option<Url>, AuthError> {
+    let Some(target) = settings.config.error_redirect.as_deref() else {
+        return Ok(None);
+    };
+    let absolute =
+        absolute_redirect(redirects, &settings.public_base_url, target).map_err(|_| {
+            AuthError::internal(
+                "oidc_client.error_redirect is not an allowed redirect target \
+                 (same-origin path or protect.redirect_allow_list / \
+                 oidc_client.allowed_return_to entry)",
+            )
+        })?;
+    Url::parse(&absolute)
+        .map(Some)
+        .map_err(|_| AuthError::internal("oidc_client.error_redirect is not a URL"))
+}
+
 /// Validates a redirect target with authn-protect's validator (PRT-10:
 /// same-origin path or an exact allow-list entry) and returns it absolute
 /// (relative paths are joined to `server.public_base_url`).
@@ -583,5 +609,45 @@ mod tests {
             pkce_challenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"),
             "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
         );
+    }
+
+    /// K-73 (K-36): the start-up rule for `oidc_client.error_redirect`, as
+    /// a pure function `check-config` can run without a database.
+    #[test]
+    fn soc_02_k73_error_redirect_is_validated_without_dependencies() {
+        let mut config = authn_testkit::config::test_config();
+        config.protect.redirect_allow_list = vec!["https://app.example.com/oops".to_owned()];
+        let check = |target: Option<&str>| {
+            let mut config = config.clone();
+            config.oidc_client.error_redirect = target.map(str::to_owned);
+            validate_error_redirect(&OidcClientSettings::from_app_config(&config))
+        };
+        assert_eq!(check(None).unwrap(), None);
+        let base = config.server.public_base_url.clone();
+        assert_eq!(
+            check(Some("/login/error")).unwrap(),
+            Some(base.join("/login/error").unwrap())
+        );
+        assert_eq!(
+            check(Some("https://app.example.com/oops"))
+                .unwrap()
+                .map(String::from),
+            Some("https://app.example.com/oops".to_owned())
+        );
+        for bad in [
+            "https://evil.example/oops",
+            "https://app.example.com/other",
+            "//evil.example/oops",
+        ] {
+            let err = check(Some(bad)).unwrap_err();
+            assert!(
+                format!("{err:?}").contains("oidc_client.error_redirect"),
+                "{bad}: {err:?}"
+            );
+            assert!(
+                !format!("{err:?}").contains("evil"),
+                "value echoed: {err:?}"
+            );
+        }
     }
 }

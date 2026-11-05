@@ -275,6 +275,19 @@ Bilinçli olarak kabul edilen riskler (gerekçeli):
 - **Operatör şablonları güvenilirdir.** Şablon korumaları operatör hatalarına karşı savunma derinliğidir; şablon dizinine yazabilen kötü niyetli bir operatör zaten tüm yapılandırmayı kontrol eder. Tarama yanlış pozitif verebilir (yorum veya dizge içindeki `{% include` reddedilir) — bu bilinçli tercihtir.
 - **`Debug` çıktısında kişisel veri.** `Recipient.display_name`, organizasyon adı ve cihaz açıklaması (sır değil, kişisel veri) türetilmiş `Debug`'da görünür; adres maskelenir, token/kod redakte edilir. Bu crate ve mevcut üreticiler `Notification`'ı loglamaz; üreticiler loglamamalıdır.
 
+K-58 değerlendirmesi (2026-11-05): yukarıdaki maddeler gerekçeleriyle kalır.
+
+- Zamanlama farkı ve aynı türde bütçe tüketme üretici sözleşmesidir.
+- Kesintide açık başarısızlık bilinçli bir seçimdir: kayıp bildirim daha zararlıdır.
+- Bütçenin commit'ten önce tüketilmesi yalnızca savunma derinliği limitini etkiler.
+- Sağlayıcıya özgü alt adres katlaması yanlış katlamada başkasının bütçesini paylaştırır.
+- Güvenlik uyarılarını kısmak saldırganın işine yarar.
+- Saldırgan kontrollü cihaz metni temizlenir ve kısaltılır; sosyal mühendislik metni tamamen engellenemez.
+- Operatör şablonları güven sınırının içindedir.
+- `Debug` çıktısında kişisel veri: üreticiler `Notification`'ı loglamaz.
+
+Bu dalgadaki değişiklik ADR 0002'nin "kod oltalama" kalıntısıyla ilgilidir: doğrulama e-postası kodun yanında, kodun yalnızca kayıt olunan uygulamada/tarayıcıda girilmesi ve kimseyle paylaşılmaması uyarısını taşır (TR/EN; `acc_04_k58_verification_mail_warns_against_sharing_the_code`).
+
 ## Bilinen sınırlamalar
 
 - `notify_in_tx` maliyeti (limit kontrolü + zarf şifreleme + bir `INSERT`, birkaç ms) yalnızca bildirim gönderen dalda oluşur. Hesap varlığını sızdırmaması gereken akışlarda (PWD-07, SES-18, ACC-02) üretici, diğer dalda eşdeğer iş yapmalı ya da her iki dalda da bir bildirim kuyruğa almalıdır (ör. ACC-02'de `RegistrationAttempt`); SMTP süresi zaten istek yolunda değildir.

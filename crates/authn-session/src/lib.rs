@@ -49,6 +49,7 @@ mod store;
 pub use claims::AccessTokenClaims;
 pub use csrf::{CSRF_HEADER, CsrfProtector, LoginCsrfVerified};
 pub use export::SessionDataExporter;
+pub use keys::SIGNING_KEYS_CHANNEL;
 pub use login::routes::LoginApi;
 pub use middleware::{IMPERSONATION_SESSION_HEADER, authenticate};
 pub use model::{CurrentSession, DeviceInfo, EstablishedSession, IssuedCredentials, SessionRecord};

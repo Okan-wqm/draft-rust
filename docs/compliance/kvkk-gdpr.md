@@ -169,7 +169,7 @@ sequenceDiagram
 
 ## 5. Dışa aktarma akışı (ACC-10, KVKK md. 11/1-b, GDPR art. 15 ve 20)
 
-- `GET /v1/me/export`: oturum + step-up, kullanıcı başına rate limit (varsayılan günde 2), impersonation altında kullanılamaz.
+- `POST /v1/me/export` (K-58 denetimi: `GET` idi; CSRF korumasız güvenli metot olduğu için POST yapıldı): oturum + step-up, kullanıcı başına rate limit (varsayılan günde 2), impersonation altında kullanılamaz.
 - Biçim: makine-okunur JSON (`rust-authentication/personal-data-export/v1`), `sections` altında modül başına bir bölüm. `account` bölümü bu crate'indir; diğer modüller `DataExporter` portunu uygular ve `authn-server` hepsini kaydeder.
 - Tüm bölümler **tek bir `REPEATABLE READ, READ ONLY` transaction'ında** okunur: tutarlı anlık görüntü, dışa aktarıcı yazma yapamaz. Bir dışa aktarıcı hata verirse dışa aktarma bütünüyle başarısız olur (eksik dışa aktarma sessizce verilmez).
 - Sır içermez: şifre hash'i, token/kod hash'leri, TOTP sırrı, anahtar materyali dışa aktarılmaz. Yanıt `Cache-Control: no-store` ve `Content-Disposition: attachment` taşır; işlem audit'e yazılır (`account.data_exported`).

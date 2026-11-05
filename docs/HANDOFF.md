@@ -51,7 +51,7 @@ Sayıya göre ~%73, efora göre ~%65 bitti: kalan iş (entegrasyon, uçtan uca t
 | `authn-mfa` | ✅ bitti | TOTP, kurtarma kodları, e-posta/SMS OTP, MFA politikası, güvenilir cihaz. |
 | `authn-webauthn` | ✅ bitti | Passkey seremonileri, yönetim, mobil ilişkilendirme dosyaları. |
 | `authn-org` | ✅ bitti | Organizasyon, üyelik, RBAC, davet, domain doğrulama, politika, API anahtarı, servis hesabı. |
-| `authn-session` | ✅ bitti | Çekirdek (SES-03…17) + giriş akışları (`src/login/`: SES-01, 02, 18–22, RSK-03/04 session tarafı, MFA-09). Bağımsız denetimden geçti (2 yüksek, 5 orta bulgu kapatıldı). Açık: bağlantı havuzu kalıbı (README "kabul edilen riskler"). |
+| `authn-session` | ✅ bitti | Çekirdek (SES-03…17) + giriş akışları (`src/login/`: SES-01, 02, 18–22, RSK-03/04 session tarafı, MFA-09). Bağımsız denetimden geçti (2 yüksek, 5 orta bulgu kapatıldı). Bağlantı havuzu kalıbı K-58 ile kapatıldı (wave 4B; bağımsız denetimde bulunan impersonation örneği de düzeltildi, README "Bağımsız denetim (wave 4B)"). |
 | `authn-oidc-client` | ✅ yazıldı (bağlanmadı) | SOC-01…09, bağımsız denetimden geçti (2 orta, 3 düşük bulgu kapatıldı). Sunucu bağlaması ve açık kalemler: `remaining-work.md` §10. |
 | `authn-admin` | ✅ yazıldı (bağlanmadı) | ADM-01…08, bağımsız denetimden geçti (1 yüksek, 1 orta, 2 düşük bulgu kapatıldı). Sunucu bağlaması ve açık kalemler (K-01 MFA sıfırlamada passkey dahil): `remaining-work.md` §10. |
 | `authn-server` | 🟡 büyük ölçüde | Tüm mevcut modüller bağlı (servisler, kancalar, router'lar, OpenAPI, OPS-02 katmanları, işler, CLI komutlarının hepsi, Dockerfile). Uçtan uca testler (TST-06) ve HTTP güvenlik regresyonları (TST-02) var. Kalan: oidc-client/admin bağlaması, DOC-01/04/06, Docker'ın gerçekten çalıştırılması. |

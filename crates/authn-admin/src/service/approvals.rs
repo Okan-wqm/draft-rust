@@ -71,7 +71,7 @@ use time::format_description::well_known::Rfc3339;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-use super::limits::{Limit, MAX_APPROVALS_PER_HOUR, MAX_PENDING_APPROVALS};
+use super::limits::Limit;
 use super::{AdminService, TargetPolicy, check_target, meta};
 use crate::guard::AdminCaller;
 use crate::reason::Justification;
@@ -280,9 +280,12 @@ impl AdminService {
             now - time::Duration::hours(1),
         )
         .await?;
-        let exceeded = if pending >= MAX_PENDING_APPROVALS {
+        // K-74: configured caps; a cap of 0 refuses every request.
+        let max_pending = i64::from(self.settings().four_eyes_max_pending_requests);
+        let max_per_hour = i64::from(self.settings().four_eyes_max_requests_per_hour);
+        let exceeded = if pending >= max_pending {
             Some(Limit::ApprovalsPendingPerAdmin)
-        } else if recent >= MAX_APPROVALS_PER_HOUR {
+        } else if recent >= max_per_hour {
             Some(Limit::ApprovalsPerHourPerAdmin)
         } else {
             None

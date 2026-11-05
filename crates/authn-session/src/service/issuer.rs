@@ -336,7 +336,13 @@ impl SessionService {
             .as_deref()
             .and_then(|e| EmailAddress::parse(e).ok())
         {
-            let profile = self.deps().accounts.profile_of(target.id).await?;
+            // Through the transaction's connection (K-58 pool pattern: the
+            // target's row is locked; never wait for a second connection).
+            let profile = self
+                .deps()
+                .accounts
+                .profile_of_in(&mut *conn, target.id)
+                .await?;
             self.deps()
                 .notifier
                 .notify_in_tx(
@@ -372,6 +378,7 @@ impl SessionService {
         now: time::OffsetDateTime,
     ) -> Result<IssuedCredentials, AuthError> {
         let token = OpaqueToken::generate().map_err(AuthError::from)?;
+        let token_id = uuid::Uuid::now_v7();
         crate::store::refresh::insert(
             conn,
             &NewRefreshToken {
@@ -383,10 +390,12 @@ impl SessionService {
                 created_at: now,
                 idle_expires_at: record.absolute_expires_at,
                 absolute_expires_at: record.absolute_expires_at,
+                access_token_id: token_id,
             },
         )
         .await?;
-        let (access_token, access_token_expires_at) = self.issue_access_token(record, now).await?;
+        let (access_token, access_token_expires_at) =
+            self.issue_access_token(conn, record, token_id, now).await?;
         Ok(IssuedCredentials::Native {
             access_token,
             access_token_expires_at,

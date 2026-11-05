@@ -30,6 +30,7 @@ Dalga A: yalnızca `authn-core`, `authn-crypto`, `authn-store`. Başka modülün
 | `verify_factor(&ctx, user, Option<ChallengeId>, FactorProof) -> Result<VerifiedFactor>` | authn-session: giriş challenge'ı / step-up. `VerifiedFactor.amr` RFC 8176 değerleri (`otp`, `sms`, `email`, `kba`) |
 | `send_code(&ctx, user, Option<ChallengeId>, OtpChannel) -> Result<CodeDelivery>` | authn-session: giriş/step-up için e-posta/SMS kodu |
 | `evaluate_for_user(user, Option<OrgMfaPolicy>, phishing_resistant) -> Result<MfaRequirement>` / `policy_input(...)` | authn-session: MFA-08 |
+| `policy_input_in(&mut conn, user, Option<OrgMfaPolicy>, phishing_resistant)` (wave 4A, K-69) | authn-server kancaları: `policy_input` ile aynı girdi, **verilen bağlantıdan** okunur (contracts §4; çağıranın transaction'ının değişikliklerini görür, ikinci bir havuz bağlantısı istemez). Test: `mfa_08_k69_policy_input_in_reads_through_the_callers_connection` |
 | `policy::evaluate(&MfaPolicyInput) -> MfaRequirement` | Saf politika fonksiyonu; `NotRequired` / `Required{allowed_factors}` / `EnrollmentRequired{allowed_factors}` |
 | `amr::combine(primary, second)` | Birincil + ikinci faktör `amr` birleştirme (`mfa` ekler) |
 | `trust_device(&ctx, user, trusted_devices_allowed) -> Result<Option<IssuedTrustedDevice>>` | MFA sonrası "bu cihazı hatırla" |

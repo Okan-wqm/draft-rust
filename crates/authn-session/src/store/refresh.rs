@@ -10,6 +10,7 @@ use authn_crypto::token::TokenHash;
 use authn_store::StoreError;
 use sqlx::{PgConnection, PgExecutor};
 use time::OffsetDateTime;
+use uuid::Uuid;
 
 /// A refresh-token row.
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
@@ -23,6 +24,9 @@ pub(crate) struct RefreshRow {
     pub(crate) replaced_by_id: Option<RefreshTokenId>,
     pub(crate) successor_ciphertext: Option<Vec<u8>>,
     pub(crate) revoked_at: Option<OffsetDateTime>,
+    /// `jti` of the access token issued with this refresh token (K-58;
+    /// `None` for rows written before migration 2001).
+    pub(crate) access_token_id: Option<Uuid>,
 }
 
 /// Input of [`insert`].
@@ -35,6 +39,8 @@ pub(crate) struct NewRefreshToken<'a> {
     pub(crate) created_at: OffsetDateTime,
     pub(crate) idle_expires_at: OffsetDateTime,
     pub(crate) absolute_expires_at: OffsetDateTime,
+    /// `jti` of the access token issued together with it.
+    pub(crate) access_token_id: Uuid,
 }
 
 /// Inserts a refresh token.
@@ -44,8 +50,8 @@ pub(crate) async fn insert(
 ) -> Result<(), StoreError> {
     sqlx::query(
         "INSERT INTO refresh_tokens (id, session_id, token_hash, parent_id, generation, \
-         created_at, idle_expires_at, absolute_expires_at) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+         created_at, idle_expires_at, absolute_expires_at, access_token_id) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
     )
     .bind(new.id)
     .bind(new.session_id)
@@ -55,6 +61,7 @@ pub(crate) async fn insert(
     .bind(new.created_at)
     .bind(new.idle_expires_at)
     .bind(new.absolute_expires_at)
+    .bind(new.access_token_id)
     .execute(conn)
     .await?;
     Ok(())
@@ -80,7 +87,7 @@ pub(crate) async fn lock(
     token_hash: &TokenHash,
 ) -> Result<Option<RefreshRow>, StoreError> {
     let sql = "SELECT id, session_id, generation, idle_expires_at, absolute_expires_at, \
-               used_at, replaced_by_id, successor_ciphertext, revoked_at \
+               used_at, replaced_by_id, successor_ciphertext, revoked_at, access_token_id \
                FROM refresh_tokens WHERE token_hash = $1 FOR UPDATE";
     Ok(sqlx::query_as::<_, RefreshRow>(sql)
         .bind(token_hash.as_bytes().as_slice())
@@ -96,7 +103,7 @@ pub(crate) async fn lock_live_of(
 ) -> Result<Option<RefreshRow>, StoreError> {
     Ok(sqlx::query_as::<_, RefreshRow>(
         "SELECT id, session_id, generation, idle_expires_at, absolute_expires_at, \
-         used_at, replaced_by_id, successor_ciphertext, revoked_at \
+         used_at, replaced_by_id, successor_ciphertext, revoked_at, access_token_id \
          FROM refresh_tokens WHERE session_id = $1 AND used_at IS NULL AND revoked_at IS NULL \
          FOR UPDATE",
     )
@@ -112,7 +119,7 @@ pub(crate) async fn find(
 ) -> Result<Option<RefreshRow>, StoreError> {
     Ok(sqlx::query_as::<_, RefreshRow>(
         "SELECT id, session_id, generation, idle_expires_at, absolute_expires_at, \
-         used_at, replaced_by_id, successor_ciphertext, revoked_at \
+         used_at, replaced_by_id, successor_ciphertext, revoked_at, access_token_id \
          FROM refresh_tokens WHERE id = $1",
     )
     .bind(id)
@@ -165,6 +172,21 @@ pub(crate) async fn link_successor(
     .bind(id)
     .execute(&mut *conn)
     .await?;
+    Ok(())
+}
+
+/// Pairs a live refresh token with a newly issued access token (grace
+/// window retry: the same successor goes out with a new access token).
+pub(crate) async fn pair_access_token(
+    conn: &mut PgConnection,
+    id: RefreshTokenId,
+    access_token_id: Uuid,
+) -> Result<(), StoreError> {
+    sqlx::query("UPDATE refresh_tokens SET access_token_id = $2 WHERE id = $1")
+        .bind(id)
+        .bind(access_token_id)
+        .execute(conn)
+        .await?;
     Ok(())
 }
 

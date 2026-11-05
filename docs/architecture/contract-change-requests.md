@@ -625,6 +625,16 @@ Dalga A'nın tüm talepleri işlendi; her kaydın **Durum** satırı güncellend
 - **Geriye uyumluluk:** Ekleme (varsayılan gövdeli metotlar). `revoke_everything_except`'i uygulamayan revoker'lar acil iptalde `internal_error` verir (güvenli taraf; testkit `RecordingSessionRevoker` da varsayılanı kullanır — gerekirse mimar ekler).
 - **Durum:** Uygulandı (wave 2B; server tarafı wave 3A): `ServerSessionLiveness` adaptörü (K-51), `x-impersonation-session` yalnızca `server.admin_console_origins`'tan CORS ile (K-67, `crates/authn-server/src/cors.rs`); testler `adm_04_impersonation_header_read_only_and_real_revocation`, `k67_*` (wave 3A, K-53 doğrulaması (2026-11-04)).
 
+### 2026-11-05 — K-58: `signing_keys` değişiklik bildirimi (wave 4B) — Uygulandı
+
+- **Talep eden:** authn-session. **Etkilenen:** mimarın `signing_keys` tablosu (`0011`). Tabloya kolon eklenmedi; yalnızca bir tetikleyici eklendi.
+- **Gerekçe (CRY-10, SES-09, K-58):** acil iptal edilen bir imza anahtarı, diğer instance'larda `signing_key_cache_ttl` (30 sn) boyunca doğrulamaya devam ediyordu. Rotasyonu yapan yol (admin API, CLI, zamanlanmış rotasyon) instance'ları kendisi bilgilendiremez. CLI ayrı bir süreçtir.
+- **Değişiklik:** migration `2001_session_k58.sql` (authn-session aralığı):
+  - `signing_keys` üzerinde `AFTER INSERT OR UPDATE OR DELETE OR TRUNCATE … FOR EACH STATEMENT` tetikleyicisi `authn_signing_keys_changed()` → `pg_notify('authn_signing_keys', '')`. Bildirim commit anında gider, geri alınan değişiklik bildirim üretmez. Yük boştur; anahtar materyali içermez.
+  - Aynı migration `refresh_tokens.access_token_id` kolonunu ekler (oturum tablosu, sahibi authn-session).
+  - Tüketici: `SessionService::run_signing_key_listener` (authn-server `jobs::spawn`, wave 4A bağladı).
+- **Geriye uyumluluk:** eklemedir. Tetikleyici yalnızca gözlemler ve satır yazma maliyetine bir `pg_notify` ekler (anahtar değişiklikleri günde birkaç kez olur). En az yetki (`2900`) etkilenmez: `pg_notify` yetki gerektirmez.
+
 ## authn-oidc-client
 
 ### 2026-11-04 — Hata kodlarının `error/codes/oidc_client.rs`'e taşınması

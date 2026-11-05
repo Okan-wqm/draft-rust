@@ -593,10 +593,62 @@ impl AuditSink for PgAuditSink {
             .bind(user)
             .execute(&mut *conn)
             .await?;
+        scrub_erased_subject(&mut *conn, user, self.clock.now()).await?;
         tracing::info!(
             mappings_removed = removed.rows_affected(),
             "audit subject pseudonymised"
         );
         Ok(())
     }
+}
+
+/// K-58 (AUD-05, ACC-09): no user id of an erased account outlives the
+/// erasure in the outbox or the webhook delivery history. Runs in the
+/// erasure transaction. Order matters (see `WebhookFanout`): the outbox
+/// rows are flagged before the deliveries are looked up.
+///
+/// * outbox: dead-letter messages of the user are scrubbed now; pending
+///   and in-flight ones are flagged and scrubbed when they finish
+///   (delivered messages are always scrubbed at delivery);
+/// * webhook deliveries: every delivery of the user is flagged; finished
+///   ones (succeeded, dead) are redacted now, unfinished ones when they
+///   finish — so receivers still get e.g. `user.deleted`.
+async fn scrub_erased_subject(
+    conn: &mut PgConnection,
+    user: UserId,
+    now: OffsetDateTime,
+) -> Result<(), AuthError> {
+    let id = user.to_string();
+    let outbox = sqlx::query(
+        "UPDATE outbox SET subject_erased = true, \
+         payload = CASE WHEN status = 'dead' \
+             THEN payload - 'user_id' - 'recipient' - 'data' ELSE payload END \
+         WHERE status IN ('pending', 'processing', 'dead') AND payload ->> 'user_id' = $1",
+    )
+    .bind(&id)
+    .execute(&mut *conn)
+    .await?;
+    sqlx::query(
+        "UPDATE webhook_deliveries SET subject_erased_at = coalesce(subject_erased_at, $2) \
+         WHERE subject_user_id = $1",
+    )
+    .bind(user)
+    .bind(now)
+    .execute(&mut *conn)
+    .await?;
+    let redacted = sqlx::query(concat!(
+        "UPDATE webhook_deliveries SET ",
+        crate::webhooks::redact_if_erased!("status", "$2"),
+        " WHERE subject_user_id = $1 AND status IN ('succeeded', 'dead')"
+    ))
+    .bind(user)
+    .bind(now)
+    .execute(&mut *conn)
+    .await?;
+    tracing::info!(
+        outbox_rows = outbox.rows_affected(),
+        deliveries_redacted = redacted.rows_affected(),
+        "erased subject scrubbed from outbox and webhook history"
+    );
+    Ok(())
 }

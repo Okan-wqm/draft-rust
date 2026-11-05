@@ -13,7 +13,7 @@
 //! cookie and CSRF token, native clients a new token pair; the absolute
 //! expiry can only shrink (the organization's lifetime cap).
 
-use authn_core::domain::{AuthMethodRef, ClientKind, LoginMethod, Principal};
+use authn_core::domain::{AuthMethodRef, ClientKind, FactorKind, LoginMethod, Principal};
 use authn_core::error::{AuthError, codes};
 use authn_core::http::RequestContext;
 use authn_core::id::OrgId;
@@ -43,6 +43,9 @@ pub(crate) struct PrivilegeChange<'a> {
     pub(crate) auth_time: time::OffsetDateTime,
     pub(crate) active_org_id: Option<OrgId>,
     pub(crate) absolute_expires_at: time::OffsetDateTime,
+    /// `jti` of the access token that authenticated a native request
+    /// (K-58: a concurrent rotation refuses the change).
+    pub(crate) presented_access_token: Option<uuid::Uuid>,
 }
 
 /// Whether the session proved a passkey (phishing-resistant) factor.
@@ -83,6 +86,7 @@ impl SessionService {
             auth_time,
             active_org_id,
             absolute_expires_at,
+            presented_access_token,
         } = change;
         let now = self.now();
         let idle = if record.is_impersonation() {
@@ -113,7 +117,7 @@ impl SessionService {
         let credentials = match web_token {
             Some(token) => self.web_credentials(&updated, token, None, now)?,
             None => {
-                self.rotate_native_credentials(&mut *conn, &updated, now)
+                self.rotate_native_credentials(&mut *conn, &updated, presented_access_token, now)
                     .await?
             }
         };
@@ -170,6 +174,16 @@ impl SessionService {
                 return Err(AuthError::new(codes::session::LOGIN_METHOD_NOT_ALLOWED));
             }
         }
+        // K-58 audit: the organization's allowed second factors apply to
+        // the `mfa` the session brings along, not only to logins made with
+        // the organization requested.
+        if let Some(policy) = &policy
+            && !record.is_impersonation()
+            && !second_factor_allowed(policy, record.login_method, &record.amr)
+        {
+            return Err(AuthError::new(codes::org::ORG_POLICY_MFA_REQUIRED)
+                .with_context("the session's second factor is not allowed here"));
+        }
         let cap = policy.as_ref().and_then(OrgPolicy::session_lifetime_cap);
         let absolute = match cap {
             Some(cap) => record.absolute_expires_at.min(after(record.auth_time, cap)),
@@ -189,6 +203,7 @@ impl SessionService {
                     auth_time: record.auth_time,
                     active_org_id: target,
                     absolute_expires_at: absolute,
+                    presented_access_token: current.token_id,
                 },
             )
             .await?;
@@ -209,4 +224,41 @@ impl SessionService {
         authn_store::commit(tx).await?;
         Ok((updated, credentials))
     }
+}
+
+/// Whether the second factor behind the session's `mfa` is one `policy`
+/// allows (`allowed_mfa_factors`, MFA-08), when the policy requires MFA.
+/// The factor is read from `amr` minus the references the primary login
+/// method itself contributes; a passkey is MFA on its own (SES-21). When
+/// no remaining reference names an allowed factor (including ambiguous
+/// sessions, e.g. an e-mail code login whose `otp` hides a TOTP) the answer
+/// is "no": the user steps up with an allowed factor.
+pub(crate) fn second_factor_allowed(
+    policy: &OrgPolicy,
+    login_method: Option<LoginMethod>,
+    amr: &[AuthMethodRef],
+) -> bool {
+    let Some(allowed) = &policy.allowed_mfa_factors else {
+        return true;
+    };
+    if !(policy.mfa_required || policy.phishing_resistant_mfa_required) || has_passkey(amr) {
+        return true;
+    }
+    let primary: &[AuthMethodRef] = match login_method {
+        Some(LoginMethod::Password) => &[AuthMethodRef::Pwd],
+        Some(LoginMethod::MagicLink) => &[AuthMethodRef::Email],
+        Some(LoginMethod::EmailCode) => &[AuthMethodRef::Email, AuthMethodRef::Otp],
+        Some(LoginMethod::Social) => &[AuthMethodRef::Fed],
+        Some(LoginMethod::Passkey) | None => &[],
+    };
+    amr.iter()
+        .filter(|a| !primary.contains(a))
+        .filter_map(|a| match a {
+            AuthMethodRef::Otp => Some(FactorKind::Totp),
+            AuthMethodRef::Sms => Some(FactorKind::Sms),
+            AuthMethodRef::Email => Some(FactorKind::Email),
+            AuthMethodRef::Kba => Some(FactorKind::RecoveryCode),
+            _ => None,
+        })
+        .any(|factor| allowed.contains(&factor))
 }

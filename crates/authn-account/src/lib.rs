@@ -69,8 +69,8 @@ pub use routes::{AccountApi, router};
 pub use service::{
     AccountAwareSessionRevoker, AccountService, AccountServiceDeps, AccountServiceSettings,
     CredentialConfirmation, LinkConfirmation, MAX_PASSWORD_CONFIRMATIONS, MailboxProof,
-    ProvisionOutcome, REGISTRATION_COOKIE, RegistrationReceipt, VerificationProof,
-    VerifiedUserProvision, actions,
+    ProvisionOutcome, REGISTRATION_CODE_GUESSES_PER_DAY, REGISTRATION_COOKIE, RegistrationReceipt,
+    VerificationProof, VerifiedUserProvision, actions,
 };
 
 /// `one_time_tokens.purpose` values owned by this crate (contracts §5).

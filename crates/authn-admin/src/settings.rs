@@ -3,7 +3,9 @@
 use std::time::Duration;
 
 use authn_core::config::AppConfig;
-use authn_core::config::admin::AdminConfig;
+use authn_core::config::admin::{
+    AdminConfig, MAX_PENDING_REQUESTS_RANGE, MAX_REQUESTS_PER_HOUR_RANGE,
+};
 use authn_core::config::common::Environment;
 use authn_core::ports::RateLimitPolicy;
 use ipnet::IpNet;
@@ -56,6 +58,14 @@ pub struct AdminSettings {
     pub four_eyes: bool,
     /// Lifetime of an approval request (K-66; default 30 minutes).
     pub four_eyes_approval_ttl: Duration,
+    /// Most pending approval requests per requester (K-66, K-74; default
+    /// 3, `admin.four_eyes_max_pending_requests`). 0 refuses every request
+    /// (fails closed).
+    pub four_eyes_max_pending_requests: u32,
+    /// Most approval requests per requester per hour, decided ones included
+    /// (K-66, K-74; default 10, `admin.four_eyes_max_requests_per_hour`).
+    /// 0 refuses every request (fails closed).
+    pub four_eyes_max_requests_per_hour: u32,
 }
 
 /// Longest lifetime of a break-glass passkey enrollment link (K-11).
@@ -92,6 +102,15 @@ impl AdminSettings {
             // explicitly switched off.
             four_eyes: config.four_eyes.unwrap_or(true),
             four_eyes_approval_ttl: config.four_eyes_approval_ttl,
+            // K-74: never above the validated maximum, even for a
+            // configuration that skipped `AppConfig::load` validation
+            // (0 stays 0 and refuses every request).
+            four_eyes_max_pending_requests: config
+                .four_eyes_max_pending_requests
+                .min(*MAX_PENDING_REQUESTS_RANGE.end()),
+            four_eyes_max_requests_per_hour: config
+                .four_eyes_max_requests_per_hour
+                .min(*MAX_REQUESTS_PER_HOUR_RANGE.end()),
         }
     }
 
@@ -132,6 +151,42 @@ mod tests {
         let defaults = AdminSettings::default();
         assert_eq!(defaults.impersonation_default_ttl, Duration::from_secs(900));
         assert_eq!(defaults.step_up_max_age, Duration::from_secs(600));
+    }
+
+    /// K-74: the approval request caps come from `[admin]`.
+    #[test]
+    fn adm_06_k74_approval_request_caps_come_from_the_configuration() {
+        let defaults = AdminSettings::default();
+        assert_eq!(defaults.four_eyes_max_pending_requests, 3);
+        assert_eq!(defaults.four_eyes_max_requests_per_hour, 10);
+        let mut config = authn_testkit::config::test_config();
+        config.admin.four_eyes_max_pending_requests = 1;
+        config.admin.four_eyes_max_requests_per_hour = 2;
+        let settings = AdminSettings::from_app_config(&config);
+        assert_eq!(settings.four_eyes_max_pending_requests, 1);
+        assert_eq!(settings.four_eyes_max_requests_per_hour, 2);
+    }
+
+    /// K-74 audit: an `[admin]` section that never went through
+    /// `AppConfig::load` validation (built in code by an embedder or a
+    /// test) cannot raise the caps above the validated maximum (10 pending,
+    /// 60 per hour), as the impersonation lifetime is capped.
+    #[test]
+    fn adm_06_k74_approval_request_caps_never_exceed_the_validated_maximum() {
+        let config = AdminConfig {
+            four_eyes_max_pending_requests: 1_000,
+            four_eyes_max_requests_per_hour: u32::MAX,
+            ..AdminConfig::default()
+        };
+        let settings = AdminSettings::from_config(&config);
+        assert_eq!(settings.four_eyes_max_pending_requests, 10);
+        assert_eq!(settings.four_eyes_max_requests_per_hour, 60);
+        // 0 stays 0 (fails closed).
+        let closed = AdminSettings::from_config(&AdminConfig {
+            four_eyes_max_pending_requests: 0,
+            ..AdminConfig::default()
+        });
+        assert_eq!(closed.four_eyes_max_pending_requests, 0);
     }
 
     #[test]

@@ -3,8 +3,9 @@
 <p style="margin:0 0 16px;">Please confirm that this e-mail address belongs to you to finish setting up your {{ app_name }} account.</p>
 {% endblock %}
 {% block action_label %}Verify e-mail address{% endblock %}
-{% block code_label %}Or enter this verification code{% endblock %}
+{% block code_label %}Or enter this verification code, only in the app or browser where you signed up{% endblock %}
 {% block closing %}
 <p style="margin:0 0 16px;">The link and the code expire in {{ expires_in }} and can be used only once.</p>
+<p style="margin:0 0 16px;"><strong>Never share this code or link with anyone.</strong> {{ app_name }} will never ask you for them; anyone who does is trying to open an account in your name.</p>
 <p style="margin:0 0 16px;">If you did not create an account, you can safely ignore this e-mail.</p>
 {% endblock %}

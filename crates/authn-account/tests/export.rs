@@ -91,7 +91,7 @@ async fn acc_10_export_contains_every_registered_section_and_no_secrets(pool: Pg
         )
         .await
         .unwrap();
-    let res = TestRequest::get("/v1/me/export")
+    let res = TestRequest::post("/v1/me/export")
         .send(&h.app_as(&h.fresh(user)))
         .await;
     res.assert_status(StatusCode::OK);
@@ -135,18 +135,18 @@ async fn acc_10_export_requires_step_up_and_is_rate_limited(pool: PgPool) {
     })
     .await;
     let user = h.active_user("rl@example.com").await;
-    TestRequest::get("/v1/me/export")
+    TestRequest::post("/v1/me/export")
         .send(&h.app_as(&h.stale(user)))
         .await
         .assert_error(StatusCode::UNAUTHORIZED, "step_up_required");
     let app = h.app_as(&h.fresh(user));
     for _ in 0..2 {
-        TestRequest::get("/v1/me/export")
+        TestRequest::post("/v1/me/export")
             .send(&app)
             .await
             .assert_status(StatusCode::OK);
     }
-    TestRequest::get("/v1/me/export")
+    TestRequest::post("/v1/me/export")
         .send(&app)
         .await
         .assert_error(StatusCode::TOO_MANY_REQUESTS, "rate_limited");
@@ -165,7 +165,7 @@ async fn acc_10_failing_or_writing_exporter_fails_the_whole_export(pool: PgPool)
     .await;
     let user = h.active_user("w@example.com").await;
     let before = h.user_by_id(user).await.unwrap().last_login_at;
-    let res = TestRequest::get("/v1/me/export")
+    let res = TestRequest::post("/v1/me/export")
         .send(&h.app_as(&h.fresh(user)))
         .await;
     res.assert_error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error");
@@ -209,4 +209,23 @@ async fn acc_10_duplicate_or_reserved_sections_are_refused_at_startup(pool: PgPo
     assert!(make(vec![s("account")]).is_err());
     assert!(make(vec![s("Bad-Name")]).is_err());
     assert!(make(vec![s("mfa"), s("sessions")]).is_ok());
+}
+
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn acc_10_k58_export_is_a_post_never_a_get(pool: PgPool) {
+    // K-58 audit: a GET is a "safe" method — no CSRF check, sent with the
+    // session cookie on cross-site top-level navigations and link
+    // prefetches — so a third-party page could spend the victim's daily
+    // export quota (and produce exports nobody asked for).
+    let h = Harness::new(pool).await;
+    let user = h.active_user("get@example.com").await;
+    let app = h.app_as(&h.fresh(user));
+    TestRequest::get("/v1/me/export")
+        .send(&app)
+        .await
+        .assert_status(StatusCode::METHOD_NOT_ALLOWED);
+    TestRequest::post("/v1/me/export")
+        .send(&app)
+        .await
+        .assert_status(StatusCode::OK);
 }

@@ -144,7 +144,7 @@ key = "EmFt2e6K4mRNa00b7YSb9pmCX5Ak+/U7pL0JNQfO7wk="
 # email_code_ttl = "10m"
 # email_code_max_attempts = 5
 # introspection_per_client = { limit = 600, period = "1m" }   # per API key (SES-10)
-# access_token_session_check = true    # bearer tokens: session still active? (false: revocation within access_token_ttl)
+# access_token_session_check = true    # bearer tokens: session still active? (false only outside production: revocation within access_token_ttl)
 # signing_key_cache_ttl = "30s"        # signer / verifier / JWKS cache per process (1s-5m)
 # touch_interval = "1m"                # min. interval between last-seen / idle-expiry writes (< every idle_timeout)
 # default_scopes = ["api"]             # `scope` claim of access tokens (SES-08)
@@ -283,6 +283,7 @@ backend = "memory"                     # postgres (default) | redis | memory (si
 # pow_difficulty = 18                  # leading zero bits, 8-32
 # pow_ttl = "5m"
 # fail_open = false                    # provider outage: true = let requests through
+# hostnames = ["auth.example.com"]     # turnstile / hcaptcha: hosts the widget may be solved on (required in production)
 # challenge_per_ip = { limit = 30, period = "1m" }              # GET /v1/captcha/challenge
 
 [protect.security_headers]             # PRT-07
@@ -357,3 +358,5 @@ tls = "starttls"                       # starttls | tls (plain text is not suppo
 # impersonation_max_ttl = "60m"
 # four_eyes = true                     # K-66: emergency + admin-targeting actions need a second admin's approval; unset = on in production/staging; false is refused in production
 # four_eyes_approval_ttl = "30m"       # K-66: lifetime of an approval request, 5m-2h
+# four_eyes_max_pending_requests = 3   # K-74: pending approval requests per requesting admin, 1-10
+# four_eyes_max_requests_per_hour = 10 # K-74: approval requests per requesting admin per hour (denied ones count), 1-60, >= max pending

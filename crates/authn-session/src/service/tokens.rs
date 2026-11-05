@@ -53,11 +53,16 @@ fn jwt_reason(err: JwtError) -> &'static str {
 }
 
 impl SessionService {
-    /// Signs an access token for `session` (SES-08). The expiry never
-    /// exceeds the session's absolute expiry.
+    /// Signs an access token with the `jti` `token_id` for `session`
+    /// (SES-08). The expiry never exceeds the session's absolute expiry.
+    /// `conn` is the caller's (transaction) connection: an expired signing
+    /// key snapshot is reloaded through it, never through a second pooled
+    /// connection (K-58).
     pub(crate) async fn issue_access_token(
         &self,
+        conn: &mut sqlx::PgConnection,
         session: &SessionRecord,
+        token_id: Uuid,
         now: OffsetDateTime,
     ) -> Result<(SensitiveString, OffsetDateTime), AuthError> {
         let settings = self.settings();
@@ -75,7 +80,7 @@ impl SessionService {
             exp: expires_at.unix_timestamp(),
             iat: now.unix_timestamp(),
             nbf: now.unix_timestamp(),
-            jti: Uuid::now_v7().hyphenated().to_string(),
+            jti: token_id.hyphenated().to_string(),
             sid: session.id.to_string(),
             auth_time: session.auth_time.unix_timestamp(),
             amr: session.amr.clone(),
@@ -88,7 +93,7 @@ impl SessionService {
             }),
             read_only: impersonation.map(|i| i.read_only),
         };
-        let signer = self.key_cache().signer().await?;
+        let signer = self.key_cache().signer_in(conn).await?;
         let token = signer
             .sign(TYP_ACCESS_TOKEN, &claims)
             .map_err(AuthError::from)?;

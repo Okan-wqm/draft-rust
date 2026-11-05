@@ -281,7 +281,7 @@ impl MfaService {
         phishing_resistant_required: bool,
     ) -> Result<MfaPolicyInput, AuthError> {
         let mut conn = self.pool().acquire().await?;
-        self.policy_input_in(
+        self.policy_input_excluding(
             &mut conn,
             user,
             org_policy,
@@ -289,6 +289,24 @@ impl MfaService {
             None,
         )
         .await
+    }
+
+    /// [`MfaService::policy_input`] read **through `conn`** (K-69): for
+    /// module hooks that run inside another module's transaction, e.g. the
+    /// server's `authn_webauthn::AccountMethodsSource::mfa_facts` while the
+    /// passkey removal holds the user row lock (contracts §4: a hook reads
+    /// only through the given connection; it never waits for a second
+    /// pooled connection while the caller holds one, and its reads belong
+    /// to the caller's transaction).
+    pub async fn policy_input_in(
+        &self,
+        conn: &mut PgConnection,
+        user: UserId,
+        org_policy: Option<OrgMfaPolicy>,
+        phishing_resistant_required: bool,
+    ) -> Result<MfaPolicyInput, AuthError> {
+        self.policy_input_excluding(conn, user, org_policy, phishing_resistant_required, None)
+            .await
     }
 
     /// [`evaluate`] over [`MfaService::policy_input`] (MFA-08).
@@ -306,7 +324,7 @@ impl MfaService {
 
     /// Policy input read through `conn`, optionally as if `without` were
     /// already removed.
-    pub(super) async fn policy_input_in(
+    pub(super) async fn policy_input_excluding(
         &self,
         conn: &mut PgConnection,
         user: UserId,

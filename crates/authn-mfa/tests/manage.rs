@@ -502,3 +502,51 @@ async fn mfa_10_status_needs_a_session_principal(pool: sqlx::PgPool) {
     assert_eq!(err.code(), codes::common::FORBIDDEN);
     assert!(h.service.status(&h.fresh(user)).await.is_ok());
 }
+
+/// K-69 (MFA-07, MFA-08, contracts §4): `policy_input_in` reads through
+/// the caller's connection, so a hook running inside another module's
+/// transaction sees that transaction's own (uncommitted) changes and never
+/// needs a second pooled connection. The pool-based `policy_input` sees
+/// only committed state.
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn mfa_08_k69_policy_input_in_reads_through_the_callers_connection(pool: sqlx::PgPool) {
+    let h = Harness::new(pool).await;
+    let user = h.user("alice@example.com").await;
+    h.enroll_totp(user).await;
+
+    let mut tx = h.pool.begin().await.unwrap();
+    let input = h
+        .service
+        .policy_input_in(&mut tx, user, None, false)
+        .await
+        .unwrap();
+    assert_eq!(
+        input.enrolled_factors,
+        vec![FactorKind::Totp, FactorKind::RecoveryCode]
+    );
+    // The caller's transaction removes the factor and the codes …
+    sqlx::query("DELETE FROM mfa_factors WHERE user_id = $1")
+        .bind(user)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM recovery_codes WHERE user_id = $1")
+        .bind(user)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    // … which the connection-taking variant sees,
+    let inside = h
+        .service
+        .policy_input_in(&mut tx, user, None, false)
+        .await
+        .unwrap();
+    assert!(inside.enrolled_factors.is_empty(), "{inside:?}");
+    // while the pool still sees the committed state.
+    let outside = h.service.policy_input(user, None, false).await.unwrap();
+    assert_eq!(
+        outside.enrolled_factors,
+        vec![FactorKind::Totp, FactorKind::RecoveryCode]
+    );
+    tx.rollback().await.unwrap();
+}

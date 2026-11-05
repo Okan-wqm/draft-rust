@@ -104,6 +104,23 @@ impl AccountService {
         new_email: &EmailAddress,
     ) -> Result<(), AuthError> {
         let now = self.now();
+        // K-58 (pool pattern): the notice budget is decided before the
+        // transaction opens (the production rate limiter needs a pooled
+        // connection of its own). Unlocked pre-read; a concurrent change
+        // the locked read sees only withholds the notice (fail closed).
+        let in_use = match UserRepository::find_by_email(self.pool(), new_email).await? {
+            Some(other) => other.id != user_id,
+            None => ReservationRepository::active_owner(self.pool(), new_email.normalized(), now)
+                .await?
+                .is_some_and(|owner| owner != user_id),
+        };
+        let notify = in_use
+            && self
+                .allowed(
+                    &RateLimitKey::account(actions::REGISTRATION_NOTICE, new_email.normalized()),
+                    self.config().registration_notice_per_email,
+                )
+                .await?;
         let mut tx = self.begin().await?;
         lock_emails(tx.conn(), &[new_email.normalized()]).await?;
         let user = lock_user(&mut tx, user_id).await?;
@@ -129,8 +146,10 @@ impl AccountService {
                 now,
             )
             .await?;
-            self.address_in_use_notice(&mut tx, ctx, owner, new_email)
-                .await?;
+            if notify {
+                self.address_in_use_notice(&mut tx, ctx, owner, new_email)
+                    .await?;
+            }
             tx.audit(
                 self.event(SecurityEventKind::EmailChangeRequested, ctx)
                     .with_actor(Actor::User(user.id))
@@ -175,7 +194,8 @@ impl AccountService {
     }
 
     /// Notice to the owner of an address somebody tried to take over
-    /// (throttled like registration notices).
+    /// (throttled like registration notices; the caller consumed the
+    /// budget before its transaction opened).
     async fn address_in_use_notice(
         &self,
         tx: &mut AccountTx,
@@ -183,13 +203,6 @@ impl AccountService {
         owner: UserId,
         address: &EmailAddress,
     ) -> Result<(), AuthError> {
-        let key = RateLimitKey::account(actions::REGISTRATION_NOTICE, address.normalized());
-        if !self
-            .allowed(&key, self.config().registration_notice_per_email)
-            .await?
-        {
-            return Ok(());
-        }
         let (recipient, locale) = self
             .recipient_at(tx.conn(), owner, address.clone(), ctx.locale)
             .await?;

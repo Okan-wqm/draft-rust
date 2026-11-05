@@ -635,8 +635,8 @@ impl WebhookManager {
     ) -> Result<WebhookDeliveryView, AuthError> {
         let now = self.clock.now();
         let mut tx = self.pool.begin().await?;
-        let row: Option<(String, String)> = sqlx::query_as(
-            "SELECT d.status, e.status FROM webhook_deliveries d \
+        let row: Option<(String, String, Option<OffsetDateTime>)> = sqlx::query_as(
+            "SELECT d.status, e.status, d.redacted_at FROM webhook_deliveries d \
              JOIN webhook_endpoints e ON e.id = d.endpoint_id AND e.org_id = d.org_id \
              WHERE d.id = $1 AND d.endpoint_id = $2 AND d.org_id = $3 FOR UPDATE OF d",
         )
@@ -645,9 +645,14 @@ impl WebhookManager {
         .bind(org)
         .fetch_optional(&mut *tx)
         .await?;
-        let Some((delivery_status, endpoint_status)) = row else {
+        let Some((delivery_status, endpoint_status, redacted_at)) = row else {
             return Err(not_found());
         };
+        // K-58: the subject's account was erased and the payload redacted;
+        // there is nothing left to send.
+        if redacted_at.is_some() {
+            return Err(not_found());
+        }
         if endpoint_status != "active" {
             return Err(AuthError::new(codes::audit::WEBHOOK_ENDPOINT_DISABLED));
         }

@@ -1482,3 +1482,278 @@ async fn adm_08_k62_extension_needs_reason_is_audited_and_hidden(pool: sqlx::PgP
     assert_eq!(renewed["changed"], true);
     assert!(!export(&h, user).await.to_string().contains("Fraud FR-10"));
 }
+
+// --- K-76 ------------------------------------------------------------------
+
+/// K-76 (ADM-05, K-07): `grant-admin` makes an existing active account a
+/// regular platform admin offline, ends its sessions and trusted devices
+/// (a pre-grant session never becomes an admin session), is a
+/// high-priority CLI staff action with operator and justification, and
+/// refuses admins (`conflict`), inactive accounts and unknown targets.
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn adm_05_k76_grant_admin_offline(pool: sqlx::PgPool) {
+    let h = Harness::new(pool).await;
+    let alice = h.user("alice@example.com").await;
+    let operator = OfflineOperator::parse("ops.oncall").unwrap();
+    let why = reason("New on-call admin (CHG-17)");
+    // Not an admin yet: the console refuses her.
+    h.send(
+        &h.principal(alice, true),
+        TestRequest::get("/v1/admin/users"),
+    )
+    .await
+    .assert_error(StatusCode::FORBIDDEN, "forbidden");
+
+    let out = h
+        .service
+        .grant_admin_offline(&operator, &OfflineTarget::parse("Alice@example.com"), &why)
+        .await
+        .unwrap();
+    assert_eq!(out.action, "offline_grant_admin");
+    assert!(out.changed);
+    let record = h.record(alice).await;
+    assert!(record.is_platform_admin);
+    assert!(!record.is_break_glass);
+    assert!(
+        h.ports
+            .session_revoker
+            .calls()
+            .contains(&RevocationCall::AllForUser(
+                alice,
+                RevocationReason::AdminAction,
+                RevokeOptions {
+                    also_trusted_devices: true
+                }
+            ))
+    );
+    let events = h.admin_events("offline_grant_admin").await;
+    assert_eq!(events.len(), 1);
+    let meta = &events[0].metadata;
+    assert_eq!(meta["priority"], "high");
+    assert_eq!(meta["surface"], "cli");
+    assert_eq!(meta["operator"], "ops.oncall");
+    assert_eq!(
+        h.justification(events[0].id).await.as_deref(),
+        Some("New on-call admin (CHG-17)")
+    );
+    // A new passkey session of hers now reaches the console.
+    h.send(
+        &h.principal(alice, true),
+        TestRequest::get("/v1/admin/users"),
+    )
+    .await
+    .assert_status(StatusCode::OK);
+
+    // Already an admin; break-glass accounts too.
+    let err = h
+        .service
+        .grant_admin_offline(&operator, &OfflineTarget::Id(alice), &why)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code().code(), "conflict");
+    // Only active accounts.
+    for status in [AccountStatus::Suspended, AccountStatus::PendingVerification] {
+        let other = h
+            .user_with_status(&format!("{}@example.com", status.as_str()), status)
+            .await;
+        let err = h
+            .service
+            .grant_admin_offline(&operator, &OfflineTarget::Id(other), &why)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code().code(), "admin_target_not_allowed", "{status:?}");
+        assert!(!h.record(other).await.is_platform_admin);
+    }
+    let err = h
+        .service
+        .grant_admin_offline(&operator, &OfflineTarget::parse("nobody@example.com"), &why)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code().code(), "not_found");
+    assert_eq!(h.admin_events("offline_grant_admin").await.len(), 1);
+}
+
+/// K-76: `revoke-admin` takes the admin (and break-glass) flags away for
+/// good, ends sessions, trusted devices and open break-glass enrollment
+/// links, and the console refuses the account at once; the last active
+/// admin's rights are never revoked; regular users are not targets.
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn adm_05_k76_revoke_admin_offline(pool: sqlx::PgPool) {
+    let h = Harness::new(pool).await;
+    let (a, a_principal) = h.admin("a@example.com").await;
+    let bg = h.user("breakglass@example.com").await;
+    h.make_admin(bg, true).await;
+    let user = h.user("user@example.com").await;
+    let operator = OfflineOperator::parse("ops.oncall").unwrap();
+    let why = reason("Admin left the company (HR-9)");
+
+    // A break-glass account with an open enrollment link.
+    let link = h
+        .service
+        .issue_break_glass_enrollment_link_offline(
+            &operator,
+            &OfflineTarget::Id(bg),
+            &why,
+            Duration::from_secs(600),
+        )
+        .await
+        .unwrap();
+    let out = h
+        .service
+        .revoke_admin_offline(&operator, &OfflineTarget::Id(bg), &why)
+        .await
+        .unwrap();
+    assert_eq!(out.action, "offline_revoke_admin");
+    let record = h.record(bg).await;
+    assert!(!record.is_platform_admin);
+    assert!(!record.is_break_glass);
+    assert_eq!(record.status, AccountStatus::Active);
+    assert!(
+        h.ports
+            .session_revoker
+            .calls()
+            .contains(&RevocationCall::AllForUser(
+                bg,
+                RevocationReason::AdminAction,
+                RevokeOptions {
+                    also_trusted_devices: true
+                }
+            ))
+    );
+    let err = h
+        .service
+        .start_break_glass_enrollment(&h.ctx(), link.token.expose())
+        .await
+        .unwrap_err();
+    assert_eq!(err.code().code(), "invalid_or_expired_token");
+    let events = h.admin_events("offline_revoke_admin").await;
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].metadata["priority"], "high");
+    assert_eq!(events[0].metadata["target_is_break_glass"], true);
+    assert_eq!(events[0].metadata["links_expired"], 1);
+
+    // `a` is now the last active admin: refused, nothing changes.
+    let err = h
+        .service
+        .revoke_admin_offline(&operator, &OfflineTarget::Id(a), &why)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code().code(), "admin_target_not_allowed");
+    assert!(h.record(a).await.is_platform_admin);
+    assert_eq!(h.admin_events("offline_revoke_admin").await.len(), 1);
+    // A suspended admin does not count as the one that remains.
+    let (c, _) = h.admin("c@example.com").await;
+    h.service
+        .suspend_admin_offline(&operator, &OfflineTarget::Id(c), &why)
+        .await
+        .unwrap();
+    let err = h
+        .service
+        .revoke_admin_offline(&operator, &OfflineTarget::Id(a), &why)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code().code(), "admin_target_not_allowed");
+    // ...but the suspended admin's own rights can go (it stays suspended).
+    h.service
+        .revoke_admin_offline(&operator, &OfflineTarget::Id(c), &why)
+        .await
+        .unwrap();
+    let record = h.record(c).await;
+    assert!(!record.is_platform_admin);
+    assert_eq!(record.status, AccountStatus::Suspended);
+
+    // With a second active admin, `a` can be revoked; the console refuses
+    // a's (still valid-looking) passkey session at once.
+    h.admin("d@example.com").await;
+    h.send(&a_principal, TestRequest::get("/v1/admin/users"))
+        .await
+        .assert_status(StatusCode::OK);
+    h.service
+        .revoke_admin_offline(&operator, &OfflineTarget::Id(a), &why)
+        .await
+        .unwrap();
+    h.send(&a_principal, TestRequest::get("/v1/admin/users"))
+        .await
+        .assert_error(StatusCode::FORBIDDEN, "forbidden");
+
+    // Regular users are not targets.
+    let err = h
+        .service
+        .revoke_admin_offline(&operator, &OfflineTarget::Id(user), &why)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code().code(), "admin_target_not_allowed");
+}
+
+/// Waits until `n` backends of this test database wait for a lock.
+async fn wait_for_lock_waiters(pool: &sqlx::PgPool, n: i64) {
+    for _ in 0..500 {
+        let waiting: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pg_stat_activity \
+             WHERE datname = current_database() AND wait_event_type = 'Lock'",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        if waiting >= n {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("expected {n} lock waiter(s)");
+}
+
+/// K-76: two concurrent `revoke-admin` commands for the only two active
+/// admins can never both succeed (each would count the other as the one
+/// that remains): the rights changes are serialized, exactly one admin is
+/// left. Both commands are lined up behind row locks on both accounts
+/// held by a third transaction, then released together.
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn adm_05_k76_concurrent_revocations_leave_an_admin(pool: sqlx::PgPool) {
+    let h = Harness::new(pool.clone()).await;
+    let operator = OfflineOperator::parse("ops.oncall").unwrap();
+    let why = reason("Rights review (AUD-3)");
+    for round in 0..3 {
+        let (a, _) = h.admin(&format!("a{round}@example.com")).await;
+        let (b, _) = h.admin(&format!("b{round}@example.com")).await;
+        // Earlier rounds' survivors no longer count.
+        sqlx::query(
+            "UPDATE users SET is_platform_admin = false, is_break_glass = false \
+             WHERE id <> $1 AND id <> $2",
+        )
+        .bind(a)
+        .bind(b)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let mut blocker = pool.begin().await.unwrap();
+        sqlx::query("SELECT id FROM users WHERE id = $1 OR id = $2 FOR UPDATE")
+            .bind(a)
+            .bind(b)
+            .execute(&mut *blocker)
+            .await
+            .unwrap();
+        let first = {
+            let (s, o, w) = (h.service.clone(), operator.clone(), why.clone());
+            tokio::spawn(async move { s.revoke_admin_offline(&o, &OfflineTarget::Id(a), &w).await })
+        };
+        let second = {
+            let (s, o, w) = (h.service.clone(), operator.clone(), why.clone());
+            tokio::spawn(async move { s.revoke_admin_offline(&o, &OfflineTarget::Id(b), &w).await })
+        };
+        wait_for_lock_waiters(&pool, 2).await;
+        blocker.commit().await.unwrap();
+        let (first, second) = (first.await.unwrap(), second.await.unwrap());
+        assert!(
+            first.is_ok() != second.is_ok(),
+            "round {round}: {first:?} / {second:?}"
+        );
+        let admins: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM users WHERE is_platform_admin AND status = 'active'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(admins, 1, "round {round}");
+    }
+}

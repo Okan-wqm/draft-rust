@@ -34,6 +34,7 @@ use authn_core::ports::{Actor, RevocationReason, RevokeOptions, SecurityEventKin
 use authn_core::secret::SecretString;
 use authn_crypto::token::OpaqueToken;
 use authn_store::{NewPasswordHash, UserRepository};
+use authn_webauthn::PasskeyRemovalReason;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use utoipa::ToSchema;
@@ -552,7 +553,7 @@ impl AdminService {
         let passkeys = self
             .deps()
             .webauthn
-            .remove_all_passkeys_in_tx(&mut tx, ctx, user)
+            .remove_all_passkeys_in_tx(&mut tx, ctx, user, PasskeyRemovalReason::AdminReset)
             .await?;
         let revoked = self
             .deps()

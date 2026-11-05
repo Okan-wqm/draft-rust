@@ -424,9 +424,10 @@ async fn adm_05_k11_break_glass_enrollment_link_end_to_end(pool: PgPool) {
     assert_eq!(r.status, StatusCode::OK, "{}", r.text());
 }
 
-/// ACC-07 / K-20: an attacker who took over the session changes the
+/// ACC-07 / K-20 / K-68: an attacker who took over the session changes the
 /// address, then adds a passkey, TOTP and a recovery path. The owner's
-/// revert link removes every one of them in the revert transaction.
+/// revert link removes every one of them in the revert transaction, and
+/// the passkey removal is audited as `email_change_reverted` (K-68).
 #[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
 async fn acc_07_k20_revert_removes_every_login_method_the_attacker_added(pool: PgPool) {
     let app = App::new(pool).await;
@@ -535,6 +536,20 @@ async fn acc_07_k20_revert_removes_every_login_method_the_attacker_added(pool: P
         count("SELECT count(*) FROM trusted_devices WHERE user_id = $1 AND revoked_at IS NULL")
             .await,
         0
+    );
+    // K-68: the passkey removal is audited as the revert it is, not as an
+    // admin MFA reset (real audit sink, real `audit_events`).
+    let reasons: Vec<Option<String>> = sqlx::query_scalar(
+        "SELECT metadata->>'reason' FROM audit_events \
+         WHERE kind = 'passkey.removed' AND actor_type = 'system' ORDER BY seq",
+    )
+    .fetch_all(&app.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        reasons,
+        vec![Some("email_change_reverted".to_owned())],
+        "K-68"
     );
     // The attacker's session is dead and the passkey no longer signs in.
     assert_eq!(
@@ -755,4 +770,77 @@ async fn adm_06_emergency_key_rotation_and_forced_password_change_through_the_st
         StatusCode::UNAUTHORIZED
     );
     let _ = &mut admin.key;
+}
+
+/// K-76 with the real session store: `grant-admin` ends the sessions the
+/// account had before the grant (a pre-grant session never becomes an
+/// admin session) and `revoke-admin` ends the admin's sessions.
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn adm_05_k76_grant_and_revoke_end_real_sessions(pool: PgPool) {
+    use authn_admin::{Justification, OfflineOperator, OfflineTarget};
+    let app = App::new(pool).await;
+    let alice = app.user("alice@example.com").await;
+    let bob = app.user("bob@example.com").await;
+    let other = app.user("other-admin@example.com").await;
+    sqlx::query("UPDATE users SET is_platform_admin = true WHERE id = $1")
+        .bind(other)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    let operator = OfflineOperator::parse("ops.oncall").unwrap();
+    let why = Justification::parse(Some("CHG-17 on-call rotation")).unwrap();
+    let login = |email: &'static str| {
+        let app = &app;
+        async move {
+            let mut native = app.native();
+            let r = app
+                .send(native.post(
+                    "/v1/login/password",
+                    &json!({"email": email, "password": PASSWORD}),
+                ))
+                .await;
+            assert!(r.status.is_success(), "{}", r.text());
+            native.absorb(&r.json());
+            app.send(native.get("/v1/me"))
+                .await
+                .assert_status(StatusCode::OK);
+            native
+        }
+    };
+    let alice_session = login("alice@example.com").await;
+    // An admin signs in only with a passkey (MFA-08): bob's session is
+    // taken first, then his account is flagged directly.
+    let bob_session = login("bob@example.com").await;
+    sqlx::query("UPDATE users SET is_platform_admin = true WHERE id = $1")
+        .bind(bob)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+
+    app.services
+        .admin
+        .grant_admin_offline(&operator, &OfflineTarget::Id(alice), &why)
+        .await
+        .unwrap();
+    assert_eq!(
+        app.send(alice_session.get("/v1/me")).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+
+    app.services
+        .admin
+        .revoke_admin_offline(&operator, &OfflineTarget::Id(bob), &why)
+        .await
+        .unwrap();
+    assert_eq!(
+        app.send(bob_session.get("/v1/me")).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    let flags: (bool, bool) =
+        sqlx::query_as("SELECT is_platform_admin, is_break_glass FROM users WHERE id = $1")
+            .bind(bob)
+            .fetch_one(&app.pool)
+            .await
+            .unwrap();
+    assert_eq!(flags, (false, false));
 }

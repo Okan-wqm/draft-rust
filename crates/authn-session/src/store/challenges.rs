@@ -183,20 +183,26 @@ pub(crate) async fn consume(
 /// except step-up challenges bound to `keep`. Used by bulk revocations: a
 /// login that is still pending (second factor, required actions) must not
 /// survive a password reset, a suspension or "sign out everywhere".
+/// `keep_in_flight_steps`: leave the challenges whose outstanding steps
+/// include `change_password` or `verify_email` open (a `password_changed`
+/// revocation made from inside such a step, SES-22).
 pub(crate) async fn close_open(
     conn: &mut PgConnection,
     user: Option<UserId>,
     keep: Option<SessionId>,
+    keep_in_flight_steps: bool,
     now: OffsetDateTime,
 ) -> Result<u64, StoreError> {
     let result = sqlx::query(
         "UPDATE auth_challenges SET consumed_at = $3 WHERE consumed_at IS NULL \
          AND ($1::uuid IS NULL OR user_id = $1) \
-         AND ($2::uuid IS NULL OR session_id IS DISTINCT FROM $2)",
+         AND ($2::uuid IS NULL OR session_id IS DISTINCT FROM $2) \
+         AND NOT ($4 AND required_actions && ARRAY['change_password', 'verify_email']::text[])",
     )
     .bind(user)
     .bind(keep)
     .bind(now)
+    .bind(keep_in_flight_steps)
     .execute(conn)
     .await?;
     Ok(result.rows_affected())

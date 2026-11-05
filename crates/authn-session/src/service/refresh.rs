@@ -25,6 +25,7 @@ use authn_crypto::token::OpaqueToken;
 use serde::Serialize;
 use time::OffsetDateTime;
 use utoipa::ToSchema;
+use uuid::Uuid;
 
 use super::{SessionService, remaining};
 use crate::metrics;
@@ -134,23 +135,16 @@ impl SessionService {
         if !refresh::retire(&mut tx, row.id, now).await? {
             return Err(invalid("raced"));
         }
+        let token_id = Uuid::now_v7();
         let (successor, new_token, idle) = self
-            .insert_successor(&mut tx, &record, row.id, row.generation, now)
+            .insert_successor(&mut tx, &record, row.id, row.generation, token_id, now)
             .await?;
-        let sealed = if self.settings().session.refresh_reuse_grace.is_zero() {
-            None
-        } else {
-            Some(
-                self.deps()
-                    .envelopes
-                    .seal(new_token.expose().as_bytes(), &successor_context(&row)?)
-                    .await
-                    .map_err(AuthError::from)?,
-            )
-        };
+        let sealed = self.seal_successor(&row, &new_token).await?;
         refresh::link_successor(&mut tx, row.id, successor, sealed.as_deref()).await?;
         sessions::set_native_activity(&mut tx, record.id, now, Some(ctx.client_ip), idle).await?;
-        let (access_token, access_expires_at) = self.issue_access_token(&record, now).await?;
+        let (access_token, access_expires_at) = self
+            .issue_access_token(&mut tx, &record, token_id, now)
+            .await?;
         authn_store::commit(tx).await?;
         metrics::refresh("rotated");
         Ok(RefreshedTokens {
@@ -160,6 +154,26 @@ impl SessionService {
             refresh_token: new_token.into_sensitive(),
             refresh_token_expires_at: idle,
         })
+    }
+
+    /// The successor of `parent`, sealed for the grace window (`None` when
+    /// the window is off). Used by refreshes and by server-side rotations
+    /// after a privilege change alike.
+    pub(crate) async fn seal_successor(
+        &self,
+        parent: &RefreshRow,
+        successor: &OpaqueToken,
+    ) -> Result<Option<Vec<u8>>, AuthError> {
+        if self.settings().session.refresh_reuse_grace.is_zero() {
+            return Ok(None);
+        }
+        Ok(Some(
+            self.deps()
+                .envelopes
+                .seal(successor.expose().as_bytes(), &successor_context(parent)?)
+                .await
+                .map_err(AuthError::from)?,
+        ))
     }
 
     /// Within the grace window: the same, still unused successor.
@@ -198,7 +212,12 @@ impl SessionService {
             .map_err(|_| AuthError::internal("sealed successor is not text"))?;
         let token = OpaqueToken::parse(text)
             .map_err(|_| AuthError::internal("sealed successor is malformed"))?;
-        let (access_token, access_expires_at) = self.issue_access_token(record, now).await?;
+        // The retry's access token is the one paired with the successor
+        // from now on (K-58: privilege changes check the pairing).
+        let token_id = Uuid::now_v7();
+        refresh::pair_access_token(conn, successor.id, token_id).await?;
+        let (access_token, access_expires_at) =
+            self.issue_access_token(conn, record, token_id, now).await?;
         Ok(Some(RefreshedTokens {
             access_token,
             token_type: "Bearer",

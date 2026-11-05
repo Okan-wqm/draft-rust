@@ -139,16 +139,28 @@ async fn acc_02_attacker_first_then_victim_registers_and_gets_own_credentials(po
         "registering never touches the account"
     );
 
-    // The victim's browser holds the victim's handle: the attacker's link
-    // does not bind to it.
-    let err = h
-        .verify_link(&attacker_token, Some(&victim_handle), None)
-        .await
-        .unwrap_err();
-    assert_eq!(err.code().code(), "registration_confirmation_required");
-    h.verify_link(&victim_token, Some(&victim_handle), None)
+    // The victim's browser holds the victim's handle. Whichever link of the
+    // account it opens (here: the attacker's registration e-mail), the
+    // mailbox owner completes *their own* registration — never the
+    // attacker's (K-58: the owner's registration may have got no e-mail).
+    h.verify_link(&attacker_token, Some(&victim_handle), None)
         .await
         .unwrap();
+    assert_eq!(
+        h.audit
+            .events
+            .of_kind(SecurityEventKind::EmailVerified)
+            .last()
+            .unwrap()
+            .metadata["method"],
+        "link_registering_client_other_registration"
+    );
+    // The victim's own link died with the completion.
+    let err = h
+        .verify_link(&victim_token, Some(&victim_handle), None)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code().code(), "invalid_or_expired_token");
     assert!(h.password_matches(user, OWNER).await);
     assert!(!h.password_matches(user, ATTACKER).await);
     assert_eq!(registrations(&h.pool, user).await, 0);
@@ -191,22 +203,24 @@ async fn acc_02_attacker_second_cannot_overwrite_or_inherit_the_victims_registra
     let (victim_token, victim_code) = mails[0].clone();
     let (attacker_token, _) = mails[1].clone();
 
-    // The victim clicks the newest e-mail (the attacker's registration) in
-    // the registering browser: it cannot complete with the victim's handle,
-    // nor with the victim's password.
-    let err = h
-        .verify_link(&attacker_token, Some(&victim_handle), None)
-        .await
-        .unwrap_err();
-    assert_eq!(err.code().code(), "registration_confirmation_required");
+    // On another device, the attacker's link does not take the victim's
+    // password (it is not that registration's).
     let err = h
         .verify_link(&attacker_token, None, Some(chosen(OWNER)))
         .await
         .unwrap_err();
     assert_eq!(err.code().code(), "registration_password_mismatch");
-    // The victim's own code (registering client flow) activates the
-    // victim's own password.
-    h.verify_code(Some(&victim_handle), &victim_code)
+    // The victim's code needs the victim's handle; the attacker cannot
+    // use it with theirs.
+    let err = h
+        .verify_code(Some(&attacker_handle), &victim_code)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code().code(), "invalid_code");
+    // The victim clicks the newest e-mail (the attacker's registration) in
+    // the registering browser: it activates the *victim's* registration
+    // (the handle's), never the attacker's (K-58).
+    h.verify_link(&attacker_token, Some(&victim_handle), None)
         .await
         .unwrap();
     let record = h.user_by_id(user).await.unwrap();
@@ -1007,4 +1021,83 @@ async fn acc_07_emergency_revoke_except_caller_ends_pending_email_changes(pool: 
     assert_eq!(revoked, 7, "the inner revoker's count is returned");
     assert_eq!(inner.kept.lock().unwrap().as_slice(), &[keep]);
     assert_eq!(pending_change_tokens(&h, user).await, 0);
+}
+
+// --- K-58: ADR 0002 residual risks ---------------------------------------
+
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn acc_02_k58_exhausted_email_budget_never_drops_the_owners_registration(pool: PgPool) {
+    // Targeted sign-up DoS: the attacker spends the address's daily e-mail
+    // budget (3) so the owner's own registration gets no e-mail. It used to
+    // be dropped silently; now it is stored and the owner completes it with
+    // any e-mailed link opened in their browser.
+    let h = Harness::new(pool).await;
+    for _ in 0..4 {
+        h.signup_with("target@example.com", ATTACKER).await;
+    }
+    let user = h.user("target@example.com").await.unwrap().id;
+    let before = all_verifications(&h, "target@example.com").len();
+    let owner_handle = h.signup_with("target@example.com", OWNER).await;
+    assert_eq!(
+        all_verifications(&h, "target@example.com").len(),
+        before,
+        "no e-mail past the budget (mail bombing)"
+    );
+    assert_eq!(registrations(&h.pool, user).await, 5, "stored nonetheless");
+    let (any_link, _) = all_verifications(&h, "target@example.com")[0].clone();
+    h.verify_link(&any_link, Some(&owner_handle), None)
+        .await
+        .unwrap();
+    assert!(h.password_matches(user, OWNER).await);
+    assert!(!h.password_matches(user, ATTACKER).await);
+    assert_eq!(
+        h.user_by_id(user).await.unwrap().status,
+        AccountStatus::Active
+    );
+}
+
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn acc_02_k58_a_link_never_completes_a_registration_of_another_account(pool: PgPool) {
+    let h = Harness::new(pool).await;
+    let other_handle = h.signup_with("other@example.com", ATTACKER).await;
+    h.signup_with("target@example.com", OWNER).await;
+    let (target_link, _) = all_verifications(&h, "target@example.com")[0].clone();
+    let err = h
+        .verify_link(&target_link, Some(&other_handle), None)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code().code(), "registration_confirmation_required");
+    let other = h.user("other@example.com").await.unwrap();
+    assert_eq!(other.status, AccountStatus::PendingVerification);
+}
+
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn acc_04_k58_code_guesses_per_address_are_capped_per_day(pool: PgPool) {
+    // However many registrations the attacker creates for the target
+    // address (each with five guesses of its own), at most five code
+    // submissions per day reach the address.
+    let h = Harness::with(pool, |s| {
+        s.registration_code_guesses = RateLimitPolicy::new(
+            authn_account::REGISTRATION_CODE_GUESSES_PER_DAY,
+            Duration::from_secs(24 * 3600),
+        );
+    })
+    .await;
+    let mut handles = Vec::new();
+    for _ in 0..3 {
+        handles.push(h.signup_with("target@example.com", ATTACKER).await);
+    }
+    let mut outcomes = Vec::new();
+    for handle in handles.iter().cycle().take(8) {
+        let err = h.verify_code(Some(handle), "000000").await.unwrap_err();
+        outcomes.push(err.code().code().to_owned());
+    }
+    assert_eq!(outcomes[..5], ["invalid_code"; 5]);
+    assert_eq!(outcomes[5..], ["rate_limited"; 3], "{outcomes:?}");
+    // The mailbox owner is never locked out: the link still completes.
+    let owner_handle = h.signup_with("target@example.com", OWNER).await;
+    let (link, _) = all_verifications(&h, "target@example.com").pop().unwrap();
+    h.verify_link(&link, Some(&owner_handle), None)
+        .await
+        .unwrap();
 }

@@ -3,9 +3,11 @@
 {{ app_name }} hesabınızın kurulumunu tamamlamak için bu e-posta adresinin size ait olduğunu doğrulayın.
 {% endblock %}
 {% block action_label %}E-posta adresimi doğrula{% endblock %}
-{% block code_label %}Ya da bu doğrulama kodunu girin{% endblock %}
+{% block code_label %}Ya da bu doğrulama kodunu yalnızca kayıt olduğunuz uygulamada veya tarayıcıda girin{% endblock %}
 {% block closing %}
 Bağlantı ve kod {{ expires_in }} boyunca geçerlidir ve yalnızca bir kez kullanılabilir.
+
+Bu kodu veya bağlantıyı kimseyle paylaşmayın. {{ app_name }} bunları sizden asla istemez; isteyen biri sizin adınıza hesap açmaya çalışıyordur.
 
 Hesap oluşturmadıysanız bu e-postayı güvenle yok sayabilirsiniz.
 {% endblock %}

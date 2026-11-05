@@ -108,10 +108,10 @@ impl MfaService {
             .org_policy_for_user(&mut tx, user)
             .await?;
         let mut before = self
-            .policy_input_in(&mut tx, user, org_policy.clone(), false, None)
+            .policy_input_excluding(&mut tx, user, org_policy.clone(), false, None)
             .await?;
         let mut after_removal = self
-            .policy_input_in(&mut tx, user, org_policy, false, Some(factor.id))
+            .policy_input_excluding(&mut tx, user, org_policy, false, Some(factor.id))
             .await?;
         // Only a requirement imposed by someone else blocks the removal; the
         // user's own preference never locks the user in.

@@ -83,6 +83,21 @@ pub enum Command {
         #[command(flatten)]
         offline: OfflineArgs,
     },
+    /// Grant regular platform-admin rights to an existing active account
+    /// offline (K-76): its sessions end; the API never grants admin rights.
+    GrantAdmin {
+        /// Target, justification and operator.
+        #[command(flatten)]
+        offline: OfflineArgs,
+    },
+    /// Revoke the platform-admin rights of an account offline (K-76):
+    /// sessions, trusted devices, impersonations and enrollment links end;
+    /// refused for the last active admin.
+    RevokeAdmin {
+        /// Target, justification and operator.
+        #[command(flatten)]
+        offline: OfflineArgs,
+    },
     /// Seal a Sign in with Apple private key for
     /// `oidc_client.apple.private_key_ciphertext` (SOC-07, K-34). Reads the
     /// PKCS#8 PEM from a file or stdin (`-`); the key is never printed.
@@ -123,6 +138,8 @@ impl Command {
             Self::SuspendAdmin { .. } => "suspend-admin",
             Self::UnsuspendAdmin { .. } => "unsuspend-admin",
             Self::RevokeAdminSessions { .. } => "revoke-admin-sessions",
+            Self::GrantAdmin { .. } => "grant-admin",
+            Self::RevokeAdmin { .. } => "revoke-admin",
             Self::SealAppleKey { .. } => "seal-apple-key",
             Self::RotateSigningKey { .. } => "rotate-signing-key",
             Self::RotateKek => "rotate-kek",
@@ -135,7 +152,8 @@ impl Command {
 /// Arguments of the offline admin commands (K-07).
 #[derive(Debug, Clone, PartialEq, Eq, clap::Args)]
 pub struct OfflineArgs {
-    /// The platform admin: e-mail address or user id.
+    /// The account (a platform admin, except for `grant-admin`): e-mail
+    /// address or user id.
     #[arg(long)]
     pub target: String,
     /// Justification (1–1000 printable characters), audited.
@@ -250,7 +268,8 @@ fn read_pem(path: &std::path::Path) -> Result<Zeroizing<String>, ServerError> {
 /// `check-config` never calls a configuration valid that `serve` refuses:
 /// web protection (host, security headers, CORS, admin console CORS), the
 /// key material (KEKs, peppers, HMAC root) and the social-login providers
-/// (the envelope-encrypted Apple key must open with the configured KEKs).
+/// (the envelope-encrypted Apple key must open with the configured KEKs,
+/// `oidc_client.error_redirect` must be an allowed redirect target, K-73).
 async fn check_startup_settings(config: &AppConfig) -> Result<(), ServerError> {
     let protect = &config.protect;
     authn_protect::web::HostValidation::from_config(protect, &config.server.public_base_url)
@@ -261,6 +280,9 @@ async fn check_startup_settings(config: &AppConfig) -> Result<(), ServerError> {
     crate::cors::AdminConsoleCors::from_config(config).map_err(ServerError::Startup)?;
     let crypto = crypto(config).await?;
     let mut settings = authn_oidc_client::OidcClientSettings::from_app_config(config);
+    // K-73: the web flow's error page must be an allowed redirect target
+    // (`serve` refuses it while building the social-login service).
+    authn_oidc_client::validate_error_redirect(&settings).map_err(ServerError::Startup)?;
     if let Some(apple) = settings.config.apple.as_mut() {
         authn_oidc_client::apple::resolve_private_key(apple, &crypto.envelopes)
             .await
@@ -284,11 +306,18 @@ pub async fn run(cli: Cli) -> Result<Outcome, ServerError> {
         Command::CheckConfig => {
             let config = AppConfig::load(cli.config.as_deref())?;
             authn_notify::TemplateRenderer::from_config(&config).map_err(|e| {
-                ServerError::Startup(
+                ServerError::InvalidSettings(
                     AuthError::internal("notification templates are invalid").with_source(e),
                 )
             })?;
-            check_startup_settings(&config).await?;
+            // A refused setting is an invalid configuration (exit code 78,
+            // as `AppConfig::load` refusals), not a service failure.
+            check_startup_settings(&config)
+                .await
+                .map_err(|err| match err {
+                    ServerError::Startup(err) => ServerError::InvalidSettings(err),
+                    other => other,
+                })?;
             Ok(Outcome::Message("configuration is valid".to_owned()))
         }
         Command::Migrate => {
@@ -406,6 +435,32 @@ pub async fn run(cli: Cli) -> Result<Outcome, ServerError> {
                 describe(&outcome)
             )))
         }
+        Command::GrantAdmin { offline } => {
+            let (operator, target, reason) = offline.parse()?;
+            let (_config, services) = services(&cli, clock).await?;
+            let outcome = services
+                .admin
+                .grant_admin_offline(&operator, &target, &reason)
+                .await
+                .map_err(ServerError::Startup)?;
+            Ok(Outcome::Message(format!(
+                "grant-admin: {}",
+                describe(&outcome)
+            )))
+        }
+        Command::RevokeAdmin { offline } => {
+            let (operator, target, reason) = offline.parse()?;
+            let (_config, services) = services(&cli, clock).await?;
+            let outcome = services
+                .admin
+                .revoke_admin_offline(&operator, &target, &reason)
+                .await
+                .map_err(ServerError::Startup)?;
+            Ok(Outcome::Message(format!(
+                "revoke-admin: {}",
+                describe(&outcome)
+            )))
+        }
         Command::SealAppleKey { pem_file } => {
             let pem = read_pem(pem_file)?;
             let config = AppConfig::load(cli.config.as_deref())?;
@@ -441,7 +496,7 @@ pub async fn run(cli: Cli) -> Result<Outcome, ServerError> {
             .map_err(ServerError::Startup)?;
             Ok(Outcome::Message(if *emergency {
                 format!(
-                    "emergency rotation done; active key {kid}; restart or wait signing_key_cache_ttl on every instance"
+                    "emergency rotation done; active key {kid}; serving instances drop the revoked key at once (signing-key listener, K-58), at the latest after session.signing_key_cache_ttl"
                 )
             } else {
                 format!(

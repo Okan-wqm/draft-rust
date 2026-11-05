@@ -27,6 +27,9 @@ pub const LOGIN_FACTORS: &str = "authn_login_factor_total";
 /// Sessions established for break-glass accounts (ADM-05, K-05; alert on
 /// any increase).
 pub const BREAK_GLASS_LOGINS: &str = "authn_break_glass_logins_total";
+/// Signing-key cache drops by the change listener (K-58), by cause
+/// (`notification`, `reconnect`).
+pub const SIGNING_KEYS_INVALIDATED: &str = "authn_signing_keys_invalidated_total";
 
 pub(crate) fn sessions_created(client: &'static str) {
     metrics::counter!(SESSIONS_CREATED, "client" => client).increment(1);
@@ -49,6 +52,10 @@ pub(crate) fn refresh_reuse() {
 
 pub(crate) fn break_glass_login() {
     metrics::counter!(BREAK_GLASS_LOGINS).increment(1);
+}
+
+pub(crate) fn signing_keys_invalidated(cause: &'static str) {
+    metrics::counter!(SIGNING_KEYS_INVALIDATED, "cause" => cause).increment(1);
 }
 
 pub(crate) fn csrf_rejected() {

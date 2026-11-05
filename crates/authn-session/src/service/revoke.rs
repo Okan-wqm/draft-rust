@@ -7,7 +7,9 @@
 //!   `revoke_trusted_devices_in_tx` on the same connection), the audit event
 //!   and the `session.revoked` domain events commit or roll back together.
 //! * User-wide revocations also close the user's pending logins
-//!   (`auth_challenges`, except for `password_changed`, see
+//!   (`auth_challenges`; for `password_changed` all but those whose
+//!   outstanding steps include the password change or the e-mail
+//!   verification, see
 //!   `pending_logins_ended_by`) and the impersonation sessions the user
 //!   started as an admin (ADM-04).
 //! * A revoked session is rejected on the very next request: cookie and
@@ -93,7 +95,8 @@ impl PgSessionRevoker {
         let now = self.clock.now();
         let revoked = sessions::revoke(&mut *conn, target, reason.as_str(), now).await?;
         if let Some((user, keep)) = pending_logins_ended_by(target, reason) {
-            challenges::close_open(&mut *conn, user, keep, now).await?;
+            let keep_in_flight_steps = reason == RevocationReason::PasswordChanged;
+            challenges::close_open(&mut *conn, user, keep, keep_in_flight_steps, now).await?;
         }
         let mut devices = 0;
         if let Some(user) = trusted_devices_of {
@@ -155,18 +158,20 @@ impl PgSessionRevoker {
 /// `Some((user, keep))`, `user = None` meaning everyone.
 ///
 /// Every user-wide revocation does — a login started with the old password
-/// before a reset, a suspension, "this wasn't me" or "sign out everywhere"
-/// must not be completable afterwards — except
-/// [`RevocationReason::PasswordChanged`]: the required actions of a pending
-/// login (SES-22: password change, e-mail verification) revoke the user's
-/// sessions with that reason *from inside* the login they complete.
+/// before a reset, a password change, a suspension, "this wasn't me" or
+/// "sign out everywhere" must not be completable afterwards (K-58 audit:
+/// `password_changed` used to keep them all open). For
+/// [`RevocationReason::PasswordChanged`] the pending logins whose
+/// outstanding steps include `change_password` or `verify_email` stay
+/// open: those SES-22 steps revoke with that reason *from inside* the
+/// login they complete. Neither can be finished by the holder of the old
+/// password after somebody else's change: `apply_required_password_change`
+/// requires the `must_change_password` flag, which every change clears,
+/// and `verify_email` needs a code e-mailed to the mailbox.
 fn pending_logins_ended_by(
     target: Target,
-    reason: RevocationReason,
+    _reason: RevocationReason,
 ) -> Option<(Option<UserId>, Option<SessionId>)> {
-    if reason == RevocationReason::PasswordChanged {
-        return None;
-    }
     match target {
         Target::User(user) => Some((Some(user), None)),
         Target::UserExcept(user, keep) => Some((Some(user), Some(keep))),

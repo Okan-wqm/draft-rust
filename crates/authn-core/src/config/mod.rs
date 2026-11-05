@@ -187,6 +187,26 @@ impl AppConfig {
                 "admin.four_eyes",
                 "must not be false in production (K-66 four-eyes approval)",
             );
+            // K-58: without the per-request session check a revoked or
+            // suspended session keeps working until its access token
+            // expires (up to access_token_ttl). The check costs one
+            // primary-key lookup per bearer request.
+            p.require(
+                self.session.access_token_session_check,
+                "session.access_token_session_check",
+                "must stay true in production (K-58: revocation takes effect on the next request)",
+            );
+            // K-58 audit: a Turnstile / hCaptcha token solved on another
+            // site must not pass; the provider's `hostname` is checked
+            // against this list.
+            p.require(
+                !matches!(
+                    self.protect.captcha.provider,
+                    crate::ports::CaptchaProvider::Turnstile | crate::ports::CaptchaProvider::HCaptcha
+                ) || !self.protect.captcha.hostnames.is_empty(),
+                "protect.captcha.hostnames",
+                "required in production with turnstile / hcaptcha (PRT-05: tokens solved on other sites)",
+            );
         }
         self.validate_notify_environment(p);
         p.require(
@@ -556,6 +576,50 @@ mod tests {
                 .iter()
                 .any(|p| p.starts_with("admin.four_eyes"))
         );
+    }
+
+    #[test]
+    fn prt_05_k58_captcha_hostnames_are_required_in_production() {
+        let captcha = "\n[protect.captcha]\nprovider = \"turnstile\"\nsite_key = \"site\"\nsecret_key = \"secret\"\n";
+        let key = "protect.captcha.hostnames";
+        let production = problems(&with_environment("production", captcha));
+        assert!(
+            production.iter().any(|p| p.starts_with(key)),
+            "{production:?}"
+        );
+        let development = problems(&with_environment("development", captcha));
+        assert!(
+            !development.iter().any(|p| p.starts_with(key)),
+            "{development:?}"
+        );
+        let listed = format!("{captcha}hostnames = [\"auth.example.com\"]\n");
+        let fixed = problems(&with_environment("production", &listed));
+        assert!(!fixed.iter().any(|p| p.starts_with(key)), "{fixed:?}");
+    }
+
+    #[test]
+    fn ses_08_k58_session_check_cannot_be_switched_off_in_production() {
+        let off = |environment: &str| {
+            with_environment(
+                environment,
+                "\n[session]\naccess_token_session_check = false\n",
+            )
+        };
+        let key = "session.access_token_session_check";
+        let production = problems(&off("production"));
+        assert!(
+            production.iter().any(|p| p.starts_with(key)),
+            "{production:?}"
+        );
+        for environment in ["staging", "development", "test"] {
+            let found = problems(&off(environment));
+            assert!(
+                !found.iter().any(|p| p.starts_with(key)),
+                "{environment}: {found:?}"
+            );
+        }
+        let default = with_environment("production", "");
+        assert!(!problems(&default).iter().any(|p| p.starts_with(key)));
     }
 
     #[test]

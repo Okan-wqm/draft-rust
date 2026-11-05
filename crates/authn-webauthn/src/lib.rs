@@ -59,7 +59,7 @@ pub use service::{
     VerifiedEnrollment,
 };
 pub use service::{
-    AuthenticationPurpose, PasskeySummary, PasskeyUsage, WebauthnService, WebauthnServiceDeps,
-    WebauthnServiceSettings,
+    AuthenticationPurpose, PasskeyRemovalReason, PasskeySummary, PasskeyUsage, WebauthnService,
+    WebauthnServiceDeps, WebauthnServiceSettings,
 };
 pub use well_known::{WellKnownDocuments, well_known_router};

@@ -98,13 +98,16 @@ pub fn build_captcha_verifier(
                 .secret_key
                 .clone()
                 .ok_or_else(|| AuthError::internal("protect.captcha.secret_key is required"))?;
-            Ok(Arc::new(SiteVerifyCaptcha::new(
-                provider,
-                site_key,
-                secret,
-                config.verify_url.as_deref(),
-                http,
-            )?))
+            Ok(Arc::new(
+                SiteVerifyCaptcha::new(
+                    provider,
+                    site_key,
+                    secret,
+                    config.verify_url.as_deref(),
+                    http,
+                )?
+                .with_hostnames(config.hostnames.clone()),
+            ))
         }
     }
 }

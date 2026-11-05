@@ -518,6 +518,32 @@ pub(crate) async fn other_active_admin_exists(
     .await
 }
 
+/// Serializes every change of platform-admin rights (K-76: `grant-admin`
+/// / `revoke-admin`) with a transaction-scoped advisory lock: two
+/// concurrent revocations cannot both count the other admin as the one
+/// that remains.
+pub(crate) async fn lock_admin_rights(conn: &mut PgConnection) -> Result<(), sqlx::Error> {
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('authn_admin_rights', 0))")
+        .execute(conn)
+        .await?;
+    Ok(())
+}
+
+/// Whether an active platform admin other than `user` exists, break-glass
+/// accounts included (K-76: the last admin's rights are never revoked).
+pub(crate) async fn other_active_platform_admin_exists(
+    conn: &mut PgConnection,
+    user: UserId,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM users \
+           WHERE is_platform_admin AND status = 'active' AND id <> $1)",
+    )
+    .bind(user)
+    .fetch_one(conn)
+    .await
+}
+
 /// What an operation presents to consume an approval.
 #[derive(Debug)]
 pub(crate) struct ApprovalUse<'a> {

@@ -24,6 +24,10 @@ pub enum ServerError {
     /// A service could not be built or an operation failed.
     #[error("{0}")]
     Startup(authn_core::error::AuthError),
+    /// `check-config`: a setting `serve` would refuse while building the
+    /// router or the services (exit code 78, like [`Self::Config`]).
+    #[error("{0}")]
+    InvalidSettings(authn_core::error::AuthError),
     /// An integrity check failed (audit chain).
     #[error("integrity check failed: {0}")]
     Integrity(String),
@@ -40,7 +44,7 @@ impl ServerError {
     #[must_use]
     pub fn exit_code(&self) -> ExitCode {
         match self {
-            Self::Config(_) => ExitCode::from(78),
+            Self::Config(_) | Self::InvalidSettings(_) => ExitCode::from(78),
             Self::Store(_) | Self::SchemaOutdated(_) | Self::Startup(_) => ExitCode::from(69),
             Self::Input(_) => ExitCode::from(65),
             Self::Io(_) | Self::Telemetry(_) | Self::Integrity(_) => ExitCode::from(1),

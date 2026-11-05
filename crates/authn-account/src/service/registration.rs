@@ -38,8 +38,8 @@ use authn_core::error::{AuthError, codes};
 use authn_core::http::RequestContext;
 use authn_core::id::{TermsVersionId, UserId};
 use authn_core::ports::{
-    Actor, Notification, NotificationKind, PasswordContext, RateLimitKey, RevocationReason,
-    RevokeOptions, SecurityEventKind,
+    Actor, Notification, NotificationKind, PasswordContext, RateLimitKey, RateLimitPolicy,
+    RevocationReason, RevokeOptions, SecurityEventKind,
 };
 use authn_core::secret::{ExposeSecret, SecretString, SensitiveString};
 use authn_crypto::otp::OtpCode;
@@ -68,6 +68,23 @@ pub const MAX_PASSWORD_CONFIRMATIONS: i32 = 5;
 
 /// Registrations kept per unverified account (the oldest are dropped).
 pub(crate) const MAX_LIVE_REGISTRATIONS: i64 = 10;
+
+/// Registration code submissions per address per day, across every
+/// registration of the address (K-58, ADR 0002). On top of the hourly
+/// `verification.code_attempts_per_email` and the per-registration
+/// `verification.code_max_attempts`: however many registrations an
+/// attacker creates for a target address, at most this many 6-digit
+/// guesses per day reach it (≈ 5·10⁻⁶ per day). The mailbox owner is never
+/// locked out: the e-mailed link completes the registration without a code.
+pub const REGISTRATION_CODE_GUESSES_PER_DAY: u32 = 5;
+
+/// [`REGISTRATION_CODE_GUESSES_PER_DAY`] as a rate-limit policy.
+pub(super) const fn default_registration_code_guesses() -> RateLimitPolicy {
+    RateLimitPolicy::new(
+        REGISTRATION_CODE_GUESSES_PER_DAY,
+        Duration::from_secs(24 * 3600),
+    )
+}
 
 /// What the registering client receives from [`AccountService::signup`]:
 /// the registration handle (256 random bits, independent of the address,
@@ -203,8 +220,32 @@ impl AccountService {
         link: TokenHash,
         confirmation: &LinkConfirmation,
     ) -> Result<(), AuthError> {
-        let bound = handle_hash(confirmation.registration.as_ref())
-            .is_some_and(|candidate| record.handle_matches(&candidate));
+        let handle = handle_hash(confirmation.registration.as_ref());
+        let bound = handle
+            .as_ref()
+            .is_some_and(|candidate| record.handle_matches(candidate));
+        // K-58 (ADR 0002, targeted sign-up DoS): the browser holds the
+        // handle of *another* live registration of the same account — e.g.
+        // its own registration got no e-mail because an attacker exhausted
+        // the address's daily e-mail budget. Mailbox control (any live link
+        // of the account) plus "I submitted that registration" (its handle,
+        // a `SameSite=Strict` cookie no one else can plant) completes the
+        // handle's registration. This is no weaker than "link + new
+        // password", which already lets the link's holder choose the
+        // credentials.
+        let sibling = match (&handle, bound) {
+            (Some(candidate), false) => {
+                RegistrationRepository::find_by_handle(self.pool(), candidate, self.now())
+                    .await?
+                    .filter(|other| other.user_id == record.user_id && other.id != record.id)
+            }
+            _ => None,
+        };
+        if let Some(sibling) = sibling {
+            return self
+                .verify_link_for_sibling(ctx, &record, &link, sibling)
+                .await;
+        }
         let (activation, method) = if bound {
             (Activation::Submitted, "link_registering_client")
         } else {
@@ -243,6 +284,42 @@ impl AccountService {
         }
         self.finish_registration(tx, ctx, locked, activation, method, invalid_token)
             .await
+    }
+
+    /// Link of `record` + handle of `sibling` (another live registration of
+    /// the same account): activates `sibling`'s credentials. Locks: address,
+    /// the link's registration (still valid?), the handle's registration.
+    async fn verify_link_for_sibling(
+        &self,
+        ctx: &RequestContext,
+        record: &RegistrationRecord,
+        link: &TokenHash,
+        sibling: RegistrationRecord,
+    ) -> Result<(), AuthError> {
+        let now = self.now();
+        let mut tx = self.begin().await?;
+        lock_email(tx.conn(), &record.email_normalized).await?;
+        let Some(linked) = RegistrationRepository::lock(tx.conn(), record.id, now).await? else {
+            return Err(invalid_token());
+        };
+        if !linked.link_matches(link) || linked.link_expires_at <= now {
+            return Err(invalid_token());
+        }
+        let Some(locked) = RegistrationRepository::lock(tx.conn(), sibling.id, now).await? else {
+            return Err(invalid_token());
+        };
+        if locked.user_id != linked.user_id {
+            return Err(invalid_token());
+        }
+        self.finish_registration(
+            tx,
+            ctx,
+            locked,
+            Activation::Submitted,
+            "link_registering_client_other_registration",
+            invalid_token,
+        )
+        .await
     }
 
     /// Verifies the password chosen in `record` (Argon2, outside any
@@ -360,6 +437,11 @@ impl AccountService {
             self.limit(
                 &RateLimitKey::account(actions::VERIFICATION_CODE, &address),
                 verification.code_attempts_per_email,
+            )
+            .await?;
+            self.limit(
+                &RateLimitKey::account(actions::VERIFICATION_CODE_DAILY, &address),
+                self.settings().registration_code_guesses,
             )
             .await?;
         }

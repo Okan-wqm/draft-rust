@@ -669,3 +669,33 @@ fn ntf_01_identity_passkey_clone_and_revert_notices() {
         assert!(out.text.contains(change), "{}", out.text);
     }
 }
+
+#[test]
+fn acc_04_k58_verification_mail_warns_against_sharing_the_code() {
+    // ADR 0002 residual "code phishing": the only defence left against a
+    // mailbox owner reading the code out to an attacker is telling them,
+    // next to the code, where it belongs and that no one may ask for it.
+    let renderer = renderer();
+    for (locale, where_, never) in [
+        (
+            Locale::En,
+            "only in the app or browser where you signed up",
+            "Never share this code or link with anyone",
+        ),
+        (
+            Locale::Tr,
+            "yalnızca kayıt olduğunuz uygulamada veya tarayıcıda",
+            "Bu kodu veya bağlantıyı kimseyle paylaşmayın",
+        ),
+    ] {
+        let sample = context::samples(locale, now())
+            .into_iter()
+            .find(|n| n.kind.template_name() == "email_verification")
+            .unwrap();
+        let rendered = renderer.render_email(&sample, now()).unwrap();
+        for body in [&rendered.text, &rendered.html] {
+            assert!(body.contains(where_), "{locale}: {body}");
+            assert!(body.contains(never), "{locale}: {body}");
+        }
+    }
+}

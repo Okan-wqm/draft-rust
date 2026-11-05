@@ -5,13 +5,15 @@
 //! account (`crate::service` target rules): a single compromised console
 //! session must not disable the recovery path. The operator of the
 //! deployment does those things **offline**, through the CLI commands
-//! `suspend-admin`, `unsuspend-admin`, `revoke-admin-sessions` and
-//! `create-admin --passkey-link` for an existing break-glass account, which
-//! call the functions below.
+//! `suspend-admin`, `unsuspend-admin`, `revoke-admin-sessions`,
+//! `admin-enrollment-link` for an existing break-glass account, and
+//! `grant-admin` / `revoke-admin` (K-76: the API never grants or revokes
+//! platform-admin rights), which call the functions below.
 //!
 //! * Only platform admins (break-glass or not) can be targeted
 //!   (`admin_target_not_allowed` otherwise; regular users are handled in
-//!   the console).
+//!   the console) — except by `grant-admin`, which targets an `active`
+//!   account that is not an admin yet.
 //! * A justification is mandatory ([`Justification`], ADM-08) and an
 //!   operator label (who ran the command, e.g. the OS user) is recorded.
 //! * Each command is one transaction: the change, the session revocation
@@ -31,6 +33,7 @@ use authn_core::http::RequestContext;
 use authn_core::id::{EventId, UserId};
 use authn_core::ports::{Actor, RevocationReason, RevokeOptions, SecurityEvent, SecurityEventKind};
 use authn_store::{UserRecord, UserRepository};
+use authn_webauthn::PasskeyRemovalReason;
 use sqlx::PgConnection;
 
 use crate::reason::Justification;
@@ -302,6 +305,121 @@ impl AdminService {
         authn_store::commit(tx).await?;
         Ok(offline_outcome(ACTION, user, revoked > 0, revoked, event))
     }
+
+    /// `grant-admin` (K-76): makes an existing, `active` account a
+    /// (regular, not break-glass) platform admin. Offline only: the API
+    /// never grants admin rights, so a compromised console session — even
+    /// with a second admin's approval — cannot mint new admins.
+    ///
+    /// Every session and trusted device of the account ends in the same
+    /// transaction: a session (or a stolen cookie) established before the
+    /// grant never becomes an admin session; the person signs in again
+    /// (the admin API still demands a passkey and a recent step-up,
+    /// ADM-01). Refused with `conflict` for an account that already is a
+    /// platform admin and `admin_target_not_allowed` for an account that
+    /// is not `active`. High-priority `admin.action`
+    /// (`offline_grant_admin`, `surface: cli`) with the operator and the
+    /// justification.
+    pub async fn grant_admin_offline(
+        &self,
+        operator: &OfflineOperator,
+        target: &OfflineTarget,
+        reason: &Justification,
+    ) -> Result<ActionOutcome, AuthError> {
+        const ACTION: &str = "offline_grant_admin";
+        let user = self.resolve_offline_target(target).await?;
+        let ctx = RequestContext::system(Locale::default());
+        let mut tx = self.begin().await?;
+        store::lock_admin_rights(&mut tx).await?;
+        let record = UserRepository::lock_for_update(&mut tx, user)
+            .await?
+            .ok_or_else(|| AuthError::new(codes::common::NOT_FOUND))?;
+        if record.is_platform_admin {
+            return Err(AuthError::new(codes::common::CONFLICT)
+                .with_context("the account already is a platform admin"));
+        }
+        if record.status != AccountStatus::Active {
+            return Err(AuthError::new(codes::admin::TARGET_NOT_ALLOWED)
+                .with_context("admin rights are granted to active accounts only"));
+        }
+        UserRepository::set_admin_flags(&mut tx, user, true, false).await?;
+        let revoked = self
+            .deps()
+            .sessions
+            .revoke_all_for_user(&mut tx, user, RevocationReason::AdminAction, ALL_DEVICES)
+            .await?;
+        let event = self
+            .record_offline(
+                &mut tx,
+                &ctx,
+                operator,
+                ACTION,
+                &record,
+                reason,
+                super_meta(&[("sessions_revoked", revoked.into())]),
+            )
+            .await?;
+        authn_store::commit(tx).await?;
+        Ok(offline_outcome(ACTION, user, true, revoked, event))
+    }
+
+    /// `revoke-admin` (K-76): takes the platform-admin rights (and the
+    /// break-glass flag) away from an account, permanently; the account
+    /// itself stays (a suspended account stays suspended). In the same
+    /// transaction every session, trusted device and impersonation the
+    /// admin started ends, and its open break-glass enrollment links
+    /// expire. Its pending approval requests become unusable (the
+    /// requester must be an admin) and approvals it gave are re-checked
+    /// at use (the approver must still be an active admin, K-66).
+    ///
+    /// Refused with `admin_target_not_allowed` ("last admin") when no
+    /// other `active` platform admin (break-glass included) would remain —
+    /// create or unsuspend another admin first. Concurrent `grant-admin` / `revoke-admin`
+    /// commands are serialized, so two revocations cannot both leave the
+    /// other admin as "the one that remains". High-priority `admin.action`
+    /// (`offline_revoke_admin`, `surface: cli`).
+    pub async fn revoke_admin_offline(
+        &self,
+        operator: &OfflineOperator,
+        target: &OfflineTarget,
+        reason: &Justification,
+    ) -> Result<ActionOutcome, AuthError> {
+        const ACTION: &str = "offline_revoke_admin";
+        let user = self.resolve_offline_target(target).await?;
+        let ctx = RequestContext::system(Locale::default());
+        let now = self.now();
+        let mut tx = self.begin().await?;
+        store::lock_admin_rights(&mut tx).await?;
+        let record = Self::lock_offline_target(&mut tx, user).await?;
+        if !store::other_active_platform_admin_exists(&mut tx, user).await? {
+            return Err(AuthError::new(codes::admin::TARGET_NOT_ALLOWED)
+                .with_context("last admin: no other active platform admin would remain"));
+        }
+        UserRepository::set_admin_flags(&mut tx, user, false, false).await?;
+        let links = store::expire_enrollments_of(&mut tx, user, now).await?;
+        let revoked = self
+            .deps()
+            .sessions
+            .revoke_all_for_user(&mut tx, user, RevocationReason::AdminAction, ALL_DEVICES)
+            .await?;
+        let event = self
+            .record_offline(
+                &mut tx,
+                &ctx,
+                operator,
+                ACTION,
+                &record,
+                reason,
+                super_meta(&[
+                    ("sessions_revoked", revoked.into()),
+                    ("links_expired", links.into()),
+                    ("status", record.status.as_str().into()),
+                ]),
+            )
+            .await?;
+        authn_store::commit(tx).await?;
+        Ok(offline_outcome(ACTION, user, true, revoked, event))
+    }
 }
 
 impl AdminService {
@@ -355,7 +473,7 @@ impl AdminService {
         let passkeys = self
             .deps()
             .webauthn
-            .remove_all_passkeys_in_tx(&mut tx, &ctx, user)
+            .remove_all_passkeys_in_tx(&mut tx, &ctx, user, PasskeyRemovalReason::AdminReset)
             .await?;
         let password_removed = UserRepository::delete_password(&mut tx, user).await?;
         let revoked = self

@@ -35,6 +35,8 @@ pub struct SiteVerifyCaptcha {
     secret: SecretString,
     verify_url: Url,
     http: Arc<dyn HttpClient>,
+    /// Lower-cased host names the widget may be solved on (empty: any).
+    hostnames: Vec<String>,
 }
 
 impl std::fmt::Debug for SiteVerifyCaptcha {
@@ -42,6 +44,7 @@ impl std::fmt::Debug for SiteVerifyCaptcha {
         f.debug_struct("SiteVerifyCaptcha")
             .field("provider", &self.provider)
             .field("site_key", &self.site_key)
+            .field("hostnames", &self.hostnames)
             .field("secret", &authn_core::secret::REDACTED)
             .finish_non_exhaustive()
     }
@@ -55,6 +58,9 @@ struct SiteVerifyResponse {
     /// Turnstile only: the widget's `data-action`.
     #[serde(default)]
     action: Option<String>,
+    /// Both providers: the host name of the page the widget was solved on.
+    #[serde(default)]
+    hostname: Option<String>,
 }
 
 impl SiteVerifyCaptcha {
@@ -84,7 +90,21 @@ impl SiteVerifyCaptcha {
             secret,
             verify_url,
             http,
+            hostnames: Vec::new(),
         })
+    }
+
+    /// Restricts accepted tokens to widgets solved on `hostnames`
+    /// (`protect.captcha.hostnames`, compared case-insensitively with the
+    /// provider's `hostname`). Empty: no check. With a list, a verdict
+    /// without `hostname` fails too (K-58 audit, PRT-05).
+    #[must_use]
+    pub fn with_hostnames(mut self, hostnames: Vec<String>) -> Self {
+        self.hostnames = hostnames
+            .into_iter()
+            .map(|h| h.to_ascii_lowercase())
+            .collect();
+        self
     }
 
     fn form(&self, token: &str, ctx: &CaptchaContext) -> Vec<u8> {
@@ -197,6 +217,17 @@ impl CaptchaVerifier for SiteVerifyCaptcha {
             tracing::debug!(provider = %self.provider, "captcha token issued for another action");
             return Ok(CaptchaVerdict::Failed);
         }
+        // A token solved on another site (token farming, or a provider-side
+        // domain list that is missing or too broad) must not pass.
+        if !self.hostnames.is_empty()
+            && !body
+                .hostname
+                .as_deref()
+                .is_some_and(|h| self.hostnames.iter().any(|e| e.eq_ignore_ascii_case(h)))
+        {
+            tracing::debug!(provider = %self.provider, "captcha token solved on another host");
+            return Ok(CaptchaVerdict::Failed);
+        }
         Ok(CaptchaVerdict::Passed)
     }
 }
@@ -284,6 +315,43 @@ mod tests {
             v.verify("tok", &ctx()).await.unwrap(),
             CaptchaVerdict::Failed
         );
+    }
+
+    #[tokio::test]
+    async fn prt_05_k58_tokens_solved_on_another_site_are_rejected() {
+        // The provider reports where the widget was solved; a token farmed
+        // on another site (a provider-side domain list that is missing or
+        // too broad) must not pass.
+        let url = |p| match p {
+            CaptchaProvider::Turnstile => TURNSTILE_VERIFY_URL,
+            _ => HCAPTCHA_VERIFY_URL,
+        };
+        for provider in [CaptchaProvider::Turnstile, CaptchaProvider::HCaptcha] {
+            for (hostname, expected) in [
+                (Some("auth.example.com"), CaptchaVerdict::Passed),
+                (Some("AUTH.Example.com"), CaptchaVerdict::Passed),
+                (Some("evil.example"), CaptchaVerdict::Failed),
+                (
+                    Some("auth.example.com.evil.example"),
+                    CaptchaVerdict::Failed,
+                ),
+                (None, CaptchaVerdict::Failed),
+            ] {
+                let http = Arc::new(FakeHttpClient::default());
+                let mut body = serde_json::json!({"success": true, "action": "login"});
+                if let Some(h) = hostname {
+                    body["hostname"] = h.into();
+                }
+                http.respond_json(Method::POST, url(provider), StatusCode::OK, &body);
+                let v =
+                    verifier(provider, http).with_hostnames(vec!["auth.example.com".to_owned()]);
+                assert_eq!(
+                    v.verify("tok", &ctx()).await.unwrap(),
+                    expected,
+                    "{provider:?} {hostname:?}"
+                );
+            }
+        }
     }
 
     #[tokio::test]

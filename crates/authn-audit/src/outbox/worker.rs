@@ -508,8 +508,12 @@ impl OutboxWorker {
     async fn delivered(&self, message: &OutboxMessage) -> Outcome {
         // The sealed (secret) payload is wiped together with the status
         // change; the schema refuses a delivered row that still has one.
+        // The personal parts of the plain payload (user id, masked
+        // recipient, event data) go too: nothing reads a delivered payload
+        // (K-58, AUD-05).
         let result = sqlx::query(
             "UPDATE outbox SET status = 'delivered', delivered_at = $2, sealed_payload = NULL, \
+             payload = payload - 'user_id' - 'recipient' - 'data', \
              locked_until = NULL, locked_by = NULL, last_error = NULL \
              WHERE id = $1 AND status = 'processing' AND locked_by = $3",
         )
@@ -560,6 +564,8 @@ impl OutboxWorker {
     ) -> Outcome {
         let result = sqlx::query(
             "UPDATE outbox SET status = 'dead', last_error = $2, sealed_payload = NULL, \
+             payload = CASE WHEN subject_erased \
+                 THEN payload - 'user_id' - 'recipient' - 'data' ELSE payload END, \
              locked_until = NULL, locked_by = NULL \
              WHERE id = $1 AND status = 'processing' AND locked_by = $3",
         )

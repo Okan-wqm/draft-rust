@@ -100,6 +100,13 @@ Bu görevde `pending_period` ve `retired_retention` için üst/alt sınırlar ek
 - **Eski parametreli kullanıcılar:** Argon2 parametreleri artırıldığında, henüz yükseltilmemiş hash'lerin doğrulama süresi sahte doğrulamadan kısa olabilir; kullanıcılar giriş yaptıkça kapanır.
 - Uygulanmayan SHOULD/MAY maddesi yoktur.
 
+K-58 değerlendirmesi (2026-11-05):
+
+- **Eski hash zamanlaması ve eski Argon2 parametreleri:** Geçiş penceresine özgüdür ve her başarılı girişte kapanır. Sahte doğrulama her hesap için aynı maliyeti kullanır. Eski hash'in kendi maliyetiyle eşitlenmesi, saklanan hash'in bilinmesini, dolayısıyla varlığın bilinmesini gerektirir. Gerekçeli kalır.
+- **Kod yeniden gönderme:** Toplam sınırlar çağıran modüldedir. Kayıt kodu için adres başına günlük sınır K-58 ile eklendi (authn-account).
+- **bcrypt'in 72 bayt sınırı:** Algoritmanın özelliğidir ve ilk girişte Argon2id'ye geçilir. İmkânsız.
+- **Kullanılmayan `data_encryption_keys` tablosu:** Risk değildir.
+
 ## Testler
 
 - **Bilinen test vektörleri (CRY-14, TST-05):** RFC 4231 (HMAC-SHA256), RFC 5869 (HKDF), RFC 4226 (HOTP), RFC 6238 (TOTP; SHA-1/256/512), RFC 8032 (Ed25519 TEST 1–3), Argon2id referans uygulaması (`password`/`somesalt`) ve RFC 9106 vektörü, RFC 7914 (PBKDF2-HMAC-SHA256), OpenWall bcrypt vektörü, Standard Webhooks referans vektörü, FIPS 180-2 SHA-256.

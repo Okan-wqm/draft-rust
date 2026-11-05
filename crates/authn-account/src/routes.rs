@@ -17,7 +17,7 @@
 //! | `DELETE` | `/v1/me` | session + step-up | ACC-09 |
 //! | `GET` | `/v1/me/deletion` | session | ACC-09 |
 //! | `POST` | `/v1/me/deletion/cancel` | session | ACC-09 |
-//! | `GET` | `/v1/me/export` | session + step-up | ACC-10 |
+//! | `POST` | `/v1/me/export` | session + step-up | ACC-10 |
 //! | `GET`, `POST` | `/v1/me/consents` | session | ACC-11 |
 //!
 //! Link tokens are always submitted with `POST` (frontends render a page
@@ -81,7 +81,7 @@ where
         .route("/v1/me/email/verify", post(verify_own_email))
         .route("/v1/me/deletion", get(deletion_status))
         .route("/v1/me/deletion/cancel", post(cancel_deletion))
-        .route("/v1/me/export", get(export_data))
+        .route("/v1/me/export", post(export_data))
         .route("/v1/me/consents", get(list_consents).post(record_consent))
 }
 
@@ -710,8 +710,11 @@ pub async fn cancel_deletion(
 }
 
 /// Machine-readable export of all personal data (ACC-10, KVKK/GDPR).
+/// `POST` (K-58 audit): a "safe" `GET` would skip the CSRF checks and be
+/// sent cross-site with the session cookie, letting any page spend the
+/// user's daily export quota.
 #[utoipa::path(
-    get,
+    post,
     path = "/v1/me/export",
     tag = "account",
     responses(

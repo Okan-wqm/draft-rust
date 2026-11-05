@@ -85,6 +85,10 @@ pub struct CaptchaConfig {
     pub pow_ttl: Duration,
     /// Treat an unreachable provider as passed. Default `false`.
     pub fail_open: bool,
+    /// Host names the Turnstile / hCaptcha widget may be solved on (the
+    /// provider's `hostname`, case-insensitive). Empty: not checked.
+    /// Required in production for those providers (K-58 audit).
+    pub hostnames: Vec<String>,
     /// Rate limit of `GET /v1/captcha/challenge` per IP. Default 30 per 1m.
     pub challenge_per_ip: RateLimitPolicy,
 }
@@ -100,6 +104,7 @@ impl Default for CaptchaConfig {
             pow_difficulty: 18,
             pow_ttl: mins(5),
             fail_open: false,
+            hostnames: Vec::new(),
             challenge_per_ip: RateLimitPolicy::new(30, mins(1)),
         }
     }
@@ -349,6 +354,13 @@ impl ProtectConfig {
             "must be 1-256 visible ASCII characters",
         );
         validate_policy(p, &c.challenge_per_ip, "protect.captcha.challenge_per_ip");
+        for (i, host) in c.hostnames.iter().enumerate() {
+            p.require(
+                is_host_entry(host) && !host.contains(':'),
+                &format!("protect.captcha.hostnames[{i}]"),
+                "must be a host name (no scheme, port, path or wildcard)",
+            );
+        }
 
         p.require(
             self.security_headers.hsts_max_age >= days(365),
@@ -373,7 +385,8 @@ impl ProtectConfig {
                 is_safe_redirect_entry(target),
                 &format!("protect.redirect_allow_list[{i}]"),
                 "must be an absolute ASCII URL without fragment, credentials, wildcard, \
-                 whitespace or backslash",
+                 whitespace or backslash, and not a script or local-document scheme \
+                 (javascript:, data:, vbscript:, file:, blob:, about:, filesystem:)",
             );
         }
         for (i, host) in self.allowed_hosts.iter().enumerate() {
@@ -429,8 +442,22 @@ fn is_safe_redirect_entry(target: &str) -> bool {
             .all(|b| b.is_ascii_graphic() && b != b'\\' && b != b'*');
     raw_ok
         && url::Url::parse(target).is_ok_and(|u| {
-            u.fragment().is_none() && u.username().is_empty() && u.password().is_none()
+            u.fragment().is_none()
+                && u.username().is_empty()
+                && u.password().is_none()
+                && !is_forbidden_redirect_scheme(u.scheme())
         })
+}
+
+/// URL schemes that are never a redirect target (K-58 audit, PRT-10):
+/// they run script in, or load a local document into, the context that
+/// follows the redirect. `url` lower-cases schemes when parsing.
+#[must_use]
+pub fn is_forbidden_redirect_scheme(scheme: &str) -> bool {
+    matches!(
+        scheme.to_ascii_lowercase().as_str(),
+        "javascript" | "data" | "vbscript" | "file" | "blob" | "about" | "filesystem"
+    )
 }
 
 /// `host` or `host:port` (PRT-09): DNS name or IP literal, no scheme, path,
@@ -529,6 +556,41 @@ mod tests {
             "https://app.example.com\\@evil.com",
             "/relative",
             "https://ápp.example.com/cb",
+        ] {
+            config.redirect_allow_list = vec![bad.to_owned()];
+            assert_eq!(problems(&config).len(), 1, "{bad}");
+        }
+    }
+
+    #[test]
+    fn prt_05_k58_captcha_hostnames_are_host_names() {
+        let mut config = ProtectConfig::default();
+        config.captcha.hostnames = vec!["auth.example.com".to_owned()];
+        assert!(problems(&config).is_empty(), "{:?}", problems(&config));
+        for bad in [
+            "https://auth.example.com",
+            "auth.example.com:443",
+            "*.example.com",
+            "auth.example.com/login",
+            "",
+        ] {
+            config.captcha.hostnames = vec![bad.to_owned()];
+            assert_eq!(problems(&config).len(), 1, "{bad}");
+        }
+    }
+
+    #[test]
+    fn prt_10_k58_redirect_allow_list_rejects_script_and_document_schemes() {
+        let mut config = ProtectConfig::default();
+        for bad in [
+            "javascript:alert(document.cookie)",
+            "JavaScript:alert(1)",
+            "data:text/html,<script>alert(1)</script>",
+            "vbscript:msgbox(1)",
+            "file:///etc/passwd",
+            "blob:https://app.example.com/0d1e",
+            "about:blank",
+            "filesystem:https://app.example.com/temporary/x",
         ] {
             config.redirect_allow_list = vec![bad.to_owned()];
             assert_eq!(problems(&config).len(), 1, "{bad}");

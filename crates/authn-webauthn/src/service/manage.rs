@@ -123,9 +123,9 @@ impl WebauthnService {
     }
 
     /// Removes **every** passkey of `user` in the caller's transaction
-    /// (`conn`) and returns how many were removed (ADM-03, PKY-04).
+    /// (`conn`) and returns how many were removed (ADM-03, PKY-04, ACC-07).
     ///
-    /// For administrative recovery (the admin "reset MFA" action, used
+    /// For administrative recovery and for the e-mail change revert (K-20) (the admin "reset MFA" action, used
     /// together with a password reset): an attacker's passkey must not
     /// survive the reset, and a user who lost the device must not stay
     /// locked out by a passkey registered as second factor. Therefore —
@@ -136,8 +136,9 @@ impl WebauthnService {
     ///
     /// Effects, all in `conn` (nothing happens unless the caller commits):
     /// one `passkey.removed` audit event per passkey with `Actor::System`
-    /// and `reason = admin_reset` metadata (the real actor is in the
-    /// caller's own `admin.*` event), and one `mfa_factor_removed`
+    /// and `reason` metadata from `reason` (K-68: [`PasskeyRemovalReason`];
+    /// the real actor is in the caller's own `admin.*` / account event),
+    /// and one `mfa_factor_removed`
     /// (`webauthn`) notification when at least one passkey was removed.
     /// Every open ceremony of the user is burned in the same transaction
     /// (also when no passkey existed): an authentication ceremony could not
@@ -151,6 +152,7 @@ impl WebauthnService {
         conn: &mut PgConnection,
         ctx: &RequestContext,
         user: UserId,
+        reason: PasskeyRemovalReason,
     ) -> Result<u32, AuthError> {
         let account = UserRepository::lock_for_update(conn, user)
             .await?
@@ -165,7 +167,7 @@ impl WebauthnService {
                 .event(SecurityEventKind::PasskeyRemoved, ctx, user, None)
                 .with_actor(Actor::System)
                 .with_resource("passkey", *id)
-                .with_meta("reason", "admin_reset")
+                .with_meta("reason", reason.as_str())
                 .with_meta("remaining", 0_u32);
             // Staff request: keep only the request id (correlation with the
             // admin's own `admin.action`); the admin's IP and user agent
@@ -177,7 +179,38 @@ impl WebauthnService {
         }
         self.notify_factor_change(conn, ctx, &account, false)
             .await?;
-        tracing::info!(user = %user, count = removed.len(), "all passkeys removed (admin reset)");
+        tracing::info!(
+            user = %user,
+            count = removed.len(),
+            reason = reason.as_str(),
+            "all passkeys removed"
+        );
         Ok(u32::try_from(removed.len()).unwrap_or(u32::MAX))
+    }
+}
+
+/// Why every passkey of an account is removed at once
+/// ([`WebauthnService::remove_all_passkeys_in_tx`]); recorded as the
+/// `reason` of each `passkey.removed` audit event (K-68), so the user's
+/// security-event list and the audit trail tell an admin MFA reset apart
+/// from the owner's own e-mail change revert.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PasskeyRemovalReason {
+    /// A platform admin reset the account's MFA (ADM-03) or replaced the
+    /// credentials of a break-glass account offline (K-07).
+    AdminReset,
+    /// The owner reverted an e-mail change from the old mailbox (ACC-07,
+    /// K-20): every login method added in the meantime goes.
+    EmailChangeReverted,
+}
+
+impl PasskeyRemovalReason {
+    /// Stable audit value (`admin_reset` / `email_change_reverted`).
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::AdminReset => "admin_reset",
+            Self::EmailChangeReverted => "email_change_reverted",
+        }
     }
 }

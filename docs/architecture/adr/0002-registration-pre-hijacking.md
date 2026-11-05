@@ -1,6 +1,6 @@
 # ADR 0002 — Kayıtta hesap ön-ele geçirme (pre-hijacking) savunması: kayda bağlı kimlik bilgileri
 
-- **Durum:** Kabul edildi (2026-11-01)
+- **Durum:** Kabul edildi (2026-11-01); artık riskler K-58 ile güncellendi (2026-11-05)
 - **Sahip:** `authn-account`
 - **İlgili gereksinimler:** ACC-01, ACC-02, ACC-04, ACC-05, ACC-07, ACC-10, ACC-11, PWD-09, SES-18, SOC-05, ADM-03, TST-02
 - **Kod:** `crates/authn-account/src/service/{signup,registration,verification,revocation,email_change}.rs`, `crates/authn-account/src/registration_store.rs`, `migrations/1201_pending_registrations.sql`
@@ -51,6 +51,7 @@ Kök neden: **posta kutusu kontrolünün kanıtı (link/kod) ile kimlik bilgisin
    | Sunulan kanıt | Etkinleşen kimlik bilgisi |
    |---------------|---------------------------|
    | link + tutamaç (kaydı yapan tarayıcı, çerez) | kaydınki |
+   | link + aynı hesabın **başka** canlı kaydının tutamacı (K-58) | tutamacın kaydınınki |
    | link + o kayıtta seçilen şifre (başka cihaz) | kaydınki |
    | link + **yeni** şifre (+ zorunluysa şartların kabulü) | yeni şifre; kaydın profil ve onayları atılır |
    | yalnızca link | hiçbiri — `registration_confirmation_required` (403) |
@@ -59,8 +60,8 @@ Kök neden: **posta kutusu kontrolünün kanıtı (link/kod) ile kimlik bilgisin
 
    Link posta kutusu kontrolünü kanıtlar; tutamaç veya şifre "bu kimlik bilgisini ben seçtim"i kanıtlar; yeni şifre ise kimlik bilgisini **posta kutusu sahibinin** aynı akışta seçmesidir. Böylece yalnızca link, tıklayanın seçmediği bir şifreye doğrulanmış hesap **veremez**.
 4. **Tamamlama tek transaction'dır** (adres advisory kilidi → kayıt satır kilidi → kullanıcı satır kilidi): şifre, profil, onaylar (kaydın zamanı/IP'si/UA'sı ile), adresin kayıttaki yazımı yazılır; adres doğrulanır, `pending_verification → active` (ACC-06, audit); hesabın **bütün** bekleyen kayıtları silinir (linkleri, kodları, tutamaçları ölür); bekleyen doğrulama token'ları iptal edilir; **tüm oturumlar ve güvenilir cihazlar** iptal edilir ("unexpired session" sınıfı). Eşzamanlı tamamlamalardan tam olarak biri başarılı olur.
-5. **Aynı adrese yeniden kayıt hiçbir şeyi değiştirmez.** Doğrulanmış hesap → sahibine "biri bu adresle kayıt olmaya çalıştı" e-postası (giriş ve şifre sıfırlama yolları ile; şifre değişmez). Doğrulanmamış hesap → aynı yer tutucuya **ayrı** bir kayıt (adres başına günde `registration_notice_per_email`, hesap başına en fazla 10 canlı kayıt); mevcut kayıtlara, oturumlara, profile dokunulmaz. Yanıt, durum ve süre her durumda aynıdır (ACC-02; hesaba bağlı iş arka planda).
-6. **Tahmin sınırları:** kayıt başına ömür boyu `verification.code_max_attempts` (5) yanlış kod (yeniden gönderme kodu yeniler, sayacı sıfırlamaz), adres başına saatlik `code_attempts_per_email`, IP başına `verify_per_ip`; link sayfasında "seçtiğiniz şifre" için kayıt başına `MAX_PASSWORD_CONFIRMATIONS` (5) yanlış yanıt, sonra yalnızca yeni şifre.
+5. **Aynı adrese yeniden kayıt hiçbir şeyi değiştirmez.** Doğrulanmış hesap → sahibine "biri bu adresle kayıt olmaya çalıştı" e-postası (giriş ve şifre sıfırlama yolları ile; şifre değişmez). Doğrulanmamış hesap → aynı yer tutucuya **ayrı** bir kayıt (adres başına günde `registration_notice_per_email` e-posta; bütçe aşılınca kayıt yine saklanır ama e-postası gönderilmez (K-58); hesap başına en fazla 10 canlı kayıt, en eskiler düşer); mevcut kayıtlara, oturumlara, profile dokunulmaz. Yanıt, durum ve süre her durumda aynıdır (ACC-02; hesaba bağlı iş arka planda).
+6. **Tahmin sınırları:** kayıt başına ömür boyu `verification.code_max_attempts` (5) yanlış kod (yeniden gönderme kodu yeniler, sayacı sıfırlamaz), adres başına saatlik `code_attempts_per_email`, adres başına günlük `REGISTRATION_CODE_GUESSES_PER_DAY` (5, tüm kayıtlarda ortak; K-58), IP başına `verify_per_ip`; link sayfasında "seçtiğiniz şifre" için kayıt başına `MAX_PASSWORD_CONFIRMATIONS` (5) yanlış yanıt, sonra yalnızca yeni şifre.
 7. **Doğrulanmamış hesap süresi dolar:** kayıt `unverified_purge_after` (7 gün) sonra silinir; yer tutucu, canlı kaydı kalmayınca temizlenir (sonraki bir kaydı erken bitirmez).
 8. **Posta kutusu sahibi her zaman kazanır / geri alır:**
    - Herhangi bir kaydın linki (ya da yeniden gönderilen yenisi) + yeni şifre → hesap posta kutusu sahibinin.
@@ -87,13 +88,35 @@ authn-password'ün sıfırlama tamamlaması ve authn-session'ın toplu iptalleri
 - Kayıt bir cihazda, link başka cihazda açılırsa kullanıcı şifresini bir kez daha girer.
 - Kayıt doğrulanmadan şifresini unutan kullanıcı, şifre sıfırlama yerine linkteki "yeni şifre" yolunu (veya yeniden kaydı) kullanır.
 - Doğrulama linki 24 saat boyunca "yeni şifre" ile hesabı kurabildiğinden, bu süre içinde sızan bir link, sızdığı kişiye hesabı verir (önceki tasarımda da link hesabı doğruluyordu; şifre sıfırlama linkiyle aynı sınıf).
-- `MAX_LIVE_REGISTRATIONS` ve adres başına kayıt sınırı, bir saldırganın kurbanın aynı gün içindeki kaydını sessizce düşürmesine izin verir (hedefli DoS); kurban yine elindeki herhangi bir link ve yeni şifreyle veya ertesi gün tamamlar.
+- ~~`MAX_LIVE_REGISTRATIONS` ve adres başına kayıt sınırı, bir saldırganın kurbanın aynı gün içindeki kaydını sessizce düşürmesine izin verir (hedefli DoS)~~ — **K-58 ile daraltıldı**, aşağıdaki "Artık riskler"e bakın.
 
-**Artık riskler**
-- **Kod oltalama:** saldırgan kurbanın adresiyle kayıt olup kendi tutamacını tutar ve kurbandan e-postadaki kodu "okumasını" isterse, kodu kendi tutamacıyla girerek kazanır. Bu, posta kutusu sahibinin sırrı gönüllü vermesidir (makalenin tehdit modeli dışında); e-posta metni "kayıt olmadıysanız yok sayın" der. Link için aynı oltalama hem link hem şifre/tutamaç gerektirir.
-- **Kod tahmini:** adres başına günde en fazla ~`registration_notice_per_email` kayıt × 5 deneme (≈ 15) → hedeflenen adres başına günde ≈ 1,5·10⁻⁵ başarı olasılığı (ACC-04'ün 6 haneli kod tasarımından).
+**Artık riskler** (K-58 ile yeniden değerlendirildi, 2026-11-05)
+
+- **Kod oltalama** (azaltıldı, tamamen kapatılamaz): saldırgan kurbanın adresiyle kayıt olup kendi tutamacını tutar ve kurbandan e-postadaki kodu "okumasını" isterse kodu kendi tutamacıyla girerek kazanır. Kod zaten başlatan istemciye (tutamaca) bağlıdır; oltalamada başlatan istemci **saldırganın kendisidir**, dolayısıyla "kodu başlatan tarayıcıya bağla" bu sınıfı kapatmaz. Kodun amacı (başka bir cihazda, ör. mobil uygulamada elle girilmesi) korunarak protokolle kapatılamaz: gönüllü verilen bir sırrı sunucu ayırt edemez. Kod hiç gönderilmezse ACC-04 (6 haneli kod) ihlal edilir. Yapılan (K-58): e-postada kodun yanında "yalnızca kayıt olduğunuz uygulamada veya tarayıcıda girin" ve "bu kodu veya bağlantıyı kimseyle paylaşmayın; isteyen biri sizin adınıza hesap açmaya çalışıyordur" uyarısı (TR/EN, `acc_04_k58_verification_mail_warns_against_sharing_the_code`). Kalan risk: uyarıya rağmen kodu okuyan kullanıcı. Etkisi sınırlıdır: hesap posta kutusu sahibinindir ve şifre sıfırlama her zaman ona döner (madde 8). Link için aynı oltalama, link **ve** şifre ya da tutamaç gerektirir.
+- **Kod tahmini** (azaltıldı): K-58 öncesinde adres başına günde ~`registration_notice_per_email` (3) kayıt × 5 deneme ≈ 15 tahmin yapılabiliyordu, yani hedef adres başına günde ≈ 1,5·10⁻⁵ başarı olasılığı vardı. Şimdi her kaydın 5 denemesine ve adres başına saatlik sınıra ek olarak, **adres başına günlük kod gönderim sınırı** `REGISTRATION_CODE_GUESSES_PER_DAY = 5` uygulanır. Sınır tüm kayıtlar arasında ortaktır ve GCRA ile işler (sürekli hız günde 5, ilk 24 saatte en fazla 10). Saldırgan kaç kayıt açarsa açsın, hedef adres başına başarı olasılığı sürekli durumda günde ≈ **5·10⁻⁶**, ilk günde en fazla 1·10⁻⁵ olur (`acc_04_k58_code_guesses_per_address_are_capped_per_day`). Posta kutusu sahibi kilitlenmez: e-postadaki link kodsuz tamamlar. Kod uzunluğu ACC-04 gereği 6 hanede kaldı. **Karar (koordinatör, 2026-11-05): 6 hane korunur.** Gerekçe: adres başına sınırla tahmin olasılığı ≈5·10⁻⁶/gün'dür ve link yolu kod gerektirmez. 8 hane olasılığı 100 kat daha düşürürdü, ama bağlayıcı spesifikasyonu (ACC-04) değiştirmeyi gerektirir.
+- **Hedefli kayıt DoS'u** (kapatıldı; artık kalan küçük): eskiden adresin günlük e-posta bütçesi (3) dolunca sahibin kaydı **sessizce düşürülüyordu**. Artık bütçe aşıldığında kayıt yine saklanır, yalnızca e-postası gönderilmez (posta bombalamasına karşı). Sahip, **hesabın herhangi bir canlı linkini** (ör. saldırganın tetiklediği e-postalardan biri) kendi tutamacını taşıyan tarayıcıda açınca **kendi** kaydı etkinleşir (`link_registering_client_other_registration`). Güvenlik: link posta kutusu kontrolünü kanıtlar. Tutamaç `SameSite=Strict`, `HttpOnly`, `__Host-` çerezidir; başkası tarayıcıya yerleştiremez ve "bu kaydı ben yaptım"ı kanıtlar. Bu, zaten var olan "link + yeni şifre" yolundan zayıf değildir. Başka bir hesabın tutamacı hiçbir şeyi tamamlamaz (`acc_02_k58_a_link_never_completes_a_registration_of_another_account`). Kalan: hesap başına en fazla 10 canlı kayıt tutulur ve en eskiler düşer. Kurbanın kaydını düşürmek için saldırganın kurbanınkinden **sonra** 10 kayıt daha açması gerekir; her biri IP başına kayıt sınırına ve CAPTCHA'ya takılır. O durumda bile sahip herhangi bir link + yeni şifre ile hesabı alır, yani kilitlenmez (`acc_02_k58_exhausted_email_budget_never_drops_the_owners_registration`).
 - **Diğer modüllerin kimlik bilgileri:** bu crate `identities`/`webauthn_credentials`'ı göremez. authn-oidc-client ve authn-webauthn, `pending_verification` bir hesaba kimlik bilgisi **eklememeli**; sağlayıcının doğruladığı e-postayla bağlarken `confirm_mailbox_control_in_tx(…, MailboxProof::Passwordless)` çağrılmalıdır ("Trojan identifier" sınıfı).
 - **Kilit sırası:** sıfırlama tamamlaması (kullanıcı → kayıt satırları) ile kayıt tamamlaması (kayıt → kullanıcı) aynı anda çakışırsa PostgreSQL kilitlenmeyi tespit edip birini geri alır; tutarsız durum oluşmaz.
+
+### Bağımsız denetim (wave 4B, 2026-11-05)
+
+K-58 değişikliğinden sonra anlam şöyle oldu: "saldırganın kaydının linki + kurbanın tutamacı → kurbanın kaydı etkinleşir". Denetim, ön-ele geçirmenin hâlâ imkânsız olduğunu her kombinasyon için kontrol etti. Saldırganın kurbanın adresinde, kendi bildiği bir kimlik bilgisiyle aktif bir hesaba sahip olması hiçbir durumda mümkün değil. Temel gözlem: **linkler yalnızca posta kutusuna gider.** Saldırgan hiçbir linke sahip değildir, kurban (posta kutusu sahibi) hepsine sahiptir. Tutamaç ise kaydı yapan tarayıcının `__Host-`, `HttpOnly`, `SameSite=Strict` çerezidir.
+
+| Önce kim kaydoldu | Kimin linki | Hangi tarayıcının tutamacı | Sonuç |
+|---|---|---|---|
+| saldırgan / kurban | herhangi biri (yalnızca kurbanda) | kurbanınki | kurbanın kaydı (kurbanın şifresi) |
+| saldırgan / kurban | herhangi biri | saldırganınki | gerçekleşemez: link saldırganın tarayıcısına ulaşmaz. Kurban linki kendi tarayıcısında açar, orada saldırganın tutamacı yoktur |
+| saldırgan / kurban | herhangi biri | yok (başka cihaz) | yalnızca "o kayıtta seçilen şifre" (kayıt başına 5 deneme) ya da "yeni şifre" ile: ikisini de tıklayan, yani posta kutusu sahibi bilir |
+| saldırgan / kurban | herhangi biri | başka bir hesabın tutamacı | hiçbir şey tamamlanmaz (`acc_02_k58_a_link_never_completes_a_registration_of_another_account`) |
+| — | yalnızca kod | saldırganınki | kod e-postayla posta kutusuna gider. Tahmin adres başına günde 5 ile sınırlıdır (≈5·10⁻⁶/gün). Oltalama: yukarıdaki artık risk |
+
+Kalan varsayım: saldırgan, kurbanın tarayıcısına kendi tutamaç çerezini yerleştiremez. Bu varsayım K-58'den önce de "link + tutamaç" satırı için gerekliydi; K-58 onu genişletmez. Kardeş kayıt yolu, linkin kendi kaydının tutamacıyla açılmasından zayıf değildir, çünkü saldırganın kaydının e-postası da kurbana gider.
+
+**E-postasız saklanan kayıtlar (DoS):** satır sayısı sınırlıdır. Adres başına tek yer tutucu hesap vardır ve hesap başına en fazla `MAX_LIVE_REGISTRATIONS` (10) kayıt tutulur (`trim`). Her kayıt IP başına kayıt sınırına ve CAPTCHA'ya tabidir; kayıt `unverified_purge_after` (7 gün) sonra silinir. Saldırganın açabileceği satır sayısı, yeni adres sayısıyla doğrusal büyür. Bu K-58'den önce de böyleydi, çünkü ilk kayıt her zaman saklanıyordu.
+
+**Adres başına kod tahmin sınırı:** bütçe gönderilen adres üzerinden tutulur; bilinmeyen bir tutamaç ve kurbanın adresiyle de tüketilebilir. Bu yüzden saldırgan, sahibin **kod** yolunu günde 5 denemeyle kapatabilir. Link yolu (kodsuz) etkilenmez ve hesap kilitlenmez. Yanıt her durumda aynıdır (`invalid_code` / `429`, hesap var olsun ya da olmasın), bu nedenle hesap varlığı sızmaz.
+
+**Havuz kalıbı (denetim bulgusu, düzeltildi):** kayıt arka plan işi, transaction ve adres kilidi açıkken `RateLimiter`'ı çağırıyordu: adres bütçesi, kayıt bildirimi ve yeniden gönderme bekleme süresi. Üretimdeki `PostgresRateLimiter` aynı havuzdan ikinci bir bağlantı ister. Kararlar artık transaction'dan önce, kilitsiz bir ön okumaya göre alınıyor. Kilitli okuma farklı çıkarsa (eşzamanlı kayıt) e-posta gönderilmez (güvenli taraf). Aynı kalıp e-posta değişikliğindeki "adres kullanımda" bildiriminde de vardı. Test: `acc_01_k58_signup_job_never_waits_for_a_second_pooled_connection` (düzeltmeden önce `database pool timed out`).
 
 ## Reddedilen alternatifler
 

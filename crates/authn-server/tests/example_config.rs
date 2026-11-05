@@ -45,3 +45,28 @@ fn ops_08_example_keys_are_refused_in_production() {
         "{problems:?}"
     );
 }
+
+/// K-74: the documented (commented) approval request caps of `[admin]` are
+/// real keys with valid defaults: uncommented, the example still loads.
+#[test]
+fn adm_06_k74_example_approval_caps_are_valid_keys() {
+    let text = std::fs::read_to_string(example_path()).unwrap();
+    let keys: Vec<&str> = text
+        .lines()
+        .filter_map(|line| line.strip_prefix("# four_eyes_max_"))
+        .collect();
+    assert_eq!(keys.len(), 2, "{keys:?}");
+    let admin = format!(
+        "[admin]\n{}\n",
+        keys.iter()
+            .map(|rest| format!("four_eyes_max_{rest}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    let figment = Figment::new()
+        .merge(Toml::file_exact(example_path()))
+        .merge(Toml::string(&admin));
+    let config = AppConfig::from_figment(&figment).unwrap();
+    assert_eq!(config.admin.four_eyes_max_pending_requests, 3);
+    assert_eq!(config.admin.four_eyes_max_requests_per_hour, 10);
+}

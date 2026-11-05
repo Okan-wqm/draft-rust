@@ -16,7 +16,7 @@ use authn_core::config::crypto::KekConfig;
 use authn_core::error::{AuthError, codes};
 use authn_core::id::{OrgId, ServiceAccountId, UserId};
 use authn_core::ports::{
-    Clock, DomainEvent, DomainEventKind, EventPublisher, HttpClient, OutboundRequest,
+    AuditSink, Clock, DomainEvent, DomainEventKind, EventPublisher, HttpClient, OutboundRequest,
     OutboundResponse, OutboundTarget,
 };
 use authn_crypto::envelope::EnvelopeCipher;
@@ -890,4 +890,204 @@ async fn aud_07_webhook_changes_and_redeliveries_are_rate_limited_per_org(pool: 
         .send(&s.h.app(Some(user_principal(stranger, Some(s.h.now())))))
         .await
         .assert_error(StatusCode::NOT_FOUND, "not_found");
+}
+
+// --- K-58: no user id of an erased account survives in the history -------
+
+async fn publish_for(s: &Setup, kind: DomainEventKind, user: UserId) -> DomainEvent {
+    let mut event = DomainEvent::new(kind, s.h.now(), json!({ "user_id": user }));
+    event.org_id = Some(s.org);
+    event.user_id = Some(user);
+    let mut tx = s.h.pool.begin().await.unwrap();
+    s.h.service
+        .event_publisher()
+        .publish(&mut tx, event.clone())
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    event
+}
+
+/// Rows of the outbox and the delivery history that still mention `user`.
+async fn mentions(pool: &PgPool, user: UserId) -> Vec<String> {
+    sqlx::query_scalar(
+        "SELECT 'outbox:' || status || ':' || topic FROM outbox o \
+         WHERE row_to_json(o)::text LIKE '%' || $1 || '%' \
+         UNION ALL SELECT 'delivery:' || status || ':' || event_type FROM webhook_deliveries d \
+         WHERE row_to_json(d)::text LIKE '%' || $1 || '%' ORDER BY 1",
+    )
+    .bind(user.to_string())
+    .fetch_all(pool)
+    .await
+    .unwrap()
+}
+
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn aud_06_k58_delivered_outbox_messages_keep_no_personal_data(pool: PgPool) {
+    let s = Setup::new(pool.clone()).await;
+    s.create(URL, &["member.added"]).await;
+    let user = create_user(&pool).await;
+    publish_for(&s, DomainEventKind::MemberAdded, user).await;
+    s.drain().await;
+    let delivered: Vec<Value> =
+        sqlx::query_scalar("SELECT payload FROM outbox WHERE status = 'delivered'")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        delivered.len(),
+        2,
+        "domain event + webhook delivery message"
+    );
+    for payload in &delivered {
+        assert!(payload.get("user_id").is_none(), "{payload}");
+        assert!(payload.get("data").is_none(), "{payload}");
+    }
+    // The delivery history of a live user keeps its payload (receivers'
+    // operators need it; redelivery works).
+    assert_eq!(
+        mentions(&pool, user).await,
+        vec!["delivery:succeeded:member.added"]
+    );
+}
+
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn aud_05_k58_erasure_scrubs_the_outbox_and_redacts_the_webhook_history(pool: PgPool) {
+    let s = Setup::new(pool.clone()).await;
+    let (endpoint, _) = s
+        .create(URL, &["member.added", "member.removed", "user.deleted"])
+        .await;
+    let endpoint_id = endpoint["id"].as_str().unwrap().to_owned();
+    let victim = create_user(&pool).await;
+    let bystander = create_user(&pool).await;
+    // A finished delivery, an unfinished one (the receiver failed once)
+    // and a dead-letter message of the victim; a bystander's delivery.
+    publish_for(&s, DomainEventKind::MemberAdded, victim).await;
+    publish_for(&s, DomainEventKind::MemberAdded, bystander).await;
+    s.drain().await;
+    s.http.push_full(500, None, "");
+    publish_for(&s, DomainEventKind::MemberRemoved, victim).await;
+    s.drain().await;
+    sqlx::query(
+        "INSERT INTO outbox (id, topic, payload, status, attempts, max_attempts, available_at, \
+         created_at) VALUES ($1, 'notification.email', $2, 'dead', 10, 10, $3, $3)",
+    )
+    .bind(uuid::Uuid::now_v7())
+    .bind(json!({ "v": 1, "user_id": victim, "recipient": "v***@example.com" }))
+    .bind(s.h.now())
+    .execute(&pool)
+    .await
+    .unwrap();
+    let finished_id: String = sqlx::query_scalar(
+        "SELECT id::text FROM webhook_deliveries WHERE event_type = 'member.added' \
+         AND subject_user_id = $1",
+    )
+    .bind(victim)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    // The erasure transaction (authn-account ACC-09): `user.deleted`, then
+    // the pseudonymisation.
+    let mut tx = pool.begin().await.unwrap();
+    let mut deleted = DomainEvent::new(
+        DomainEventKind::UserDeleted,
+        s.h.now(),
+        json!({ "user_id": victim }),
+    );
+    deleted.org_id = Some(s.org);
+    deleted.user_id = Some(victim);
+    s.h.service
+        .event_publisher()
+        .publish(&mut tx, deleted)
+        .await
+        .unwrap();
+    s.h.service
+        .sink()
+        .pseudonymize_subject(&mut tx, victim)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    // Finished rows: scrubbed at once. Unfinished ones still carry the id
+    // until they are delivered.
+    let redacted: Value =
+        sqlx::query_scalar("SELECT payload FROM webhook_deliveries WHERE id::text = $1")
+            .bind(&finished_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(redacted["redacted"], true);
+    assert_eq!(redacted["type"], "member.added");
+    assert!(redacted.get("user_id").is_none() && redacted.get("data").is_none());
+    assert_eq!(
+        mentions(&pool, victim).await,
+        vec![
+            "delivery:failed:member.removed",
+            "outbox:pending:domain_event",
+        ]
+    );
+
+    // Receivers still get every event, `user.deleted` included...
+    s.h.ports.clock.advance(Duration::from_secs(61));
+    s.drain().await;
+    let sent: Vec<Value> = s
+        .http
+        .requests()
+        .iter()
+        .map(|r| serde_json::from_slice(r.body.as_ref().unwrap()).unwrap())
+        .collect();
+    assert!(
+        sent.iter()
+            .any(|b| b["type"] == "user.deleted" && b["user_id"] == victim.to_string())
+    );
+    assert!(sent.iter().any(|b| b["type"] == "member.removed"));
+    // ... and afterwards nothing mentions the erased account any more; the
+    // bystander's history is untouched.
+    assert_eq!(mentions(&pool, victim).await, Vec::<String>::new());
+    assert_eq!(
+        mentions(&pool, bystander).await,
+        vec!["delivery:succeeded:member.added"]
+    );
+
+    // A redacted delivery cannot be sent again.
+    TestRequest::post(&format!(
+        "/v1/orgs/{}/webhooks/{endpoint_id}/deliveries/{finished_id}/redeliver",
+        s.org
+    ))
+    .send(&s.admin_app())
+    .await
+    .assert_error(StatusCode::NOT_FOUND, "not_found");
+}
+
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn aud_05_k58_deliveries_that_die_after_the_erasure_are_redacted(pool: PgPool) {
+    let mut config = AuditConfig::default();
+    config.webhooks.max_attempts = 1;
+    let s = Setup::with_config(pool.clone(), &config).await;
+    s.create(URL, &["user.deleted"]).await;
+    let victim = create_user(&pool).await;
+    let mut tx = pool.begin().await.unwrap();
+    let mut deleted = DomainEvent::new(
+        DomainEventKind::UserDeleted,
+        s.h.now(),
+        json!({ "user_id": victim }),
+    );
+    deleted.org_id = Some(s.org);
+    deleted.user_id = Some(victim);
+    s.h.service
+        .event_publisher()
+        .publish(&mut tx, deleted)
+        .await
+        .unwrap();
+    s.h.service
+        .sink()
+        .pseudonymize_subject(&mut tx, victim)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    s.http.push_full(500, None, "");
+    s.drain().await;
+    assert_eq!(s.deliveries().await[0].0, "dead");
+    assert_eq!(mentions(&pool, victim).await, Vec::<String>::new());
 }

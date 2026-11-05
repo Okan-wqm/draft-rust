@@ -491,16 +491,11 @@ async fn ses_15_user_wide_revocation_closes_pending_logins(pool: PgPool) {
         }
     };
 
-    // A password change keeps the pending login: the SES-22 required
-    // actions (password change, e-mail verification) revoke with this
-    // reason from inside the login they complete.
-    let (_, pending) = h.pending_challenge(user, ChallengeKind::Login, None).await;
-    revoke_all(RevocationReason::PasswordChanged).await;
-    assert!(h.challenge_open(&pending, ChallengeKind::Login).await);
-
     // A login started with the old password cannot finish after a reset,
-    // a suspension or "this wasn't me".
+    // a password change (K-58 audit; the SES-22 in-flight steps are kept,
+    // see `k58.rs`), a suspension or "this wasn't me".
     for reason in [
+        RevocationReason::PasswordChanged,
         RevocationReason::PasswordReset,
         RevocationReason::AccountSuspended,
         RevocationReason::NotMe,

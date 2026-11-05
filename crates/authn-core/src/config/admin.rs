@@ -32,7 +32,24 @@ pub struct AdminConfig {
     /// 5 min – 2 h.
     #[serde(with = "super::duration")]
     pub four_eyes_approval_ttl: Duration,
+    /// Most pending four-eyes requests one admin may have at a time (K-66,
+    /// K-74: approval fatigue). Default 3, allowed
+    /// [`MAX_PENDING_REQUESTS_RANGE`].
+    pub four_eyes_max_pending_requests: u32,
+    /// Most four-eyes requests one admin may raise per hour, decided ones
+    /// included (K-66, K-74). Default 10, allowed
+    /// [`MAX_REQUESTS_PER_HOUR_RANGE`] and at least
+    /// `four_eyes_max_pending_requests`.
+    pub four_eyes_max_requests_per_hour: u32,
 }
+
+/// Allowed values of `admin.four_eyes_max_pending_requests` (K-74): at
+/// least one request (0 would make four-eyes operations impossible), at
+/// most 10 (more prompts invite approval fatigue).
+pub const MAX_PENDING_REQUESTS_RANGE: std::ops::RangeInclusive<u32> = 1..=10;
+
+/// Allowed values of `admin.four_eyes_max_requests_per_hour` (K-74).
+pub const MAX_REQUESTS_PER_HOUR_RANGE: std::ops::RangeInclusive<u32> = 1..=60;
 
 impl Default for AdminConfig {
     fn default() -> Self {
@@ -43,6 +60,8 @@ impl Default for AdminConfig {
             impersonation_max_ttl: mins(60),
             four_eyes: None,
             four_eyes_approval_ttl: mins(30),
+            four_eyes_max_pending_requests: 3,
+            four_eyes_max_requests_per_hour: 10,
         }
     }
 }
@@ -69,10 +88,88 @@ impl AdminConfig {
             "admin.four_eyes_approval_ttl",
         );
         p.require(
+            MAX_PENDING_REQUESTS_RANGE.contains(&self.four_eyes_max_pending_requests),
+            "admin.four_eyes_max_pending_requests",
+            "must be between 1 and 10",
+        );
+        p.require(
+            MAX_REQUESTS_PER_HOUR_RANGE.contains(&self.four_eyes_max_requests_per_hour),
+            "admin.four_eyes_max_requests_per_hour",
+            "must be between 1 and 60",
+        );
+        p.require(
+            self.four_eyes_max_requests_per_hour >= self.four_eyes_max_pending_requests,
+            "admin.four_eyes_max_requests_per_hour",
+            "must be >= four_eyes_max_pending_requests",
+        );
+        p.require(
             !self.impersonation_default_ttl.is_zero()
                 && self.impersonation_default_ttl <= self.impersonation_max_ttl,
             "admin.impersonation_default_ttl",
             "must be > 0 and <= impersonation_max_ttl",
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn problems(config: &AdminConfig) -> Vec<String> {
+        let mut p = ConfigProblems::default();
+        config.validate(&mut p);
+        p.problems().to_vec()
+    }
+
+    /// K-74: the four-eyes request caps are configurable within sane
+    /// bounds; out-of-range values (0 included) and an hourly cap below the
+    /// pending cap are refused, so a mistake fails closed at start-up.
+    #[test]
+    fn adm_06_k74_approval_request_caps_are_validated() {
+        let defaults = AdminConfig::default();
+        assert_eq!(defaults.four_eyes_max_pending_requests, 3);
+        assert_eq!(defaults.four_eyes_max_requests_per_hour, 10);
+        assert!(problems(&defaults).is_empty(), "{:?}", problems(&defaults));
+        let with = |pending: u32, per_hour: u32| AdminConfig {
+            four_eyes_max_pending_requests: pending,
+            four_eyes_max_requests_per_hour: per_hour,
+            ..AdminConfig::default()
+        };
+        for (pending, per_hour) in [(1, 1), (10, 60), (2, 5)] {
+            let found = problems(&with(pending, per_hour));
+            assert!(found.is_empty(), "{pending}/{per_hour}: {found:?}");
+        }
+        for (pending, per_hour, key) in [
+            (0, 10, "admin.four_eyes_max_pending_requests"),
+            (11, 20, "admin.four_eyes_max_pending_requests"),
+            (3, 0, "admin.four_eyes_max_requests_per_hour"),
+            (3, 61, "admin.four_eyes_max_requests_per_hour"),
+            (5, 4, "admin.four_eyes_max_requests_per_hour"),
+        ] {
+            let found = problems(&with(pending, per_hour));
+            assert!(
+                found.iter().any(|p| p.starts_with(key)),
+                "{pending}/{per_hour}: {found:?}"
+            );
+        }
+    }
+
+    /// K-74: the keys are read from TOML; misspelt keys stay refused.
+    #[test]
+    fn adm_06_k74_approval_request_caps_are_read_from_toml() {
+        use figment::Figment;
+        use figment::providers::{Format, Toml};
+        let config: AdminConfig = Figment::from(Toml::string(
+            "four_eyes_max_pending_requests = 2\nfour_eyes_max_requests_per_hour = 6\n",
+        ))
+        .extract()
+        .unwrap();
+        assert_eq!(config.four_eyes_max_pending_requests, 2);
+        assert_eq!(config.four_eyes_max_requests_per_hour, 6);
+        assert!(
+            Figment::from(Toml::string("four_eyes_max_pending = 2\n"))
+                .extract::<AdminConfig>()
+                .is_err()
         );
     }
 }

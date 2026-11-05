@@ -12,9 +12,11 @@
 //! * **Break-glass accounts** (ADM-05) are only subject to their own
 //!   per-admin budgets: an attacker exhausting the shared (global /
 //!   cool-down) budgets must not block the recovery account.
-//! * **Four-eyes requests** (K-66): at most
-//!   [`MAX_PENDING_APPROVALS`] pending and [`MAX_APPROVALS_PER_HOUR`]
-//!   requests per hour per requester, counted in `admin_approvals` under a
+//! * **Four-eyes requests** (K-66, K-74): at most
+//!   `four_eyes_max_pending_requests` (default 3) pending and
+//!   `four_eyes_max_requests_per_hour` (default 10) requests per hour per
+//!   requester ([`crate::AdminSettings`], `[admin]`), counted in
+//!   `admin_approvals` under a
 //!   per-requester transaction lock — one admin cannot flood the others
 //!   with approval prompts (approval fatigue).
 //! * Every refusal answers `429 rate_limited` with `Retry-After`, counts
@@ -33,12 +35,6 @@ use time::OffsetDateTime;
 use super::AdminService;
 use crate::guard::AdminCaller;
 use crate::metrics;
-
-/// Most pending four-eyes requests of one admin at a time (K-66).
-pub(crate) const MAX_PENDING_APPROVALS: i64 = 3;
-/// Most four-eyes requests of one admin per hour, decided ones included
-/// (K-66).
-pub(crate) const MAX_APPROVALS_PER_HOUR: i64 = 10;
 
 /// Rate-limit actions (stable key names).
 pub(crate) mod keys {

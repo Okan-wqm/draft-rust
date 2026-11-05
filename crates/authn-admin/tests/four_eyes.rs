@@ -824,6 +824,74 @@ async fn adm_06_k66_approval_requests_are_capped_per_requester(pool: sqlx::PgPoo
     request(&h, &a, body).await;
 }
 
+/// K-74: the approval request caps are configurable (`[admin]
+/// four_eyes_max_pending_requests` / `four_eyes_max_requests_per_hour`
+/// through `AdminSettings`), and a cap of 0 (never a valid configuration)
+/// fails closed: every request is refused.
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn adm_06_k74_configured_approval_request_caps_apply(pool: sqlx::PgPool) {
+    let h = Harness::with(pool.clone(), |s| {
+        s.four_eyes = true;
+        s.four_eyes_max_pending_requests = 1;
+        s.four_eyes_max_requests_per_hour = 2;
+    })
+    .await;
+    let (a_id, mut a) = h.admin("requester@example.com").await;
+    let (b_id, mut b) = h.admin("approver@example.com").await;
+    let body = json!({ "action": "rotate_signing_key", "reason": "INC-9 key leak" });
+    let first = request(&h, &a, body.clone()).await["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // A second pending request is over the configured cap of 1.
+    h.send(&a, TestRequest::post("/v1/admin/approvals").json(&body))
+        .await
+        .assert_error(StatusCode::TOO_MANY_REQUESTS, "rate_limited");
+    assert_eq!(
+        refusals(
+            &h.admin_events("approval_requested").await,
+            "approvals_pending_per_admin"
+        ),
+        1
+    );
+    // A denial frees the slot; the second request of the hour is allowed,
+    // the third is over the hourly cap of 2.
+    later(&h, &mut [(&a_id, &mut a), (&b_id, &mut b)]);
+    decide(&h, &b, &first, "deny")
+        .await
+        .assert_status(StatusCode::OK);
+    let second = request(&h, &a, body.clone()).await["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    later(&h, &mut [(&a_id, &mut a), (&b_id, &mut b)]);
+    decide(&h, &b, &second, "deny")
+        .await
+        .assert_status(StatusCode::OK);
+    h.send(&a, TestRequest::post("/v1/admin/approvals").json(&body))
+        .await
+        .assert_error(StatusCode::TOO_MANY_REQUESTS, "rate_limited");
+    assert_eq!(
+        refusals(
+            &h.admin_events("approval_requested").await,
+            "approvals_per_hour_per_admin"
+        ),
+        1
+    );
+
+    // Fail closed: a zero cap refuses every request.
+    let closed = Harness::with(pool, |s| {
+        s.four_eyes = true;
+        s.four_eyes_max_pending_requests = 0;
+    })
+    .await;
+    let (_, c) = closed.admin("other@example.com").await;
+    closed
+        .send(&c, TestRequest::post("/v1/admin/approvals").json(&body))
+        .await
+        .assert_error(StatusCode::TOO_MANY_REQUESTS, "rate_limited");
+}
+
 /// K-66 audit finding (containment tip-off): the target admin of a pending
 /// request must not learn of it from its own security-event list or its
 /// data export (request / decision events and their justifications) —

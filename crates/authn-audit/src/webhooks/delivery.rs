@@ -211,12 +211,15 @@ impl WebhookDeliverer {
     }
 
     async fn mark_dead(&self, id: WebhookDeliveryId, error: Option<&str>) -> Result<(), AuthError> {
-        sqlx::query(
+        sqlx::query(concat!(
             "UPDATE webhook_deliveries SET status = 'dead', next_attempt_at = NULL, \
-             last_error = coalesce($2, last_error) WHERE id = $1 AND status <> 'succeeded'",
-        )
+                 last_error = coalesce($2, last_error), ",
+            crate::webhooks::redact_if_erased!("'dead'", "$3"),
+            " WHERE id = $1 AND status <> 'succeeded'"
+        ))
         .bind(id)
         .bind(error)
+        .bind(self.clock.now())
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -270,11 +273,13 @@ impl WebhookDeliverer {
             "failed"
         };
         let mut tx = self.pool.begin().await?;
-        sqlx::query(
+        sqlx::query(concat!(
             "UPDATE webhook_deliveries SET attempts = attempts + 1, last_attempt_at = $2, \
-             response_status = $3, response_ms = $4, last_error = $5, status = $6, \
-             next_attempt_at = $7 WHERE id = $1",
-        )
+                 response_status = $3, response_ms = $4, last_error = $5, status = $6, \
+                 next_attempt_at = $7, ",
+            crate::webhooks::redact_if_erased!("$6", "$2"),
+            " WHERE id = $1"
+        ))
         .bind(row.id)
         .bind(now)
         .bind(attempt.response_status)

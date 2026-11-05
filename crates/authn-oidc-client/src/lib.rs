@@ -65,6 +65,6 @@ pub use routes::{OidcClientApi, router};
 pub use service::{
     CallbackParams, CallbackResult, IdentitySummary, NativeLoginRequest, NativeNonce,
     OidcClientService, OidcClientServiceDeps, ProviderInfo, ProviderTokenErasureHook,
-    RevocationReport, StoredProviderTokens, WebLoginOptions, WebStart,
+    RevocationReport, StoredProviderTokens, WebLoginOptions, WebStart, validate_error_redirect,
 };
 pub use settings::OidcClientSettings;

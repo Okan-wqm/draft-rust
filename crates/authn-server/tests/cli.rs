@@ -332,3 +332,172 @@ async fn arc_07_check_config_refuses_what_serve_would_refuse() {
     );
     assert!(out.stderr.contains("apple"), "{}", out.all());
 }
+
+/// `check-config` with extra `AUTHN__*` overrides.
+fn check_config_with(env: &[(&str, &str)]) -> Run {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_rust-authentication"));
+    command
+        .arg("--config")
+        .arg(example_config())
+        .arg("check-config")
+        .env_remove("AUTHN_CONFIG");
+    for (name, value) in env {
+        command.env(name, value);
+    }
+    let output = command.output().unwrap();
+    Run {
+        code: output.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    }
+}
+
+/// K-73 (ARC-07, K-36): `check-config` refuses an
+/// `oidc_client.error_redirect` that `serve` would refuse at start-up (an
+/// absolute URL not on the redirect allow-list), naming the setting but
+/// not echoing its value; an allowed target passes.
+#[tokio::test]
+async fn arc_07_k73_check_config_validates_the_error_redirect() {
+    const KEY: &str = "AUTHN__OIDC_CLIENT__ERROR_REDIRECT";
+    let refused =
+        tokio::task::spawn_blocking(|| check_config_with(&[(KEY, "https://evil.example/oops")]))
+            .await
+            .unwrap();
+    assert_ne!(refused.code, 0, "{}", refused.all());
+    assert!(
+        !refused.stdout.contains("configuration is valid"),
+        "{}",
+        refused.all()
+    );
+    assert!(
+        refused.stderr.contains("error_redirect"),
+        "{}",
+        refused.all()
+    );
+    assert!(!refused.all().contains("evil.example"), "{}", refused.all());
+    let accepted = tokio::task::spawn_blocking(|| check_config_with(&[(KEY, "/login/error")]))
+        .await
+        .unwrap();
+    assert_eq!(accepted.code, 0, "{}", accepted.all());
+    assert!(
+        accepted.stdout.contains("configuration is valid"),
+        "{}",
+        accepted.all()
+    );
+}
+
+/// Audit finding (K-73, K-75): a configuration `check-config` refuses is
+/// an invalid configuration, exit code 78 as documented in
+/// `docs/operations/admin-recovery.md` (not 69, which means "database /
+/// service failure"), whether `AppConfig::load` or the start-up settings
+/// check (`check_startup_settings`) refuses it.
+#[tokio::test]
+async fn ops_01_check_config_refusals_exit_with_the_configuration_code() {
+    let refused = tokio::task::spawn_blocking(|| {
+        check_config_with(&[(
+            "AUTHN__OIDC_CLIENT__ERROR_REDIRECT",
+            "https://evil.example/oops",
+        )])
+    })
+    .await
+    .unwrap();
+    assert_eq!(refused.code, 78, "{}", refused.all());
+    let refused = tokio::task::spawn_blocking(|| {
+        check_config_with(&[("AUTHN__ADMIN__FOUR_EYES_MAX_PENDING_REQUESTS", "0")])
+    })
+    .await
+    .unwrap();
+    assert_eq!(refused.code, 78, "{}", refused.all());
+    assert!(
+        refused.all().contains("four_eyes_max_pending_requests"),
+        "{}",
+        refused.all()
+    );
+}
+
+/// K-76 (OPS-01): `grant-admin` / `revoke-admin` end to end through the
+/// binary: flags validated before the database is touched (exit 65, no
+/// echo), the grant and the revocation change the flags, and the last
+/// active admin's rights are never revoked (exit 69, "last admin").
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn adm_05_k76_cli_grant_and_revoke_admin(pool: PgPool) {
+    let cli = |args: Vec<String>| {
+        let p = pool.clone();
+        tokio::task::spawn_blocking(move || {
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            run(Some(&p), &args, None)
+        })
+    };
+    let args = |command: &str, target: &str, operator: &str| -> Vec<String> {
+        [
+            command,
+            "--target",
+            target,
+            "--reason",
+            "CHG-17 on-call rotation",
+            "--operator",
+            operator,
+        ]
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect()
+    };
+    let out = cli(vec![
+        "create-admin".into(),
+        "--email".into(),
+        "glass@example.com".into(),
+    ])
+    .await
+    .unwrap();
+    assert_eq!(out.code, 0, "{}", out.all());
+    let alice = authn_core::id::UserId::generate();
+    sqlx::query(
+        "INSERT INTO users (id, email, email_normalized, status, email_verified_at, created_at) \
+         VALUES ($1, 'alice@example.com', 'alice@example.com', 'active', now(), now())",
+    )
+    .bind(alice)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let is_admin = |email: &'static str| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, bool>(
+                "SELECT is_platform_admin FROM users WHERE email_normalized = $1",
+            )
+            .bind(email)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+
+    let bad = cli(args("grant-admin", "alice@example.com", "two words"))
+        .await
+        .unwrap();
+    assert_eq!(bad.code, 65, "{}", bad.all());
+    assert!(bad.stderr.contains("--operator"), "{}", bad.all());
+    assert!(!bad.all().contains("two words"), "{}", bad.all());
+    assert!(!is_admin("alice@example.com").await);
+
+    let out = cli(args("grant-admin", "alice@example.com", "ops.oncall"))
+        .await
+        .unwrap();
+    assert_eq!(out.code, 0, "{}", out.all());
+    assert!(out.stdout.contains("offline_grant_admin"), "{}", out.all());
+    assert!(is_admin("alice@example.com").await);
+
+    let out = cli(args("revoke-admin", &alice.to_string(), "ops.oncall"))
+        .await
+        .unwrap();
+    assert_eq!(out.code, 0, "{}", out.all());
+    assert!(!is_admin("alice@example.com").await);
+
+    // The break-glass account is now the last admin.
+    let out = cli(args("revoke-admin", "glass@example.com", "ops.oncall"))
+        .await
+        .unwrap();
+    assert_eq!(out.code, 69, "{}", out.all());
+    assert!(out.stderr.contains("last admin"), "{}", out.all());
+    assert!(is_admin("glass@example.com").await);
+}

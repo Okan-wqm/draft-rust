@@ -262,18 +262,30 @@ impl AccountService {
     }
 
     /// The background part of [`Self::signup`].
+    ///
+    /// K-58 (pool pattern): every rate-limit decision (address e-mail
+    /// budget, resend cooldown) is taken *before* the transaction opens —
+    /// the production limiter needs a pooled connection of its own, and the
+    /// transaction already holds one (plus the address lock). The decision
+    /// is based on an unlocked pre-read of the address; if the locked read
+    /// disagrees (a concurrent sign-up), no budget was taken for that
+    /// branch and its e-mail is withheld (fail closed: never more mail than
+    /// the budget allows).
     async fn process_signup(&self, work: SignupWork) -> Result<(), AuthError> {
         let now = self.now();
+        let budget = self.signup_budget(&work, now).await?;
         let mut tx = self.begin().await?;
         lock_email(tx.conn(), work.email.normalized()).await?;
         let existing = UserRepository::find_by_email(tx.conn(), &work.email).await?;
         let reserved_by =
             ReservationRepository::active_owner(tx.conn(), work.email.normalized(), now).await?;
         match (existing, reserved_by) {
-            (None, None) => match self.create_account(tx, &work).await {
+            (None, None) => match self.create_account(tx, &work, budget.first_send).await {
                 Err(err) if is_email_conflict(&err) => {
                     // Written by a path that does not take the address lock
                     // (e.g. an admin tool): treat as an existing account.
+                    // No connection is held here: decide the budget first.
+                    let notify = self.notice_allowed(&work).await?;
                     let mut tx = self.begin().await?;
                     let Some(user) = UserRepository::find_by_email(tx.conn(), &work.email).await?
                     else {
@@ -284,6 +296,7 @@ impl AccountService {
                         &work,
                         user.id,
                         NoticeReason::ExistingAccount,
+                        notify,
                     )
                     .await?;
                     tx.commit().await
@@ -294,24 +307,82 @@ impl AccountService {
                 if user.status == AccountStatus::PendingVerification
                     && user.email_verified_at.is_none() =>
             {
-                self.add_registration(tx, &work, user).await
+                self.add_registration(tx, &work, user, budget.notice.unwrap_or(false))
+                    .await
             }
             (Some(user), _) => {
-                self.registration_notice(&mut tx, &work, user.id, NoticeReason::ExistingAccount)
-                    .await?;
+                self.registration_notice(
+                    &mut tx,
+                    &work,
+                    user.id,
+                    NoticeReason::ExistingAccount,
+                    budget.notice.unwrap_or(false),
+                )
+                .await?;
                 tx.commit().await
             }
             (None, Some(owner)) => {
-                self.registration_notice(&mut tx, &work, owner, NoticeReason::ReservedAddress)
-                    .await?;
+                self.registration_notice(
+                    &mut tx,
+                    &work,
+                    owner,
+                    NoticeReason::ReservedAddress,
+                    budget.notice.unwrap_or(false),
+                )
+                .await?;
                 tx.commit().await
             }
         }
     }
 
+    /// The rate-limit decisions of a sign-up, taken without holding a
+    /// connection (see [`Self::process_signup`]).
+    async fn signup_budget(
+        &self,
+        work: &SignupWork,
+        now: time::OffsetDateTime,
+    ) -> Result<SignupBudget, AuthError> {
+        let existing = UserRepository::find_by_email(self.pool(), &work.email).await?;
+        let reserved =
+            ReservationRepository::active_owner(self.pool(), work.email.normalized(), now).await?;
+        if existing.is_none() && reserved.is_none() {
+            // The first e-mail of an address is always sent; it starts the
+            // resend cooldown.
+            self.record_verification_send(&work.email).await?;
+            return Ok(SignupBudget {
+                first_send: true,
+                notice: None,
+            });
+        }
+        let notice = self.notice_allowed(work).await?;
+        let unverified = existing.as_ref().is_some_and(|u| {
+            u.status == AccountStatus::PendingVerification && u.email_verified_at.is_none()
+        });
+        if notice && unverified {
+            self.record_verification_send(&work.email).await?;
+        }
+        Ok(SignupBudget {
+            first_send: false,
+            notice: Some(notice),
+        })
+    }
+
+    /// Consumes one unit of the address's daily notice / e-mail budget.
+    async fn notice_allowed(&self, work: &SignupWork) -> Result<bool, AuthError> {
+        let notice_key =
+            RateLimitKey::account(actions::REGISTRATION_NOTICE, work.email.normalized());
+        self.allowed(&notice_key, self.config().registration_notice_per_email)
+            .await
+    }
+
     /// First registration of an address: a placeholder account without
     /// credentials plus the registration that holds them.
-    async fn create_account(&self, mut tx: AccountTx, work: &SignupWork) -> Result<(), AuthError> {
+    async fn create_account(
+        &self,
+        mut tx: AccountTx,
+        work: &SignupWork,
+        send_email: bool,
+    ) -> Result<(), AuthError> {
         let now = self.now();
         let user_id = UserId::generate();
         UserRepository::create(
@@ -324,7 +395,8 @@ impl AccountService {
             },
         )
         .await?;
-        self.create_registration(&mut tx, user_id, work).await?;
+        self.create_registration(&mut tx, user_id, work, send_email)
+            .await?;
         self.deps()
             .events
             .publish(
@@ -360,24 +432,17 @@ impl AccountService {
         mut tx: AccountTx,
         work: &SignupWork,
         user: UserRecord,
+        send_email: bool,
     ) -> Result<(), AuthError> {
-        let notice_key =
-            RateLimitKey::account(actions::REGISTRATION_NOTICE, work.email.normalized());
-        if !self
-            .allowed(&notice_key, self.config().registration_notice_per_email)
-            .await?
-        {
-            tx.audit(
-                self.event(
-                    SecurityEventKind::AccountRegistrationAttemptExisting,
-                    &work.ctx,
-                )
-                .with_subject(user.id)
-                .with_meta("reason", "unverified_reregistration")
-                .failed("rate_limited"),
-            );
-            return tx.commit().await;
-        }
+        // K-58 (ADR 0002, targeted sign-up DoS): past the address's daily
+        // e-mail budget the registration is still stored — only its e-mail
+        // is withheld (mail bombing). Its client completes it with any live
+        // link of the account opened in the registering browser (its handle
+        // cookie), or with a resend once the budget allows; the oldest
+        // registrations make room (at most `MAX_LIVE_REGISTRATIONS`), so
+        // the newest — the owner's latest attempt — always survives.
+        // `send_email` was decided before the transaction opened (K-58,
+        // pool pattern).
         let Some(user) = UserRepository::lock_for_update(tx.conn(), user.id).await? else {
             return tx.commit().await;
         };
@@ -391,15 +456,19 @@ impl AccountService {
             .await?;
             return tx.commit().await;
         }
-        self.create_registration(&mut tx, user.id, work).await?;
-        tx.audit(
-            self.event(
+        self.create_registration(&mut tx, user.id, work, send_email)
+            .await?;
+        let mut event = self
+            .event(
                 SecurityEventKind::AccountRegistrationAttemptExisting,
                 &work.ctx,
             )
             .with_subject(user.id)
-            .with_meta("reason", "unverified_reregistration"),
-        );
+            .with_meta("reason", "unverified_reregistration");
+        if !send_email {
+            event = event.with_meta("notified", false);
+        }
+        tx.audit(event);
         tx.commit().await?;
         metrics::counter!("authn_account_registrations_total", "outcome" => "additional_registration")
             .increment(1);
@@ -414,13 +483,9 @@ impl AccountService {
         work: &SignupWork,
         owner: UserId,
         reason: NoticeReason,
+        allowed: bool,
     ) -> Result<(), AuthError> {
-        let notice_key =
-            RateLimitKey::account(actions::REGISTRATION_NOTICE, work.email.normalized());
-        if self
-            .allowed(&notice_key, self.config().registration_notice_per_email)
-            .await?
-        {
+        if allowed {
             self.registration_notice_unthrottled(tx, work, owner, reason)
                 .await
         } else {
@@ -489,6 +554,7 @@ impl AccountService {
         tx: &mut AccountTx,
         user: UserId,
         work: &SignupWork,
+        send_email: bool,
     ) -> Result<(), AuthError> {
         let now = self.now();
         let verification = &self.config().verification;
@@ -526,7 +592,11 @@ impl AccountService {
         )
         .await?;
         RegistrationRepository::trim(tx.conn(), user, MAX_LIVE_REGISTRATIONS).await?;
-        self.record_verification_send(&work.email).await?;
+        if !send_email {
+            return Ok(());
+        }
+        // The resend cooldown was started before the transaction opened
+        // (`signup_budget`, K-58 pool pattern).
         let (recipient, locale) = self
             .unproven_recipient_at(tx.conn(), user, work.email.clone(), work.locale)
             .await?;
@@ -564,4 +634,15 @@ fn is_email_conflict(err: &AuthError) -> bool {
         && std::error::Error::source(err)
             .and_then(|s| s.downcast_ref::<StoreError>())
             .is_some_and(|s| s.is_unique_violation(authn_store::users::EMAIL_UNIQUE_CONSTRAINT))
+}
+
+/// Rate-limit decisions of one sign-up (K-58: taken before the
+/// transaction).
+struct SignupBudget {
+    /// The address had neither account nor reservation: the first
+    /// verification e-mail goes out (cooldown already started).
+    first_send: bool,
+    /// The address's daily notice / e-mail budget allowed one more
+    /// e-mail (`None`: not consulted).
+    notice: Option<bool>,
 }

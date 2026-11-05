@@ -130,6 +130,40 @@ Bekletmeyi kullananlar: authn-admin'in kısıtlama ve uzatma notları (K-62) ve 
 - **Endpoint silme ile eşzamanlı teslim kaydı** nadiren PostgreSQL kilitlenme tespitine (`40P01`) düşebilir; silme isteği `500` alır ve yeniden denenebilir, teslim tarafı yeniden dener ve silinmiş endpoint'i atlar.
 - **Kayıt anındaki URL denetimi tavsiye niteliğindedir;** DNS adları kayıtta çözülmez. Yetkili SSRF savunması her teslimde `HttpClient` (`OutboundTarget::UserSupplied`, authn-protect) tarafından yapılır.
 
+### K-58 değerlendirmesi (2026-11-05)
+
+Yukarıdaki "Kabul edilen riskler" maddeleri yeniden değerlendirildi. Hiçbiri bu dalgada kod değişikliğiyle kapatılmadı. Her biri için gerekçe:
+
+| Madde | Karar | Gerekçe |
+|-------|-------|---------|
+| Değer sezgileri her sırrı yakalayamaz | İmkânsız (tam olarak) | Rastgele bir metnin sır olup olmadığı bilinemez. Daha agresif kurallar meşru tanımlayıcıları bozar. Birincil kural üreticinin sır koymamasıdır. |
+| Nötr anahtar altındaki silinmiş hesap kimliği | Gerekçeli kalır | Anahtar adı olmayan bir UUID'nin kullanıcı mı, oturum mu olduğu bilinemez. Üretici kuralı (`…user_id` / `with_subject`) belgelidir. |
+| Organizasyon log'unda platform personeli | Üretici kuralı | authn-admin her personel işlemini `admin.*` veya impersonator ile kaydeder (ADM-08 testleri). |
+| Anahtarsız hash zinciri | **Açık, K-77 (tasarım aşağıda)** | Wave 4B denetimi bu dalgada uygulamadı. Gerekçe: zincir biçimini değiştirmek mevcut satırların doğrulanmasını, CLI'ı (authn-server), admin doğrulamasını (authn-admin) ve en az yetki rollerini birlikte etkiler. Yarım bir uygulama, zinciri doğrulanamaz hâle getirme riski taşır. Bugün tespit veritabanı dışı çıpalarla sağlanır (`verify_chain_from`, kontrol noktaları): veritabanına yazabilen biri zinciri baştan hesaplayabilir, ama dışarıda saklanan bir çıpayla bu fark edilir. |
+| API anahtarı step-up'tan muaf | Spesifikasyon gereği | İnsan olmayan kimlik bilgisi yeniden doğrulama yapamaz; kapsamı RBAC sınırlar. |
+| Step-up istemeyen webhook işlemleri | Gerekçeli kalır | Geri alınabilir ve hız sınırlı. Yönlendiren ya da genişleten her işlem step-up ister. |
+| Webhook URL'si `webhooks:read` sahiplerine görünür | Gerekçeli kalır | Endpoint yönetimi için gerekli; audit'e ve loglara yazılmaz. |
+| En az bir kez teslim | Gerekçeli kalır | Tam olarak bir kez teslim dağıtık sistemde imkânsızdır. Sabit `webhook-id` ile tekilleştirilir. |
+| Endpoint silme ile eşzamanlı teslimde nadir `40P01` | Gerekçeli kalır | PostgreSQL kilitlenmeyi tespit eder. Her iki taraf da güvenle yeniden dener; tutarsız durum yoktur. |
+| Kayıt anındaki URL denetimi tavsiye niteliğinde | Gerekçeli kalır | DNS kaydı değişebilir; yetkili denetim her teslimde (`HttpClient`) yapılır. |
+
+### Bağımsız denetim (wave 4B, 2026-11-05)
+
+| # | Önem | Bulgu / kontrol | Durum |
+|---|------|-----------------|-------|
+| 4B-A1 | bilgi | **Silmenin kapsamı.** Kullanıcı kimliği şu yerlerde bulunur: outbox `payload.user_id` (domain olayları ve bildirimler); `data` içinde (org, oturum ve hesap olayları `data.user_id`'yi yalnızca `event.user_id` ile birlikte yazar; bütün `DomainEvent` üreticileri tarandı); webhook teslimlerinde `payload.user_id`/`data` ve `subject_user_id`. Silme bunların hepsini işaretler ya da karartır. `user.deleted` olayı `pseudonymize_subject`'ten önce aynı transaction'da yayımlanır, dolayısıyla işaretlenir. Kalan: henüz bitmemiş teslimler işaretlidir ve **bitince** karartılır. Alıcılar `user.deleted`'i yine alır (bilinçli). | Doğrulandı |
+| 4B-A2 | bilgi | **`FOR SHARE` kilitlenmesi.** Fan-out yalnızca tek bir outbox satırında paylaşımlı kilit tutar, sonra yeni teslim satırları ekler; silme tarafının tuttuğu hiçbir kilidi beklemez. Silme ise outbox satırlarını, ardından teslim satırlarını günceller. Teslimatçı yalnızca kendi teslim satırını ve endpoint'ini kilitler. Döngü yoktur. READ COMMITTED altında güncelleme satır kilidini bekledikten sonra `subject_erased_at`'i yeniden değerlendirir (EvalPlanQual), bu yüzden yarışan teslim de karartılır. | Doğrulandı |
+| 4B-A3 | bilgi | Karartılmış bir teslimin yeniden gönderimi, bilinmeyen teslimle aynı `404`'ü döner. Liste uçları yalnızca karartılmış gövdeyi gösterir (`id`, `type`, `timestamp`, `organization_id`, `redacted`). | Doğrulandı |
+| 4B-A4 | orta (tasarım) | Anahtarsız hash zinciri. | Açık, K-77 |
+
+**K-77 tasarımı: anahtarlı zincir.**
+
+1. **Anahtar:** `authn-crypto` `KeyPurpose::AuditChain` alt anahtarı (HKDF, mevcut KeyRing; KMS/HSM sağlayıcısı K-96 ile gelir). Uygulama rolü hesaplar. Doğrulama aracı (`verify-audit-chain` CLI) anahtarı aynı yapılandırmadan alır.
+2. **Biçim:** `hash = HMAC-SHA-256(K_v, prev_hash ‖ canonical_json(record))`. `audit_events`'e `chain_key_version smallint NULL` eklenir. `NULL`, eski SHA-256 satırlarıdır ve doğrulayıcı onları eski kuralla doğrular. Geçiş noktası, ilk anahtarlı satırın bir kontrol noktasıyla (`audit_chain_checkpoints`) işaretlenmesidir.
+3. **Rotasyon:** yeni sürüm `v+1` yalnızca **yeni** satırlar için kullanılır; eski satırlar yeniden hesaplanmaz, çünkü değişmezlik bunu gerektirir. Eski anahtarlar doğrulama için salt-okunur tutulur. Rotasyon kendisi bir audit olayıdır (`audit.chain_key_rotated`) ve yeni anahtarla imzalanan ilk satırdır. Anahtar sızarsa: rotasyon + dış çıpa. Sızmadan önceki satırların bütünlüğünü yalnızca dış çıpalar kanıtlar.
+4. **Kontrol noktaları:** `create_checkpoint` HMAC'li başı dışa (operatörün WORM depolamasına) yazmaya devam eder. Anahtar olmadan zincirin yeniden hesaplanamaması tespiti güçlendirir, dış çıpanın yerini tutmaz.
+5. **Sahipler:** authn-crypto (amaç), authn-audit (zincir, doğrulayıcı, migration `17xx`), authn-server (CLI), authn-admin (doğrulama ucu). Testler: anahtarsız yeniden hesaplanan zincirin reddi, karma sürüm doğrulaması, rotasyon sonrası doğrulama, yanlış anahtar.
+
 ## Sunucunun (authn-server) ve Dalga B'nin bağlaması gerekenler
 
 1. `impl AuditAccessPolicy` — authn-org RBAC ile (`OrgService::authorize_from(principal, permission, org, client_ip)`): `audit:read`, `webhooks:read`, `webhooks:manage`; varsayılan reddet; servis hesapları yalnızca kendi organizasyonu; platform admini örtük yetkili **değil**; `client_ip` ile organizasyon IP izin listesi (ORG-07).
@@ -145,7 +179,13 @@ Bekletmeyi kullananlar: authn-admin'in kısıtlama ve uzatma notları (K-62) ve 
 - `record_in_tx` zincir başı kilidini çağıranın commit'ine kadar tutar: çok yazan transaction'lar audit eklemelerini serileştirir. Bu, çatallanmasız zincirin bilinçli bedelidir.
 - Webhook otomatik devre dışı bırakıldığında organizasyon adminlerine e-posta gönderilmez (`NotificationKind`'de uygun tür yok); olay audit log'a `webhook.endpoint_auto_disabled` olarak düşer.
 - Domain olayı `data` alanı üretici tarafından "sırsız" olarak garanti edilir; webhook gövdesi ayrıca temizlenmez (audit metadata'sından farklı olarak).
-- Teslim edilmiş outbox ve webhook teslim kayıtları (kullanıcı kimlikleri içerebilir) saklama süreleri dolunca silinir; hesap silmede anında silinmezler (alıcıların `user.deleted` olayını işleyebilmesi için).
+- ~~Teslim edilmiş outbox ve webhook teslim kayıtları saklama süresi boyunca kullanıcı kimliği içerebilir~~ — **kapatıldı (K-58, AUD-05/ACC-09, migration `1702`):**
+  - Teslim edilen her outbox mesajının açık yükünden teslim anında `user_id`, `recipient` ve `data` silinir (teslim edilmiş yükü okuyan yoktur): `aud_06_k58_delivered_outbox_messages_keep_no_personal_data`.
+  - Hesap silinince (`PgAuditSink::pseudonymize_subject`, silme transaction'ında) kullanıcının ölü mektup mesajları hemen temizlenir; bekleyen ve işlenmekte olanlar işaretlenir ve bitince (teslim ya da ölü) temizlenir.
+  - Webhook teslimlerinde olayın `user_id`'si `subject_user_id` kolonunda tutulur. Silmede bitmiş teslimler (`succeeded`, `dead`) hemen **karartılır**: yükte yalnızca `id`, `type`, `timestamp`, `organization_id` ve `"redacted": true` kalır, `redacted_at` yazılır. Bitmemiş olanlar işaretlenir ve bitince karartılır. Böylece alıcılar `user.deleted` dahil her olayı yine alır. İşaretli outbox mesajından fan-out ile oluşan teslimler de işaretlenir; fan-out outbox satırını `FOR SHARE` ile okuduğundan silme transaction'ıyla sıralanır ve yarışta kaçak kalmaz.
+  - Karartılmış teslim yeniden gönderilemez (`404`).
+  - Testler: `aud_05_k58_erasure_scrubs_the_outbox_and_redacts_the_webhook_history`, `aud_05_k58_deliveries_that_die_after_the_erasure_are_redacted`. Üçü de kaynak değişikliği olmadan başarısız oluyordu.
+  - Yaşayan kullanıcıların teslim geçmişi değişmez (alıcı operatörleri ve elle yeniden teslim için gerekli). Kalan: olayın `data` alanında **başka** bir kullanıcının kimliği (ör. davet eden) varsa, o kullanıcı silindiğinde bu alan saklama süresi dolana dek (varsayılan 7/30 gün) kalır. Bunun için yükte serbest metin araması gerekir, bu da her silmede tüm tablo taraması demektir. Üreticiler olayın öznesini `user_id` ile vermelidir.
 
 ## Testler
 
