@@ -694,6 +694,7 @@ pub async fn deletion_status(
 #[utoipa::path(
     post,
     path = "/v1/me/deletion/cancel",
+    operation_id = "cancel_account_deletion",
     tag = "account",
     responses(
         (status = 200, description = "Cancelled", body = StatusResponse),

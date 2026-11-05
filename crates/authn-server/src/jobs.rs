@@ -226,6 +226,23 @@ pub async fn run_maintenance_once(services: &Services) -> MaintenanceTotals {
     t
 }
 
+/// The scheduled external audit anchor (K-107): a `scheduled` checkpoint
+/// of the chain head at most once per `audit.checkpoint_interval` across
+/// every instance (advisory lock + due check in authn-audit), on the
+/// maintenance-role pool (the application role has no `INSERT` on
+/// `audit_chain_checkpoints`). The anchor is logged as `anchor =
+/// "<seq>:<hash>"`; the log pipeline carries it off the database host.
+pub async fn create_audit_checkpoint(
+    services: &Services,
+) -> Result<Option<authn_audit::ChainAnchor>, AuthError> {
+    authn_audit::create_scheduled_checkpoint(
+        &services.maintenance_pool,
+        services.clock.as_ref(),
+        services.config.audit.checkpoint_interval,
+    )
+    .await
+}
+
 /// Queued provider tokens revoked per run (K-35).
 const REVOCATIONS_PER_RUN: u32 = 100;
 
@@ -313,7 +330,24 @@ pub fn spawn(services: Services, shutdown: CancellationToken) -> Result<JoinSet<
         .await;
     });
 
-    // Audit retention and checkpoints (AUD-03), maintenance role pool.
+    // External audit anchors (K-107): checked hourly, created once per
+    // `audit.checkpoint_interval` across all instances, so a restart never
+    // postpones or duplicates the anchor.
+    let s = services.clone();
+    let stop = shutdown.clone();
+    jobs.spawn(async move {
+        every(HOURLY, stop, || {
+            let s = s.clone();
+            async move {
+                if let Err(err) = create_audit_checkpoint(&s).await {
+                    tracing::error!(error = %err, "audit chain checkpoint failed");
+                }
+            }
+        })
+        .await;
+    });
+
+    // Audit retention purge (AUD-05), maintenance role pool.
     let s = services;
     jobs.spawn(async move {
         every(DAILY, shutdown, || {

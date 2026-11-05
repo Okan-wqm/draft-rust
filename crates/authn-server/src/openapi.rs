@@ -2,6 +2,7 @@
 //! module's `utoipa::OpenApi` document.
 
 use utoipa::OpenApi;
+use utoipa::openapi::security::{ApiKey, ApiKeyValue, HttpAuthScheme, HttpBuilder, SecurityScheme};
 
 /// The server's own paths.
 #[derive(OpenApi)]
@@ -38,7 +39,59 @@ pub fn openapi() -> utoipa::openapi::OpenApi {
     doc.merge(authn_admin::AdminApi::openapi());
     #[cfg(feature = "passkey")]
     doc.merge(authn_admin::AdminEnrollmentApi::openapi());
+    doc.components
+        .get_or_insert_with(Default::default)
+        .add_security_schemes_from_iter(security_schemes());
     doc
+}
+
+/// The credentials the API accepts (`docs/api/authentication.md`). Every
+/// scheme named by an operation's `security` must be defined here
+/// (`tests/openapi.rs`).
+fn security_schemes() -> [(&'static str, SecurityScheme); 4] {
+    [
+        (
+            "session_cookie",
+            SecurityScheme::ApiKey(ApiKey::Cookie(ApiKeyValue::with_description(
+                "__Host-authn_session",
+                "Web session cookie. State-changing requests also need the \
+                 `X-CSRF-Token` header (SES-04).",
+            ))),
+        ),
+        (
+            "bearer_jwt",
+            SecurityScheme::Http(
+                HttpBuilder::new()
+                    .scheme(HttpAuthScheme::Bearer)
+                    .bearer_format("JWT")
+                    .description(Some(
+                        "Native clients: the access token of the session \
+                         (`Authorization: Bearer <access token>`, SES-08).",
+                    ))
+                    .build(),
+            ),
+        ),
+        (
+            "api_key",
+            SecurityScheme::ApiKey(ApiKey::Header(ApiKeyValue::with_description(
+                "X-API-Key",
+                "Organization API key `ak_…` (ORG-08) in the `X-API-Key` header.",
+            ))),
+        ),
+        (
+            "api_key_bearer",
+            SecurityScheme::Http(
+                HttpBuilder::new()
+                    .scheme(HttpAuthScheme::Bearer)
+                    .bearer_format("ak_…")
+                    .description(Some(
+                        "Organization API key `ak_…` (ORG-08) as \
+                         `Authorization: Bearer ak_…`.",
+                    ))
+                    .build(),
+            ),
+        ),
+    ]
 }
 
 /// The document as JSON value.

@@ -6,6 +6,17 @@
 //! returned **once** for the operator to print and store offline. Nothing
 //! else keeps it. The creation is a high-priority audit event.
 //!
+//! The printed password is a **one-time initial password** (K-110):
+//! * it is stored with `must_change_password` (PWD-12), so its first login
+//!   never issues a session before the operator confirmed the mailbox with
+//!   an e-mailed code (RSK-04 / PWD-12 mailbox proof), enrolled a passkey
+//!   and chose a new password (`change_password` required action, SES-22);
+//! * it expires [`BREAK_GLASS_PASSWORD_TTL`] (24 hours) after creation if
+//!   it was not replaced; afterwards it is refused exactly like a wrong
+//!   password (authn-password, SES-01: no existence or state leak). The new
+//!   password chosen at first login does not expire. An expired account is
+//!   recovered with `admin-enrollment-link` (K-07).
+//!
 //! Using the account:
 //! * platform admins must sign in with phishing-resistant MFA, so the first
 //!   login with the password is required by authn-session to enroll a
@@ -41,6 +52,13 @@ use time::OffsetDateTime;
 use crate::settings::ENROLLMENT_LINK_HARD_CAP;
 use crate::store;
 
+/// Lifetime of the one-time initial password printed by `create-admin`
+/// (K-110): unused for this long, it stops working. Fixed on purpose (the
+/// same bound as the longest passkey enrollment link): an operator who
+/// needs more time creates the account when it is needed, or uses
+/// `--passkey-link`.
+pub const BREAK_GLASS_PASSWORD_TTL: std::time::Duration = ENROLLMENT_LINK_HARD_CAP;
+
 /// A created break-glass admin.
 pub struct BreakGlassAdmin {
     /// The account.
@@ -48,12 +66,16 @@ pub struct BreakGlassAdmin {
     /// The one-time display of the generated password (43 characters,
     /// base64url). Print it once; it is never stored in clear.
     pub password: SensitiveString,
+    /// The password stops working at this time unless it was changed at
+    /// first login (K-110).
+    pub password_expires_at: OffsetDateTime,
 }
 
 impl std::fmt::Debug for BreakGlassAdmin {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BreakGlassAdmin")
             .field("user_id", &self.user_id)
+            .field("password_expires_at", &self.password_expires_at)
             .finish_non_exhaustive()
     }
 }
@@ -61,7 +83,8 @@ impl std::fmt::Debug for BreakGlassAdmin {
 /// Creates a break-glass platform admin for `email` (ADM-05). Fails with
 /// `conflict` when the address is already registered (an existing account
 /// is never promoted silently) and `validation_failed` for an invalid
-/// address.
+/// address. The password is one-time (K-110): it must be changed at first
+/// login and expires after [`BREAK_GLASS_PASSWORD_TTL`].
 pub async fn create_break_glass_admin(
     pool: &PgPool,
     hasher: &PasswordHasher,
@@ -79,6 +102,7 @@ pub async fn create_break_glass_admin(
         .await
         .map_err(AuthError::from)?;
     let now = clock.now();
+    let password_expires_at = now + BREAK_GLASS_PASSWORD_TTL;
     let id = UserId::generate();
     let mut tx = authn_store::begin(pool).await?;
     insert_admin_account(&mut tx, id, email, now).await?;
@@ -90,15 +114,21 @@ pub async fn create_break_glass_admin(
             algorithm: record.algorithm.as_str(),
             pepper_version: record.pepper_version,
         },
-        false,
+        // K-110: one-time initial password, replaced at first login.
+        true,
         now,
     )
     .await?;
+    UserRepository::set_password_expiry(&mut tx, id, Some(password_expires_at)).await?;
     let event = SecurityEvent::new(SecurityEventKind::AdminAction, now)
         .with_actor(Actor::System)
         .with_subject(id)
         .with_meta("action", "break_glass_admin_created")
         .with_meta("enrollment", "password")
+        .with_meta(
+            "initial_login_expires_unix",
+            password_expires_at.unix_timestamp(),
+        )
         .with_meta("priority", "high");
     audit.record_in_tx(&mut tx, event).await?;
     authn_store::commit(tx).await?;
@@ -106,6 +136,7 @@ pub async fn create_break_glass_admin(
     Ok(BreakGlassAdmin {
         user_id: id,
         password: password.into_sensitive(),
+        password_expires_at,
     })
 }
 

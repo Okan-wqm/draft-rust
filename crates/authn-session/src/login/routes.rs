@@ -112,6 +112,9 @@ where
         SendCodeChannel,
         ChallengeStep,
         ChallengeStatusBody,
+        ChallengeCompletedBody,
+        LoginResponse,
+        ChallengeStepResponse,
         NotMeRequest,
         NotMeResponse,
         CredentialsBody,
@@ -188,7 +191,8 @@ fn pipeline_response(service: &SessionService, outcome: PipelineOutcome) -> Resp
                 &established.session,
                 established.credentials,
                 now,
-                serde_json::Map::new(),
+                None,
+                None,
                 client,
             )
         }
@@ -196,23 +200,23 @@ fn pipeline_response(service: &SessionService, outcome: PipelineOutcome) -> Resp
     }
 }
 
-/// The credentials response with extra body fields; clears the challenge
-/// cookie of web clients.
+/// The credentials response with the extra fields of a completed
+/// challenge; clears the challenge cookie of web clients.
 fn session_response(
     record: &crate::model::SessionRecord,
     credentials: crate::model::IssuedCredentials,
     now: time::OffsetDateTime,
-    extra: serde_json::Map<String, serde_json::Value>,
+    trusted_device_token: Option<SensitiveString>,
+    data: Option<serde_json::Value>,
     client: ClientKind,
 ) -> Response {
-    let (body, cookies_to_set) = credentials_parts(record, credentials, now);
-    let mut value = serde_json::to_value(&body).unwrap_or(serde_json::Value::Null);
-    if let serde_json::Value::Object(map) = &mut value {
-        for (k, v) in extra {
-            map.entry(k).or_insert(v);
-        }
-    }
-    let mut response = (StatusCode::OK, axum::Json(value)).into_response();
+    let (credentials, cookies_to_set) = credentials_parts(record, credentials, now);
+    let body = ChallengeCompletedBody {
+        credentials,
+        trusted_device_token,
+        data,
+    };
+    let mut response = (StatusCode::OK, axum::Json(body)).into_response();
     for cookie in cookies_to_set {
         response.headers_mut().append(SET_COOKIE, cookie);
     }
@@ -244,6 +248,59 @@ pub struct ChallengeStatusBody {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(value_type = Option<Object>)]
     pub data: Option<serde_json::Value>,
+}
+
+/// Body of a login that completed (`authenticated`): the issued
+/// credentials plus, after the last challenge step, the trusted-device
+/// token and the data of that step.
+#[derive(Clone, Serialize, ToSchema)]
+pub struct ChallengeCompletedBody {
+    /// The issued credentials.
+    #[serde(flatten)]
+    pub credentials: CredentialsBody,
+    /// Native clients that asked to trust the device (`trust_device`,
+    /// MFA-09): the trusted-device token to send as
+    /// `X-Trusted-Device` on later logins. Web clients receive the
+    /// `__Host-authn_trusted_device` cookie instead.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>)]
+    pub trusted_device_token: Option<SensitiveString>,
+    /// Data the last step returned once (recovery codes after an MFA
+    /// enrollment).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Object>)]
+    pub data: Option<serde_json::Value>,
+}
+
+impl std::fmt::Debug for ChallengeCompletedBody {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ChallengeCompletedBody")
+            .field("credentials", &self.credentials)
+            .finish_non_exhaustive()
+    }
+}
+
+/// `200` body of the login endpoints that start a login: signed in, or a
+/// challenge with outstanding steps (tell them apart by `status`).
+/// Documentation type of the OpenAPI document.
+#[derive(Clone, Debug, Serialize, ToSchema)]
+#[serde(untagged)]
+pub enum LoginResponse {
+    /// `status = authenticated`.
+    Authenticated(CredentialsBody),
+    /// `status = challenge_required`.
+    ChallengeRequired(ChallengeBody),
+}
+
+/// `200` body of the challenge steps: signed in, or the next step (tell
+/// them apart by `status`). Documentation type of the OpenAPI document.
+#[derive(Clone, Debug, Serialize, ToSchema)]
+#[serde(untagged)]
+pub enum ChallengeStepResponse {
+    /// `status = authenticated`.
+    Authenticated(ChallengeCompletedBody),
+    /// `status = challenge_required`.
+    ChallengeRequired(ChallengeStatusBody),
 }
 
 impl std::fmt::Debug for ChallengeStatusBody {
@@ -279,11 +336,8 @@ fn challenge_outcome_response(service: &SessionService, outcome: ChallengeOutcom
             data,
         } => {
             let client = session.session.client_kind;
-            let mut extra = serde_json::Map::new();
-            if let Some(data) = data {
-                extra.insert("data".into(), data);
-            }
             let mut cookie = None;
+            let mut device_token = None;
             if let Some(device) = trusted_device {
                 match client {
                     ClientKind::Web => {
@@ -293,12 +347,18 @@ fn challenge_outcome_response(service: &SessionService, outcome: ChallengeOutcom
                         ));
                     }
                     ClientKind::Native => {
-                        extra.insert("trusted_device_token".into(), device.token.expose().into());
+                        device_token = Some(SensitiveString::new(device.token.expose().to_owned()));
                     }
                 }
             }
-            let mut response =
-                session_response(&session.session, session.credentials, now, extra, client);
+            let mut response = session_response(
+                &session.session,
+                session.credentials,
+                now,
+                device_token,
+                data,
+                client,
+            );
             if let Some(cookie) = cookie {
                 response.headers_mut().append(SET_COOKIE, cookie);
             }
@@ -314,10 +374,10 @@ fn challenge_outcome_response(service: &SessionService, outcome: ChallengeOutcom
     tag = "login",
     request_body = PasswordLogin,
     responses(
-        (status = 200, description = "Signed in (`authenticated`) or more steps needed (`challenge_required`)", body = CredentialsBody),
+        (status = 200, description = "Signed in (`authenticated`) or more steps needed (`challenge_required`)", body = LoginResponse),
         (status = 401, description = "invalid_credentials (uniform)", body = authn_core::error::ErrorEnvelope),
-        (status = 403, description = "csrf_failed / account_suspended … (only after a correct password)", body = authn_core::error::ErrorEnvelope),
-        (status = 429, description = "rate_limited / login_temporarily_blocked / captcha_required", body = authn_core::error::ErrorEnvelope),
+        (status = 403, description = "csrf_failed / `captcha_required` / `captcha_failed` (challenge in `details`) / account_suspended … (only after a correct password)", body = authn_core::error::ErrorEnvelope),
+        (status = 429, description = "rate_limited / login_temporarily_blocked (`Retry-After`)", body = authn_core::error::ErrorEnvelope),
     )
 )]
 pub async fn login_password(
@@ -386,6 +446,7 @@ fn passkey_options_response(
 #[utoipa::path(
     post,
     path = "/v1/login/passkey/options",
+    operation_id = "login_passkey_options",
     tag = "login",
     request_body = PasskeyLoginOptions,
     responses(
@@ -413,7 +474,7 @@ pub async fn passkey_options(
     tag = "login",
     request_body = PasskeyLogin,
     responses(
-        (status = 200, description = "Signed in or challenge", body = CredentialsBody),
+        (status = 200, description = "Signed in (`authenticated`) or more steps needed (`challenge_required`)", body = LoginResponse),
         (status = 401, description = "passkey_ceremony_invalid / passkey_verification_failed", body = authn_core::error::ErrorEnvelope),
         (status = 403, description = "csrf_failed / account status / organization policy", body = authn_core::error::ErrorEnvelope),
     )
@@ -521,7 +582,7 @@ pub async fn request_magic_link(
     tag = "login",
     request_body = MagicLinkVerify,
     responses(
-        (status = 200, description = "Signed in or challenge", body = CredentialsBody),
+        (status = 200, description = "Signed in (`authenticated`) or more steps needed (`challenge_required`)", body = LoginResponse),
         (status = 400, description = "invalid_or_expired_token", body = authn_core::error::ErrorEnvelope),
         (status = 409, description = "magic_link_confirmation_required (other device)", body = authn_core::error::ErrorEnvelope),
     )
@@ -588,7 +649,7 @@ pub async fn request_email_code(
     tag = "login",
     request_body = EmailCodeVerify,
     responses(
-        (status = 200, description = "Signed in or challenge", body = CredentialsBody),
+        (status = 200, description = "Signed in (`authenticated`) or more steps needed (`challenge_required`)", body = LoginResponse),
         (status = 400, description = "invalid_code (uniform)", body = authn_core::error::ErrorEnvelope),
     )
 )]
@@ -615,7 +676,7 @@ pub async fn verify_email_code(
     tag = "login",
     request_body = FactorSubmission,
     responses(
-        (status = 200, description = "Signed in, or the next step", body = CredentialsBody),
+        (status = 200, description = "Signed in (`authenticated`), or the next step (`challenge_required`)", body = ChallengeStepResponse),
         (status = 400, description = "invalid_code", body = authn_core::error::ErrorEnvelope),
         (status = 401, description = "challenge_invalid", body = authn_core::error::ErrorEnvelope),
         (status = 403, description = "challenge_step_not_allowed / csrf_failed", body = authn_core::error::ErrorEnvelope),
@@ -712,7 +773,7 @@ pub async fn challenge_passkey_options(
     tag = "login",
     request_body = ChallengeStep,
     responses(
-        (status = 200, description = "Signed in, or the next step", body = ChallengeStatusBody),
+        (status = 200, description = "Signed in (`authenticated`), or the next step (`challenge_required`)", body = ChallengeStepResponse),
         (status = 401, description = "challenge_invalid", body = authn_core::error::ErrorEnvelope),
         (status = 403, description = "challenge_step_not_allowed", body = authn_core::error::ErrorEnvelope),
         (status = 422, description = "password policy / validation", body = authn_core::error::ErrorEnvelope),

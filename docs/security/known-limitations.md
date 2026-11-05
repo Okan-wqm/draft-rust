@@ -46,7 +46,7 @@
 | A-15 | Girişte sızdırılmış şifre kontrolü yok | Yalnızca yeni şifre belirlenirken HIBP'ye bakılır; mevcut sızmış şifreyle giriş yapılabilir | Spesifikasyon (PWD-03) yeni şifreler için ister | — |
 | A-16 | HIBP kesintisinde açık başarısızlık (varsayılan) | HIBP erişilemezse sızmış bir şifre kabul edilebilir | Kullanılabilirlik | `password.breach_check.fail_open = false` veya çevrimdışı liste |
 | A-17 | `password.min_length` 8'e düşürülebilir | Varsayılan 12; yapılandırma 8–64 aralığına izin verir | İşletmeci esnekliği | Belge, tek faktörlü hesaplar için 15 önerir |
-| A-18 | Break-glass şifresi süresizdir | `create-admin` şifresi değişiklik zorunluluğu olmadan geçerlidir | Acil durum hesabı | `create-admin --passkey-link` kullanın; break-glass kullanımı yüksek öncelikli audit olayı üretir |
+| A-18 | Şifreli break-glass hesabı bugün giriş tamamlayamıyor (K-112) | K-110'dan beri `create-admin` şifresi tek kullanımlıktır (ilk girişte e-posta kodu + passkey kaydı + yeni şifre; kullanılmazsa 24 saatte geçersiz). Ancak giriş challenge'ı içinde passkey kaydı adımı olmadığından platform admininin zorunlu passkey kaydı bu yoldan tamamlanamaz | `create-admin --passkey-link` kullanın; şifreli oluşturulmuş hesaba `admin-enrollment-link` ile bağlantı verin (şifreyi siler). Break-glass kullanımı yüksek öncelikli audit olayı üretir |
 | A-19 | Kurtarma kodu yeniden üretimi bildirilmez | Kullanıcıya e-posta gitmez | MFA-04 yalnızca kullanımı ister; uygun `NotificationKind` yok | Step-up gerekir, audit'lenir, güvenilir cihazları iptal eder |
 | A-20 | TOTP tekrar kullanım denemesi sahibine bildirilmez | Reddedilir ve başarısız doğrulama olarak sayılır; e-posta gitmez | — | `mfa.failed` audit olayı ve deneme sınırı |
 | A-21 | Passkey girişi org'un `allowed_mfa_factors` listesini atlar | Passkey tek başına MFA sayılır | SES-21 spesifikasyonu | Org passkey'i izinli giriş yöntemlerinden çıkarabilir |
@@ -100,7 +100,7 @@
 
 | # | Sınırlama | Etki | Azaltım |
 |---|-----------|------|---------|
-| O-1 | **Üretim kurallarının çoğu yalnızca `production`'da** | `staging` ortamında yalnızca yayımlanmış örnek anahtarlar reddedilir. `https` zorunluluğu, bellek içi hız sınırı yasağı, SSRF muafiyeti yasağı, four-eyes ve oturum kontrolü zorunluluğu, CAPTCHA hostname zorunluluğu `staging`'de uygulanmaz | `staging`'i üretim gibi yapılandırın. Varsayılan ortam `production`'dır |
+| O-1 | **`staging`'in üretimden bilinçli iki farkı** (K-111 öncesi: üretim kurallarının çoğu yalnızca `production`'daydı) | K-111'den beri `staging` üretimin tüm güvenlik kurallarını uygular (`https`, bellek içi hız sınırı yasağı, SSRF muafiyeti yasağı, oturum kontrolü, CAPTCHA hostname zorunluluğu, yayımlanmış anahtar yasağı). Kalan iki fark: `admin.four_eyes = false` ve `notify.email.transport = "disabled"` staging'de kabul edilir | Gerekçeler [`configuration.md` §1](../operations/configuration.md); varsayılan ortam `production`'dır ve staging'de four-eyes ayarsızken açıktır |
 | O-2 | HTTP katmanı hız sınırlayıcısı açık başarısız | Limiter hatasında kaba taşkın koruması devre dışı kalır | Güvenlikle ilgili eylem limitleri (giriş, CAPTCHA, sıfırlama) kapalı başarısız olur |
 | O-3 | `trusted_proxies` yanlış yapılandırması | Gerçekte güvenilmeyen bir ağ güvenilir yazılırsa istemci IP'si sahte olabilir (IP sınırları, org IP listesi, break-glass IP listesi) | Geniş önekler reddedilir (K-57 F1). Liste yalnızca proxy adreslerini içermeli |
 | O-4 | Saat senkronu | GCRA, TOTP ve token ömürleri sistem saatine bağlı | NTP |

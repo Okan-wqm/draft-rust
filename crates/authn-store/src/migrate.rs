@@ -41,10 +41,38 @@ pub static MIGRATOR: Migrator = sqlx::migrate!("../../migrations");
 
 /// Applies pending migrations. Safe with several instances: sqlx serializes
 /// runs with an advisory lock.
+///
+/// K-106 (rolling deployments): migrations applied by a **newer** release
+/// are tolerated — migrations are expand-only (contracts §6), so this
+/// binary does not depend on them. When nothing of this binary is pending
+/// the migrator is not run at all (a dirty migration of a newer release is
+/// that release's to repair, it must not stop older instances from
+/// starting); checksums of this binary's migrations are checked by
+/// [`migration_status`] / [`MigrationStatus::is_compatible`].
 pub async fn run_migrations(pool: &PgPool) -> Result<(), StoreError> {
-    MIGRATOR.run(pool).await.map_err(|e| match e {
-        sqlx::migrate::MigrateError::Execute(inner) => StoreError::from(inner),
-        _ => StoreError::Config("migration failed (see logs)"),
+    let status = migration_status(pool).await?;
+    if !status.contract_applied.is_empty() {
+        // A newer release contracted the schema: this binary must not
+        // touch (or run on) it.
+        tracing::error!(
+            contract_migrations = ?status.contract_applied,
+            "database schema was contracted by a newer release; this binary is incompatible"
+        );
+        return Err(StoreError::Config(
+            "database schema was contracted by a newer release (see logs)",
+        ));
+    }
+    if status.pending.is_empty() {
+        return Ok(());
+    }
+    let mut migrator = Migrator::with_migrations(MIGRATOR.iter().cloned().collect());
+    migrator.set_ignore_missing(true);
+    migrator.run(pool).await.map_err(|e| {
+        tracing::error!(error = %e, "database migration failed");
+        match e {
+            sqlx::migrate::MigrateError::Execute(inner) => StoreError::from(inner),
+            _ => StoreError::Config("migration failed (see logs)"),
+        }
     })
 }
 
@@ -57,25 +85,55 @@ pub struct MigrationStatus {
     pub failed: Vec<i64>,
     /// Applied versions whose checksum differs from the embedded file.
     pub checksum_mismatch: Vec<i64>,
-    /// Versions applied in the database but unknown to this binary (newer
-    /// deployment or removed file).
+    /// Versions applied in the database (successfully or not) but unknown
+    /// to this binary: a newer release already migrated (rolling
+    /// deployment), or a migration file was removed (never done: migrations
+    /// are append-only).
     pub unknown_applied: Vec<i64>,
+    /// The subset of [`Self::unknown_applied`] that a newer release marked
+    /// as **contracting** (file name `<version>_contract_<…>.sql`, contracts
+    /// §6): the schema no longer supports older binaries (rollback,
+    /// maintenance-window releases), so this binary is incompatible.
+    pub contract_applied: Vec<i64>,
 }
 
+/// Description prefix (from the file name `<version>_contract_<…>.sql`)
+/// of a migration that breaks older binaries (K-106, contracts §6).
+pub const CONTRACT_MIGRATION_PREFIX: &str = "contract ";
+
 impl MigrationStatus {
-    /// Whether the schema matches this binary exactly.
+    /// Whether the schema matches this binary exactly (`migrate` output).
     #[must_use]
     pub fn is_up_to_date(&self) -> bool {
+        self.is_compatible() && self.unknown_applied.is_empty()
+    }
+
+    /// Whether this binary can run on the schema (K-106; readiness and
+    /// start-up): every migration of the binary is applied, none failed,
+    /// none was modified. Migrations of a **newer** release are tolerated
+    /// because migrations are expand-only (contracts §6): during a rolling
+    /// deployment the new release migrates first and the old instances
+    /// keep serving until they are replaced.
+    #[must_use]
+    pub fn is_compatible(&self) -> bool {
         self.pending.is_empty()
             && self.failed.is_empty()
             && self.checksum_mismatch.is_empty()
-            && self.unknown_applied.is_empty()
+            && self.contract_applied.is_empty()
+    }
+
+    /// Whether the database is ahead of this binary (newer release applied
+    /// migrations it does not know).
+    #[must_use]
+    pub fn is_ahead(&self) -> bool {
+        !self.unknown_applied.is_empty()
     }
 }
 
 #[derive(sqlx::FromRow)]
 struct AppliedRow {
     version: i64,
+    description: String,
     success: bool,
     checksum: Vec<u8>,
 }
@@ -87,9 +145,11 @@ pub async fn migration_status(pool: &PgPool) -> Result<MigrationStatus, StoreErr
             .fetch_one(pool)
             .await?;
     let applied: Vec<AppliedRow> = if table_exists {
-        sqlx::query_as("SELECT version, success, checksum FROM _sqlx_migrations ORDER BY version")
-            .fetch_all(pool)
-            .await?
+        sqlx::query_as(
+            "SELECT version, description, success, checksum FROM _sqlx_migrations ORDER BY version",
+        )
+        .fetch_all(pool)
+        .await?
     } else {
         Vec::new()
     };
@@ -116,6 +176,16 @@ pub async fn migration_status(pool: &PgPool) -> Result<MigrationStatus, StoreErr
         .filter(|v| !known.contains(v))
         .collect();
     status.unknown_applied.sort_unstable();
+    status.contract_applied = status
+        .unknown_applied
+        .iter()
+        .copied()
+        .filter(|v| {
+            applied
+                .get(v)
+                .is_some_and(|row| row.description.starts_with(CONTRACT_MIGRATION_PREFIX))
+        })
+        .collect();
     Ok(status)
 }
 

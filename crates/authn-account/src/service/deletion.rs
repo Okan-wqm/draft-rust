@@ -409,6 +409,9 @@ impl AccountService {
         for hook in self.erasure_hooks() {
             hook.before_erasure_in_tx(tx.conn(), user).await?;
         }
+        // K-108: the ledger an operator exports off the database and
+        // re-applies after a backup restore.
+        super::erasure_ledger::record(tx.conn(), user, now, reason).await?;
         // Order: record the events (they get the pseudonym), unlink the
         // pseudonym and erase audit PII, then delete the row.
         tx.flush_audit().await?;

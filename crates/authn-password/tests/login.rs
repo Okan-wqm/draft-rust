@@ -7,7 +7,7 @@ mod common;
 
 use authn_core::domain::AccountStatus;
 use authn_core::error::codes;
-use authn_core::ports::{Actor, SecurityEventKind};
+use authn_core::ports::{Actor, Clock as _, SecurityEventKind};
 use authn_crypto::password::{Argon2Settings, LegacyDigest, PasswordHasher, Peppers};
 use authn_password::LoginPasswordOutcome;
 use authn_store::{NewPasswordHash, UserRepository};
@@ -277,4 +277,36 @@ impl FakeNow {
         use authn_core::ports::Clock as _;
         h.ports.clock.now()
     }
+}
+
+/// ADM-05 / K-110: a password whose expiry passed (the unused one-time
+/// initial password of a break-glass admin) is refused like a wrong one;
+/// before the expiry it still works.
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn adm_05_k110_expired_password_is_rejected_like_a_wrong_one(pool: sqlx::PgPool) {
+    let h = Harness::new(pool).await;
+    let user = h.user("glass@example.com", Some(STRONG)).await;
+    let deadline = h.ports.clock.now() + time::Duration::hours(24);
+    let mut conn = h.pool.acquire().await.unwrap();
+    assert!(
+        UserRepository::set_password_expiry(&mut conn, user, Some(deadline))
+            .await
+            .unwrap()
+    );
+    let password = secret(STRONG);
+    let outcome = h
+        .service
+        .verify_login_password(&h.ctx(), Some(user), &password)
+        .await
+        .unwrap();
+    assert_eq!(outcome, LoginPasswordOutcome::Valid);
+    h.ports
+        .clock
+        .advance(std::time::Duration::from_secs(24 * 60 * 60));
+    let outcome = h
+        .service
+        .verify_login_password(&h.ctx(), Some(user), &password)
+        .await
+        .unwrap();
+    assert_eq!(outcome, LoginPasswordOutcome::Invalid);
 }

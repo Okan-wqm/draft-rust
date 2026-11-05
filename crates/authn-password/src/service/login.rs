@@ -71,6 +71,13 @@ impl PasswordService {
         else {
             return Ok(LoginPasswordOutcome::Invalid);
         };
+        // K-110: an expired password (the unused one-time initial password
+        // of a break-glass admin) is refused like a wrong one, after the
+        // same verification work (no status, body or timing difference).
+        if credential.expires_at.is_some_and(|at| at <= self.now()) {
+            tracing::warn!(user_id = %user, "expired password presented");
+            return Ok(LoginPasswordOutcome::Invalid);
+        }
         if let Some(reason) = rehash
             && let Err(err) = self
                 .upgrade_hash(ctx, user, &credential, password, reason)

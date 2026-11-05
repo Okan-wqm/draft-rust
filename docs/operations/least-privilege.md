@@ -1,6 +1,6 @@
 # En az yetkili veritabanı rolleri (OPS-10, AUD-02, K-42)
 
-Bu belge üretim kurulumundaki üç PostgreSQL rolünü, her birinin yetkilerini ve kurulum adımlarını anlatır. Yetkiler elle yazılmaz: çalıştırılabilir yardımcı fonksiyon `authn_apply_least_privilege` (migration `2900_least_privilege.sql`, `2901_least_privilege_no_temp.sql` ile güncellendi; sahibi authn-server) her seferinde aynı sonucu üretir. Testler: `crates/authn-server/tests/least_privilege.rs` (`ops_10_least_privilege_grants_are_exact`, `ops_10_the_application_runs_as_the_restricted_role`, `ops_10_roles_inheriting_owner_or_peer_privileges_are_refused`, `ops_10_least_privilege_helper_ignores_the_callers_search_path`, `ops_10_restricted_roles_cannot_create_temporary_objects`, `ops_10_temporary_privilege_through_set_role_is_refused`).
+Bu belge üretim kurulumundaki üç PostgreSQL rolünü, her birinin yetkilerini ve kurulum adımlarını anlatır. Yetkiler elle yazılmaz: çalıştırılabilir yardımcı fonksiyon `authn_apply_least_privilege` (migration `2900_least_privilege.sql`, `2901_least_privilege_no_temp.sql` ve `2902_least_privilege_erasure_ledger.sql` ile güncellendi; sahibi authn-server) her seferinde aynı sonucu üretir. Testler: `crates/authn-server/tests/least_privilege.rs` (`ops_10_least_privilege_grants_are_exact`, `ops_10_the_application_runs_as_the_restricted_role`, `ops_10_roles_inheriting_owner_or_peer_privileges_are_refused`, `ops_10_least_privilege_helper_ignores_the_callers_search_path`, `ops_10_restricted_roles_cannot_create_temporary_objects`, `ops_10_temporary_privilege_through_set_role_is_refused`).
 
 ## Roller
 
@@ -8,9 +8,9 @@ Bu belge üretim kurulumundaki üç PostgreSQL rolünü, her birinin yetkilerini
 |-----|---------|--------------|-----------------|
 | **Şema sahibi** (ör. `authn_owner`; aynı zamanda **veritabanı sahibi** olmalı, aşağıya bakın) | yalnızca `rust-authentication migrate` ve `authn_apply_least_privilege` çağrısı | sunucu yapılandırmasında **yok**; migration'ı ayrı bir iş/CI adımı çalıştırır | — |
 | **Uygulama rolü** (ör. `authn_app`) | `serve` ve CLI komutları; tüm modül tabloları | `database.url` | `database.max_connections` (varsayılan 20) |
-| **Bakım rolü** (ör. `authn_maintenance`) | günlük audit saklama temizliği ve kontrol noktaları (`AuditService::run_maintenance`) | `database.maintenance_url` | `database.maintenance_max_connections` (varsayılan 2) |
+| **Bakım rolü** (ör. `authn_maintenance`) | günlük audit saklama temizliği (`AuditService::run_maintenance`), zamanlanmış dış çıpa (`create_scheduled_checkpoint`, K-107) ve `audit-checkpoint` komutu | `database.maintenance_url` | `database.maintenance_max_connections` (varsayılan 2) |
 
-`database.maintenance_url` verilmezse audit bakımı uygulama havuzuyla çalışır ve sunucu açılışta bir uyarı loglar. Bu yalnızca uygulama rolünün kısıtlanmadığı (ör. geliştirme) kurulumlar içindir: en az yetkili uygulama rolü `audit_events` satırı silemez, saklama temizliği de başarısız olur (hata loglanır, sunucu durmaz).
+`database.maintenance_url` verilmezse audit bakımı uygulama havuzuyla çalışır ve sunucu açılışta bir uyarı loglar. Bu yalnızca uygulama rolünün kısıtlanmadığı (ör. geliştirme) kurulumlar içindir: en az yetkili uygulama rolü `audit_events` satırı silemez, saklama temizliği ve zamanlanmış kontrol noktası da başarısız olur (`audit maintenance failed` / `audit chain checkpoint failed` loglanır, sunucu durmaz).
 
 ## Yetkiler
 
@@ -20,6 +20,7 @@ Bu belge üretim kurulumundaki üç PostgreSQL rolünü, her birinin yetkilerini
 |----------|---------------|------------|
 | Modül tabloları (aşağıdaki istisnalar dışında her tablo: `users`, `sessions`, `identities`, `oauth_states`, `oauth_token_revocations`, `admin_passkey_enrollments`, `admin_operation_leases`, `pending_registrations`, …) | `SELECT, INSERT, UPDATE, DELETE` | — |
 | `admin_action_reasons`, `admin_reason_restrictions`, `admin_reason_restriction_periods` (ekleme-yalnızca; tetikleyici ayrıca `UPDATE`/`DELETE`/`TRUNCATE`'i reddeder) | `SELECT, INSERT` | — |
+| `erasure_ledger` (silme defteri, K-108; 2902: uygulama yalnızca ekler, bir silmenin kaydı dışa aktarılmadan silinemez/değiştirilemez) | `SELECT, INSERT` | — |
 | `admin_approvals` (K-66; değişmez kolonları tetikleyici korur, satırlar yalnızca kullanıcı silinince kaskadla gider) | `SELECT, INSERT, UPDATE` | — |
 | `audit_events` | `SELECT, INSERT` | `SELECT, DELETE` (tetikleyici yalnızca `SET LOCAL authn.audit_purge_before` kaçış kapısıyla izin verir) |
 | `audit_chain_checkpoints` | `SELECT` | `SELECT, INSERT` |

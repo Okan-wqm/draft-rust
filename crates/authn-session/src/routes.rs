@@ -445,6 +445,7 @@ impl std::fmt::Debug for PasskeyOptionsResponse {
 #[utoipa::path(
     post,
     path = "/v1/reauth/passkey/options",
+    operation_id = "reauth_passkey_options",
     tag = "session",
     responses(
         (status = 200, description = "WebAuthn request options", body = PasskeyOptionsResponse),
@@ -548,7 +549,7 @@ impl std::fmt::Debug for IntrospectionRequest {
         (status = 401, description = "unauthenticated (API key)", body = authn_core::error::ErrorEnvelope),
         (status = 429, description = "rate_limited", body = authn_core::error::ErrorEnvelope),
     ),
-    security(("api_key" = []))
+    security(("api_key" = []), ("api_key_bearer" = []))
 )]
 pub async fn introspect(
     State(service): State<SessionService>,

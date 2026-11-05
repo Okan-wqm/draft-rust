@@ -111,6 +111,8 @@ async fn adm_05_cli_create_admin_prints_the_one_time_password_exactly_once(pool:
         1,
         "the one-time password must be printed once and never logged"
     );
+    // K-110: the operator learns that it is one-time and when it expires.
+    assert!(out.stdout.contains("stops working at"), "{}", out.stdout);
     let admins: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM users WHERE email_normalized = 'root@example.com' AND is_platform_admin",
     )

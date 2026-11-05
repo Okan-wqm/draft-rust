@@ -38,8 +38,9 @@ pub enum Command {
     /// Load and validate the configuration, then exit.
     CheckConfig,
     /// Create a break-glass platform admin (ADM-05): prints a one-time
-    /// password, or with `--passkey-link` a single-use passkey enrollment
-    /// link (K-11). Shown once, never logged.
+    /// initial password (changed at first login, expires after 24 hours if
+    /// unused, K-110), or with `--passkey-link` a single-use passkey
+    /// enrollment link (K-11). Shown once, never logged.
     CreateAdmin {
         /// E-mail address of the admin account.
         #[arg(long)]
@@ -139,6 +140,31 @@ pub enum Command {
         #[arg(long)]
         input: PathBuf,
     },
+    /// Record a checkpoint of the audit chain head now and print it as
+    /// `<seq>:<hash hex>` (the `verify-audit-chain --anchor` format) to keep
+    /// outside the database (K-107). Uses `database.maintenance_url` when
+    /// set (the application role cannot write checkpoints).
+    AuditCheckpoint,
+    /// Write the erasure ledger as JSON lines (K-108) for storage outside
+    /// the database; re-apply it with `reapply-erasures` after a restore.
+    ExportErasures {
+        /// Only erasures at or after this RFC 3339 time (overlap freely:
+        /// the ledger is keyed by account). Default: everything.
+        #[arg(long, value_parser = parse_rfc3339)]
+        since: Option<time::OffsetDateTime>,
+        /// File to write (created or replaced); `-` for stdout (log lines
+        /// share stdout: prefer a file).
+        #[arg(long)]
+        output: PathBuf,
+    },
+    /// Erase again every account of an exported erasure ledger that a
+    /// restored backup brought back (K-108; KVKK md. 7, GDPR art. 17).
+    /// Idempotent. Run it before `serve` after every restore.
+    ReapplyErasures {
+        /// JSON-lines ledger from `export-erasures`, or `-` for stdin.
+        #[arg(long)]
+        from: PathBuf,
+    },
 }
 
 impl Command {
@@ -162,6 +188,9 @@ impl Command {
             Self::VerifyAuditChain { .. } => "verify-audit-chain",
             Self::RotateAuditChainKey => "rotate-audit-chain-key",
             Self::MigrateLegacyHashes { .. } => "migrate-legacy-hashes",
+            Self::AuditCheckpoint => "audit-checkpoint",
+            Self::ExportErasures { .. } => "export-erasures",
+            Self::ReapplyErasures { .. } => "reapply-erasures",
         }
     }
 }
@@ -196,6 +225,51 @@ fn parse_anchor(value: &str) -> Result<authn_audit::ChainAnchor, String> {
         *byte = u8::from_str_radix(text, 16).map_err(|_| FORMAT)?;
     }
     Ok(authn_audit::ChainAnchor { seq, hash })
+}
+
+fn parse_rfc3339(value: &str) -> Result<time::OffsetDateTime, String> {
+    time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
+        .map_err(|_| "expected an RFC 3339 time, e.g. 2026-11-05T00:00:00Z".to_owned())
+}
+
+/// Ledger entries exported per query (K-108).
+const LEDGER_PAGE: i64 = 1000;
+
+/// Parses an exported erasure ledger (JSON lines; blank lines and `#`
+/// comments skipped). Every line is checked — format and MAC under `key`
+/// (`KeyPurpose::ErasureLedger`, K-108) — before anything is erased; an
+/// invalid or forged line is an input error naming its number, never its
+/// content.
+pub fn parse_erasure_ledger(
+    text: &str,
+    key: &authn_crypto::kdf::HmacKey,
+) -> Result<Vec<authn_account::ErasureRecord>, ServerError> {
+    let mut entries = Vec::new();
+    for (index, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let entry = authn_account::parse_ledger_line(line, key).ok_or_else(|| {
+            ServerError::Input(format!(
+                "line {} of the erasure ledger is not an authentic ledger entry \
+                 (written by export-erasures with this crypto.hmac_root_key)",
+                index + 1
+            ))
+        })?;
+        entries.push(entry);
+    }
+    Ok(entries)
+}
+
+/// The erasure ledger MAC key of the configuration (K-108).
+fn ledger_key(config: &AppConfig) -> Result<authn_crypto::kdf::HmacKey, ServerError> {
+    authn_crypto::kdf::KeyRing::from_config(&config.crypto)
+        .and_then(|ring| {
+            ring.key(authn_crypto::kdf::KeyPurpose::ErasureLedger)
+                .cloned()
+        })
+        .map_err(|e| ServerError::Startup(AuthError::from(e)))
 }
 
 /// The audit chain keys of the configuration (K-77).
@@ -237,10 +311,7 @@ async fn connect(cli: &Cli) -> Result<(AppConfig, sqlx::PgPool), ServerError> {
     let config = AppConfig::load(cli.config.as_deref())?;
     crate::telemetry::init(&config.server)?;
     let pool = authn_store::connect(&config.database).await?;
-    let status = authn_store::migration_status(&pool).await?;
-    if !status.is_up_to_date() {
-        return Err(ServerError::SchemaOutdated(format!("{status:?}")));
-    }
+    crate::serve::ensure_compatible_schema(&pool).await?;
     Ok((config, pool))
 }
 
@@ -369,10 +440,19 @@ pub async fn run(cli: Cli) -> Result<Outcome, ServerError> {
             let pool = authn_store::connect(&config.database).await?;
             authn_store::run_migrations(&pool).await?;
             let status = authn_store::migration_status(&pool).await?;
-            Ok(Outcome::Message(format!(
-                "migrations applied; schema up to date: {}",
-                status.is_up_to_date()
-            )))
+            Ok(Outcome::Message(
+                if status.is_ahead() && status.is_compatible() {
+                    format!(
+                        "migrations applied; schema is ahead of this binary (newer migrations {:?}); compatible: true",
+                        status.unknown_applied
+                    )
+                } else {
+                    format!(
+                        "migrations applied; schema up to date: {}",
+                        status.is_up_to_date()
+                    )
+                },
+            ))
         }
         Command::Serve => {
             let config = AppConfig::load(cli.config.as_deref())?;
@@ -422,8 +502,9 @@ pub async fn run(cli: Cli) -> Result<Outcome, ServerError> {
             .await
             .map_err(ServerError::Startup)?;
             Ok(Outcome::Message(format!(
-                "break-glass admin {} created.\nOne-time password (store it offline now, it is not shown again):\n{}",
+                "break-glass admin {} created.\nOne-time password (store it offline now, it is not shown again; the first login requires a code e-mailed to the account, a passkey enrollment and a new password; unused, it stops working at {}):\n{}",
                 admin.user_id,
+                admin.password_expires_at,
                 admin.password.expose()
             )))
         }
@@ -645,6 +726,93 @@ pub async fn run(cli: Cli) -> Result<Outcome, ServerError> {
                 ),
             }))
         }
+        Command::AuditCheckpoint => {
+            let (config, pool) = connect(&cli).await?;
+            let pool = match config.database.maintenance() {
+                Some(maintenance) => authn_store::connect(&maintenance).await?,
+                None => pool,
+            };
+            let anchor = authn_audit::create_checkpoint(&pool, clock.as_ref())
+                .await
+                .map_err(ServerError::Startup)?;
+            Ok(Outcome::Message(format!(
+                "{}:{}",
+                anchor.seq,
+                anchor.hash_hex()
+            )))
+        }
+        Command::ExportErasures { since, output } => {
+            let (config, services) = services(&cli, clock).await?;
+            let key = ledger_key(&config)?;
+            let since = since.unwrap_or(time::OffsetDateTime::UNIX_EPOCH);
+            let mut lines = Vec::new();
+            let mut after: Option<authn_account::ErasureRecord> = None;
+            loop {
+                let page = services
+                    .accounts
+                    .export_erasures(since, after.as_ref(), LEDGER_PAGE)
+                    .await
+                    .map_err(ServerError::Startup)?;
+                for entry in &page {
+                    lines.push(authn_account::ledger_line(entry, &key));
+                }
+                if page.len() < usize::try_from(LEDGER_PAGE).unwrap_or(usize::MAX) {
+                    break;
+                }
+                after = page.last().cloned();
+            }
+            let count = lines.len();
+            let mut text = lines.join("\n");
+            if !text.is_empty() {
+                text.push('\n');
+            }
+            if output.as_os_str() == "-" {
+                return Ok(Outcome::Message(text.trim_end().to_owned()));
+            }
+            std::fs::write(output, text)?;
+            Ok(Outcome::Message(format!(
+                "{count} erasure ledger entries written"
+            )))
+        }
+        Command::ReapplyErasures { from } => {
+            let text = if from.as_os_str() == "-" {
+                std::io::read_to_string(std::io::stdin())?
+            } else {
+                std::fs::read_to_string(from)?
+            };
+            let key = ledger_key(&AppConfig::load(cli.config.as_deref())?)?;
+            let entries = parse_erasure_ledger(&text, &key)?;
+            let (_config, services) = services(&cli, clock).await?;
+            let (mut erased, mut gone) = (0_u64, 0_u64);
+            let mut blocked = Vec::new();
+            for entry in &entries {
+                match services
+                    .accounts
+                    .reapply_erasure(entry)
+                    .await
+                    .map_err(ServerError::Startup)?
+                {
+                    authn_account::ReapplyOutcome::Erased => erased += 1,
+                    authn_account::ReapplyOutcome::AlreadyErased => gone += 1,
+                    authn_account::ReapplyOutcome::BlockedLastOwner => {
+                        blocked.push(entry.user_id.to_string());
+                    }
+                }
+            }
+            let summary = format!(
+                "{} ledger entries: {erased} accounts erased again, {gone} already erased, {} blocked",
+                entries.len(),
+                blocked.len()
+            );
+            if blocked.is_empty() {
+                Ok(Outcome::Message(summary))
+            } else {
+                Err(ServerError::Integrity(format!(
+                    "{summary}; last owner of an organization (transfer or delete the organization, then rerun): {}",
+                    blocked.join(", ")
+                )))
+            }
+        }
         Command::MigrateLegacyHashes { input } => {
             let text = std::fs::read_to_string(input)?;
             let lines = operations::parse_legacy_lines(&text).map_err(ServerError::Input)?;
@@ -826,6 +994,11 @@ mod tests {
                 legacy_until_seq: None,
             },
             Command::RotateAuditChainKey,
+            Command::AuditCheckpoint,
+            Command::ExportErasures {
+                since: None,
+                output: "-".into(),
+            },
         ] {
             let err = run(Cli {
                 config: Some("/nonexistent/authn.toml".into()),
@@ -856,6 +1029,97 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(err, ServerError::Io(_)), "{err}");
+    }
+
+    #[test]
+    fn k_107_k_108_operator_commands_parse() {
+        let cli = Cli::try_parse_from(["rust-authentication", "audit-checkpoint"]).unwrap();
+        assert_eq!(cli.command, Command::AuditCheckpoint);
+        assert_eq!(cli.command.name(), "audit-checkpoint");
+        let cli = Cli::try_parse_from(["rust-authentication", "export-erasures", "--output", "-"])
+            .unwrap();
+        assert_eq!(
+            cli.command,
+            Command::ExportErasures {
+                since: None,
+                output: "-".into()
+            }
+        );
+        let cli = Cli::try_parse_from([
+            "rust-authentication",
+            "export-erasures",
+            "--since",
+            "2026-11-05T00:00:00Z",
+            "--output",
+            "ledger.jsonl",
+        ])
+        .unwrap();
+        assert_eq!(
+            cli.command,
+            Command::ExportErasures {
+                since: Some(time::macros::datetime!(2026-11-05 00:00 UTC)),
+                output: "ledger.jsonl".into()
+            }
+        );
+        for bad in [
+            &["export-erasures"][..],
+            &["export-erasures", "--since", "today", "--output", "-"][..],
+        ] {
+            assert!(
+                Cli::try_parse_from(
+                    std::iter::once("rust-authentication").chain(bad.iter().copied())
+                )
+                .is_err(),
+                "{bad:?}"
+            );
+        }
+        let cli = Cli::try_parse_from(["rust-authentication", "reapply-erasures", "--from", "-"])
+            .unwrap();
+        assert_eq!(cli.command.name(), "reapply-erasures");
+        assert!(Cli::try_parse_from(["rust-authentication", "reapply-erasures"]).is_err());
+    }
+
+    #[test]
+    fn k_108_erasure_ledger_parsing_is_strict_and_never_echoes_input() {
+        let ring = authn_crypto::kdf::KeyRing::derive(&[3_u8; 32]).unwrap();
+        let key = ring
+            .key(authn_crypto::kdf::KeyPurpose::ErasureLedger)
+            .unwrap();
+        let record = |id: &str, reason: &str| authn_account::ErasureRecord {
+            user_id: serde_json::from_str(&format!("\"{id}\"")).unwrap(),
+            erased_at: time::OffsetDateTime::from_unix_timestamp(1_793_000_000).unwrap(),
+            reason: reason.to_owned(),
+        };
+        let text = format!(
+            "# exported 2026-11-05\n\n{}\n{}\n",
+            authn_account::ledger_line(
+                &record(
+                    "01900000-0000-7000-8000-0000000000aa",
+                    "grace_period_elapsed"
+                ),
+                key
+            ),
+            authn_account::ledger_line(
+                &record("01900000-0000-7000-8000-0000000000ab", "unverified_expired"),
+                key
+            ),
+        );
+        let entries = parse_erasure_ledger(&text, key).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[1].reason, "unverified_expired");
+        let err = parse_erasure_ledger("{\"user_id\":\"secret@example.com\"}\n", key).unwrap_err();
+        assert!(matches!(err, ServerError::Input(_)), "{err}");
+        assert!(err.to_string().contains("line 1"), "{err}");
+        assert!(!err.to_string().contains("secret@example.com"), "{err}");
+        assert_eq!(err.exit_code(), std::process::ExitCode::from(65));
+        // An unsigned line (the pre-K-108-audit format) is refused.
+        let unsigned = serde_json::to_string(&record(
+            "01900000-0000-7000-8000-0000000000aa",
+            "grace_period_elapsed",
+        ))
+        .unwrap();
+        let err = parse_erasure_ledger(&format!("# x\n{unsigned}\n"), key).unwrap_err();
+        assert!(err.to_string().contains("line 2"), "{err}");
     }
 
     #[test]

@@ -27,7 +27,10 @@ pub mod tx;
 pub mod users;
 
 pub use error::StoreError;
-pub use migrate::{MIGRATION_RANGES, MIGRATOR, MigrationStatus, migration_status, run_migrations};
+pub use migrate::{
+    CONTRACT_MIGRATION_PREFIX, MIGRATION_RANGES, MIGRATOR, MigrationStatus, migration_status,
+    run_migrations,
+};
 pub use one_time_tokens::{
     CodeVerification, NewOneTimeToken, OneTimeTokenRecord, OneTimeTokenRepository, TokenKind,
     TokenPurpose, TokenSubject,

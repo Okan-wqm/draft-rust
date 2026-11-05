@@ -296,7 +296,7 @@ Bu dalgadaki değişiklik ADR 0002'nin "kod oltalama" kalıntısıyla ilgilidir:
 - `dead` durumundaki satırların zarfı, `authn-audit`'in saklama temizliğine kadar (şifreli olarak) kalır.
 - SMS için sağlayıcı tarafında idempotency anahtarı gönderilmez (`SmsMessage` portunda alan yok); en-az-bir-kez teslimde nadiren aynı kod iki kez gelebilir.
 - Düz metindeki çıplak alan adları (`evil.example`) bazı istemcilerde otomatik link olabilir; organizasyon adları tırnak içinde ve 80 karakterle sınırlıdır.
-- Mailpit'in rastgele sertifikası için `docker-compose.yml`'de sabit sertifika bağlaması mimara önerildi (bkz. `docs/architecture/contract-change-requests.md`).
+- ~~Mailpit'in rastgele sertifikası~~ — **kapatıldı:** `docker-compose.yml` Mailpit'e depodaki sabit geliştirme sertifikasını bağlar (`config/dev-certs/mailpit.pem` / `mailpit.key`, `MP_SMTP_TLS_CERT` / `MP_SMTP_TLS_KEY`); development/test yapılandırması onu `notify.email.smtp.extra_ca_file` ile güvenir, staging ve production bu ayarı reddeder (bkz. `config/dev-certs/README.md`).
 
 ## Testler
 

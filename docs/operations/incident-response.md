@@ -5,7 +5,7 @@ Her runbook: **belirtiler → hemen yap → incele → kapat**. Komutlar ve uçl
 Genel ilkeler:
 
 - **Önce durdur, sonra incele.** Oturum iptali her bearer isteğinde etkilidir (`session.access_token_session_check`, üretimde zorunlu `true`); askıya alma ve iptal bir sonraki istekte geçerlidir.
-- **Kanıtı koru:** audit log ekleme-yalnızca ve anahtarlı zincirlidir; müdahaleye başlamadan `rust-authentication verify-audit-chain` çalıştırın ve yazdırılan `head <seq>:<hash>`'i dışarıda saklayın. Veritabanı anlık görüntüsü alın ([backup.md](backup.md)).
+- **Kanıtı koru:** audit log ekleme-yalnızca ve anahtarlı zincirlidir; müdahaleye başlamadan en yeni dış çıpayla (`anchor` alanlı `audit chain scheduled checkpoint` log satırları, K-107) `rust-authentication verify-audit-chain --anchor <seq>:<hash>` çalıştırın, ardından `rust-authentication audit-checkpoint | tail -n1` ile yeni bir çıpa alıp dışarıda saklayın. Veritabanı anlık görüntüsü alın ([backup.md](backup.md)).
 - Her istekte `x-request-id` (UUIDv7) loglarla eşleştirme anahtarıdır.
 
 ## 1. Tek hesabın ele geçirilmesi
@@ -97,9 +97,10 @@ Hangi anahtarın neyi koruduğu: [key-management.md §0](key-management.md#0-env
    ```bash
    rust-authentication --config prod.toml verify-audit-chain
    rust-authentication --config prod.toml verify-audit-chain --anchor <WORM'daki son seq:hash>
+   # zamanlanmış çıpalar: log hattındaki "anchor" alanı (audit.checkpoint_interval, varsayılan günlük)
    ```
    Sorun türleri: hash uyuşmazlığı (satır değişti/silindi), `key_downgrade` (anahtarlı satırdan sonra anahtarsız veya düşük sürüm — eski bir ikili geri yüklenmiş olabilir ya da sahte satır), `unkeyed_event` (sabitlenen eski önekten sonra anahtarsız satır), `key_switch_unrecorded`, `head_mismatch`.
-2. **Kapsam:** veritabanına yazabilen ama zincir anahtarını bilmeyen biri geçerli sahte olay ekleyemez/zinciri yeniden hesaplayamaz. Sondan **kesme veya geri sarma** yalnızca dış çıpayla (`--anchor`) yakalanır; bu yüzden çıpaları düzenli toplayın ([key-management.md §5](key-management.md#5-audit-zinciri-anahtarı-k-77)). Uygulama sürecinin kendisi (anahtarı tutar) ele geçirildiyse onun yazdıkları ayırt edilemez.
+2. **Kapsam:** veritabanına yazabilen ama zincir anahtarını bilmeyen biri geçerli sahte olay ekleyemez/zinciri yeniden hesaplayamaz. Sondan **kesme veya geri sarma** yalnızca dış çıpayla (`--anchor`) yakalanır; sunucu çıpayı kendisi üretip loglar (K-107), log hattının onu veritabanı dışına taşıdığından emin olun ([key-management.md §5](key-management.md#5-audit-zinciri-anahtarı-k-77)). Uygulama sürecinin kendisi (anahtarı tutar) ele geçirildiyse onun yazdıkları ayırt edilemez.
 3. **Hemen yap:** veritabanı yetkilerini denetleyin — uygulama rolünün `audit_events` üzerinde `UPDATE`/`DELETE` yetkisi olmamalı ([least-privilege.md](least-privilege.md#doğrulama) sorguları); anlık görüntü alın; yetkili rollerin parolalarını değiştirin.
 4. Kurcalanma kökenine göre §4 (kök anahtar) veya §1–§3'ü uygulayın; bozulma noktasından sonraki olayları güvenilmez sayın ve olayı belgeleyin.
 

@@ -47,8 +47,8 @@
 | G. Güvenlik | 12 | 3 | 3 | 18 |
 | H. Uyumluluk | 7 | 1 | 1 | 9 |
 | I. Geliştirici deneyimi | 6 | 2 | 9 | 17 |
-| J. Operasyon | 9 | 2 | 4 | 15 |
-| **Toplam** | **80** | **14** | **51** | **145** |
+| J. Operasyon | 11 | 1 | 3 | 15 |
+| **Toplam** | **82** | **13** | **50** | **145** |
 
 Kısaca: B2C ve B2B'nin "uygulama içi" kimlik doğrulama çekirdeği (faktörler, oturumlar, organizasyonlar, yönetim, güvenlik) güçlü. En büyük açık **C kategorisi**: sistem bir OAuth 2.1/OIDC **sağlayıcısı** değil. Bu yüzden başka uygulamalara SSO veremiyor, üçüncü taraf istemci barındıramıyor ve kurumsal federasyonun yarısı (B) da bu eksikliğe bağlı. İkinci büyük açık **I kategorisi**: SDK, barındırılan UI ve bileşenler yok.
 
@@ -162,7 +162,7 @@ Kısaca: B2C ve B2B'nin "uygulama içi" kimlik doğrulama çekirdeği (faktörle
 |---|---------|----------------------|-----------------------|-----|-------------|
 | F1 | Kullanıcı arama/detay/işlemler (askıya alma, kilit açma, MFA sıfırlama…) | genel olarak sunulur | genel olarak sunulur | ✅ | ADM-02/03: gerekçe zorunlu, MFA sıfırlama passkey'leri de siler (K-01) |
 | F2 | Impersonation (süreli, salt-okunur varsayılan, `act`, kullanıcıya bildirim) | genel olarak sunulur | bazılarında | ✅ | ADM-04, K-12 |
-| F3 | Audit sorgu, dışa aktarma, bütünlük doğrulama | genel olarak sunulur | bazılarında | ✅ | ADM-07, AUD-02 (hash zinciri) |
+| F3 | Audit sorgu, dışa aktarma, bütünlük doğrulama | genel olarak sunulur | bazılarında | ✅ | ADM-07, AUD-02 (anahtarlı HMAC-SHA-256 zinciri, K-77) |
 | F4 | Kritik admin işlemlerinde çift onay (four-eyes) | nadiren | nadiren | ✅ | K-66: `/v1/admin/approvals`, `crates/authn-admin/tests/four_eyes.rs` |
 | F5 | Break-glass hesabı ve acil durum işlemleri | bazılarında | bazılarında | ✅ | ADM-05/06, K-07/K-11 |
 | F6 | Her admin işleminde gerekçe kaydı | bazılarında | nadiren | ✅ | ADM-08, K-39/K-62 (gerekçeler kullanıcı dışa aktarımında) |
@@ -248,8 +248,8 @@ Step-up G kategorisinde ayrıca sayılmadı (D8).
 | J11 | Başka bir IdP'den toplu kullanıcı içe aktarma aracı | genel olarak sunulur | genel olarak sunulur | ❌ | `migrate-legacy-hashes` yalnızca var olan kullanıcıların hash'lerini sarar. Faz 2 K-94 |
 | J12 | Anahtar rotasyonu (imza anahtarı, KEK, pepper) | uygulanamaz | bazılarında | ✅ | CRY-02/10, OPS-01 |
 | J13 | En az yetkili veritabanı rolleri | uygulanamaz | nadiren | ✅ | OPS-10, K-42: `authn_apply_least_privilege` |
-| J14 | Runbook'lar (olay müdahalesi, rotasyon, yedekleme) | genel olarak sunulur | bazılarında | 🟡 | Yalnızca `docs/operations/least-privilege.md` var. DOC-06 açık (K-57) |
-| J15 | Performans bütçeleri ve benchmark'lar | belirsiz | bazılarında | ❌ | K-70 açık |
+| J14 | Runbook'lar (olay müdahalesi, rotasyon, yedekleme) | genel olarak sunulur | bazılarında | ✅ | DOC-06 (wave 7): `docs/operations/` — yapılandırma, dağıtım, anahtar yönetimi, olay müdahalesi, yedekleme, izleme, ölçekleme, admin kurtarma, en az yetki. Helm/HA referansı ayrı (K-99) |
+| J15 | Performans bütçeleri ve benchmark'lar | belirsiz | bazılarında | ✅ | K-70 (`72b1527`, wave 5B): `docs/operations/performance.md` (uç başına p50/p99 bütçeleri, Argon2id ölçümü), `authn-server/benches/hot_paths.rs`, yük testi `tests/load.rs` |
 
 ---
 
@@ -260,7 +260,7 @@ Bu bölümdeki her iddia kod ve testle desteklenir. Rakiplerin bunları yapamad�
 | # | Güçlü yan | Neden önemli | Kanıt (test) |
 |---|-----------|--------------|--------------|
 | 1 | **Kritik admin işlemlerinde four-eyes** (K-66). Bir admin istek açar, başka bir admin onaylar. Onay tek kullanımlıktır, parametre hash'ine bağlıdır ve süreli tutulur. Hedef admin onaylayan olamaz. Üretimde kapatılamaz | Ele geçirilmiş tek bir admin hesabı toplu kesinti yaratamaz ve diğer adminleri kaldıramaz | `adm_06_k66_emergency_needs_an_approval_and_uses_it_once`, `adm_03_k66_self_approval_target_approval_and_foreign_use_are_refused`, `adm_06_k66_parameter_tampering_is_refused`, `adm_03_k66_concurrent_uses_of_one_approval_run_once` |
-| 2 | **Ekleme-yalnızca, hash zincirli audit log** (AUD-02). Uygulama rolünün `UPDATE`/`DELETE` yetkisi yoktur, tetikleyici de korur. Eşzamanlı eklemede zincir çatallanmaz. Kişisel veri zincir dışında tutulur, böylece silme zinciri bozmaz | Kurcalama tespit edilir. Hesap silme ile audit bütünlüğü çatışmaz | `aud_02_concurrent_writers_never_fork_the_chain`, `aud_04_k62_a_hold_lasts_at_most_180_days` |
+| 2 | **Ekleme-yalnızca, anahtarlı hash zincirli audit log** (AUD-02, K-77). Zincir `HMAC-SHA-256(K_v, prev_hash ‖ kayıt)` ile kurulur: veritabanına yazabilen ama anahtarı olmayan biri zinciri yeniden hesaplayamaz. Uygulama rolünün `UPDATE`/`DELETE` yetkisi yoktur, tetikleyici de korur. Eşzamanlı eklemede zincir çatallanmaz. Kişisel veri zincir dışında tutulur, böylece silme zinciri bozmaz | Kurcalama tespit edilir. Hesap silme ile audit bütünlüğü çatışmaz | `aud_02_concurrent_writers_never_fork_the_chain`, `k_77_forger_without_the_key_cannot_recompute_the_chain`, `aud_04_k62_a_hold_lasts_at_most_180_days` |
 | 3 | **Hesap ön ele geçirme (pre-hijacking) savunması tasarımın parçası** (ADR 0002). Doğrulanmamış kayıt hesabı aktive etmez. Sosyal girişte adres rezervasyonu yapılır. E-posta değişikliği geri alınınca saldırganın eklediği tüm giriş yöntemleri silinir | Bilinen bir hesap ele geçirme sınıfı kapatılır | `acc_02_attacker_first_link_alone_never_activates_the_attackers_password`, `soc_05_reserved_address_gets_no_new_account`, `acc_07_k20_revert_removes_every_login_method_the_attacker_added` |
 | 4 | **En az yetkili veritabanı rolleri**, çalıştırılabilir bir fonksiyonla kurulur. Fonksiyon tehlikeli rolleri (tablo sahibi, süper kullanıcı, `BYPASSRLS`, `pg_*_all_data` üyesi) reddeder ve çağıranın `search_path`'ine güvenmez | SQL enjeksiyonu ya da uygulama ele geçirilse bile audit silinemez | `ops_10_least_privilege_grants_are_exact`, `ops_10_roles_inheriting_owner_or_peer_privileges_are_refused`, `ops_10_the_application_runs_as_the_restricted_role` |
 | 5 | **Hesap varlığı süre üzerinden de sızmaz.** Kayıt, şifre sıfırlama, magic link ve kilit yanıtlarının süreleri istatistiksel testlerle karşılaştırılır | Kullanıcı numaralandırması (enumeration) zorlaşır | `acc_02_signup_timing_does_not_reveal_existing_accounts`, `prt_03_lock_response_does_not_reveal_account_existence`, `ses_18_unknown_addresses_get_the_same_answer_and_no_mail` |
@@ -269,7 +269,7 @@ Bu bölümdeki her iddia kod ve testle desteklenir. Rakiplerin bunları yapamad�
 | 8 | **SSRF'ye dayanıklı giden HTTP.** DNS'i kendimiz çözeriz, adresi sabitleriz, IPv6'yı izin listesiyle sınıflandırırız, bulut metadata adreslerini reddederiz | Webhook ve OIDC çağrıları iç ağa saldırı aracı olamaz | `prt_12_webhook_delivery_refuses_a_name_rebound_to_loopback`, `crates/authn-protect` tablo testleri + proptest |
 | 9 | **Kiracı izolasyonu her uçta saldırgan gözüyle test edilir.** Başka kiracının kaynağı, var olmayanla aynı `404`'ü alır | B2B veri sızıntısı riski azalır | `arc_10_org_10_every_endpoint_hides_other_tenants_from_a_session_owner` |
 | 10 | **Impersonation sınırları.** Süreli ve varsayılan salt-okunurdur. Kullanıcıya bildirilir. Admin askıya alınınca biter. Passkey ekleyemez. Adminin çerezini ezmez | Destek erişimi kalıcı arka kapıya dönüşmez | `adm_04_header_impersonation_rotation_never_sets_a_cookie`, `crates/authn-server/tests/admin_e2e.rs` |
-| 11 | **Lisans ve tedarik zinciri disiplini.** Yalnızca izin verici lisanslar kullanılır (tek istisna `webauthn-rs`, MPL-2.0). `cargo deny` + `cargo audit` CI'da çalışır. Üçüncü taraf bildirimleri otomatik üretilir | Ticari kullanıma engel yok. Kendi barındırmada kaynak kodun tamamı işletmecide | `deny.toml`, `licenses/README.md`, CI `licence-notices` işi |
+| 11 | **Lisans ve tedarik zinciri disiplini.** Yalnızca izin verici lisanslar kullanılır (ürün binary'sindeki tek istisna `webauthn-rs`, MPL-2.0; ayrıca yalnızca geliştirme amaçlı, dağıtılmayan `fuzz/` workspace'inde `libfuzzer-sys`, NCSA). `cargo deny` + `cargo audit` CI'da çalışır. Üçüncü taraf bildirimleri otomatik üretilir | Ticari kullanıma engel yok. Kendi barındırmada kaynak kodun tamamı işletmecide | `deny.toml`, `licenses/README.md`, CI `licence-notices` işi |
 | 12 | **Kendi barındırma ve veri sahipliği.** Tek binary, veri işletmecinin PostgreSQL'inde kalır | KVKK açısından yurt dışı aktarımı işletmeci kontrol eder | OPS-01, `docs/compliance/kvkk-gdpr.md` §7 |
 
 ## 5. Geride olduğumuz yerler
@@ -284,7 +284,7 @@ Dürüst liste, etkisi büyükten küçüğe:
 6. **Risk motoru kural tabanlı (G5, G6).** İmkânsız seyahat için üretim GeoIP uygulaması yok. Davranışsal/ML sinyali ve paylaşılan sinyal (CAEP/RISC) yok.
 7. **Push MFA, telefonla giriş ve kullanıcı adı yok (A15–A17).** B2C'de dönüşüm oranını etkileyebilir. Güvenlik açısından ise bilinçli bir tercih (SMS zayıf faktör).
 8. **Yönetimde ayrıntılı personel rolü ve UI yok (F7, F8).** Destek ekibine en az yetki verilemiyor: herkes tam platform admini.
-9. **Operasyon olgunluğu doğrulanmadı.** Docker imajı hiç çalıştırılmadı (K-55). Helm/HA referansı, runbook'lar (DOC-06), OpenTelemetry ve performans bütçeleri (K-70) yok. Bağımsız dış pentest yapılmadı (K-72).
+9. **Operasyon olgunluğu doğrulanmadı.** Docker imajı hiç çalıştırılmadı (K-55). Helm/HA referansı (K-99) ve OpenTelemetry yok. Runbook'lar (DOC-06, wave 7) ve performans bütçeleri (K-70, wave 5B) artık var, ama bütçeler paylaşımlı bir geliştirme ortamındaki release ölçümüne dayanır (`performance.md` "Ölçüm ortamı"); üretim benzeri donanımda doğrulanmadı. Bağımsız dış pentest yapılmadı (K-72).
 10. **Başka IdP'den göç aracı sınırlı (J10, J11).** bcrypt/PBKDF2/MD5/SHA-1 hash'leri doğrulanıyor, ama toplu kullanıcı içe aktarma ve scrypt türevi biçimler yok. Eski bcrypt/PBKDF2 hash'li hesaplarda giriş süresi farklı olduğu için göç tamamlanana kadar kısmi bir hesap varlığı sinyali kalıyor (`authn-crypto` README).
 11. **Yalnızca iki dil (I13), kiracı başına marka yok (E15), çok bölgeli dağıtım yok (I16, H8).**
 

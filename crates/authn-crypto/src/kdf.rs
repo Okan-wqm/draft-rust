@@ -26,8 +26,18 @@ const HKDF_SALT: &[u8] = b"rust-authentication/hkdf-sha256/v1";
 /// Minimum length of the root secret in bytes.
 pub const MIN_ROOT_KEY_BYTES: usize = 32;
 
-/// What a derived key is used for. Each variant maps to a distinct HKDF
-/// `info` label (never change a label: it would invalidate every stored MAC).
+/// What a derived key is used for. Each variant maps to a distinct, explicit
+/// HKDF `info` label; keys are derived from the label alone (never from the
+/// variant's position), so adding or removing a variant never changes
+/// another purpose's key. Never change a label: it would invalidate every
+/// stored MAC. Never reuse a retired label (K-113 removed the unused
+/// `device-binding`, `audit-pseudonym`, `oauth-state` and `webhook-secret`;
+/// `cry_11_k113_purpose_labels_are_unique_and_stable` pins all of this).
+///
+/// Secrets that are not MAC keys are **not** derived here: webhook signing
+/// secrets are random per endpoint and envelope-sealed (AUD-07), OAuth
+/// `state` / magic-link device binding are random server-side records
+/// (SOC-02, SES-18), audit pseudonyms are random per subject (AUD-05).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
 pub enum KeyPurpose {
@@ -40,18 +50,10 @@ pub enum KeyPurpose {
     CsrfToken,
     /// Signed trusted-device tokens (MFA-09).
     TrustedDevice,
-    /// Magic-link device-binding cookie (SES-18).
-    DeviceBinding,
     /// Self-hosted proof-of-work CAPTCHA challenges (PRT-05).
     ProofOfWork,
-    /// Pseudonymous identifiers / PII digests in the audit log (AUD-05).
-    AuditPseudonym,
     /// Keyed hashing of rate-limit keys that contain personal data (PRT-02).
     RateLimitKey,
-    /// Integrity tag of server-side OAuth/OIDC state (SOC-02).
-    OAuthState,
-    /// Sealing of webhook signing secrets derivation inputs (AUD-07).
-    WebhookSecret,
     /// Keyed hash of client device ids remembered per user
     /// (`known_devices.device_hash`, RSK-02, CRY-11). Its only consumer is
     /// the "new device" signal: the key is independent of
@@ -61,6 +63,10 @@ pub enum KeyPurpose {
     /// itself is MACed with per-version keys derived from it
     /// ([`AuditChainKeys::version`]), never with this key directly.
     AuditChain,
+    /// Integrity tag of the exported erasure ledger lines (K-108, ACC-09):
+    /// `reapply-erasures` only erases accounts named by lines that
+    /// `export-erasures` wrote.
+    ErasureLedger,
 }
 
 impl KeyPurpose {
@@ -70,14 +76,11 @@ impl KeyPurpose {
         Self::RecoveryCode,
         Self::CsrfToken,
         Self::TrustedDevice,
-        Self::DeviceBinding,
         Self::ProofOfWork,
-        Self::AuditPseudonym,
         Self::RateLimitKey,
-        Self::OAuthState,
-        Self::WebhookSecret,
         Self::KnownDevice,
         Self::AuditChain,
+        Self::ErasureLedger,
     ];
 
     /// The HKDF `info` label.
@@ -88,14 +91,11 @@ impl KeyPurpose {
             Self::RecoveryCode => "authn/v1/recovery-code",
             Self::CsrfToken => "authn/v1/csrf-token",
             Self::TrustedDevice => "authn/v1/trusted-device",
-            Self::DeviceBinding => "authn/v1/device-binding",
             Self::ProofOfWork => "authn/v1/proof-of-work",
-            Self::AuditPseudonym => "authn/v1/audit-pseudonym",
             Self::RateLimitKey => "authn/v1/rate-limit-key",
-            Self::OAuthState => "authn/v1/oauth-state",
-            Self::WebhookSecret => "authn/v1/webhook-secret",
             Self::KnownDevice => "authn/v1/known-device",
             Self::AuditChain => "authn/v1/audit-chain",
+            Self::ErasureLedger => "authn/v1/erasure-ledger",
         }
     }
 }
@@ -397,6 +397,90 @@ mod tests {
         assert_eq!(labels.len(), KeyPurpose::ALL.len());
         assert!(KeyRing::derive(&[1_u8; 31]).is_err());
         assert!(!format!("{ring:?}").contains("07"));
+    }
+
+    /// CRY-11 / K-113: every purpose's HKDF label and derived key is pinned
+    /// (known answer for the root `[7; 32]`, computed independently with
+    /// Python's `hmac`/`hashlib` per RFC 5869). Renaming a label, reusing a
+    /// retired one or deriving by position instead of label would change a
+    /// stored MAC (OTP / recovery-code hashes, trusted-device tokens,
+    /// known-device hashes, the audit chain) and fails here.
+    #[test]
+    fn cry_11_k113_purpose_labels_are_unique_and_stable() {
+        const KNOWN: &[(KeyPurpose, &str, &str)] = &[
+            (
+                KeyPurpose::OtpCode,
+                "authn/v1/otp-code",
+                "28eff5150ae03fa5c94ce51860775e32b3f79e4160cc4b5ad017ab4c771f8492",
+            ),
+            (
+                KeyPurpose::RecoveryCode,
+                "authn/v1/recovery-code",
+                "dc7a76fe56551c8af3b4739b9383e9fb09d3b7e0a5838900e8942924b69280cc",
+            ),
+            (
+                KeyPurpose::CsrfToken,
+                "authn/v1/csrf-token",
+                "65c79bc0d5c6e55c996542a5cd41d9ea59e8180595e93de75d2cd6ebba03a8ea",
+            ),
+            (
+                KeyPurpose::TrustedDevice,
+                "authn/v1/trusted-device",
+                "2de083d2a7b908ea4f3b2587539768e68694af6b7133748a22e49aa9ab85509b",
+            ),
+            (
+                KeyPurpose::ProofOfWork,
+                "authn/v1/proof-of-work",
+                "f40ca3387f8a9f25fcadf05861b32e8816748f38b1559d3afaad7438dbb7c985",
+            ),
+            (
+                KeyPurpose::RateLimitKey,
+                "authn/v1/rate-limit-key",
+                "21f1d047b53e61b89ce954dc7641477ce0ce7772f2dc71c5861ab63db2124b7c",
+            ),
+            (
+                KeyPurpose::KnownDevice,
+                "authn/v1/known-device",
+                "b5ee6ee904f84c373be7b535e030c4bfc59da4311becd26886c84eb3d30d84df",
+            ),
+            (
+                KeyPurpose::AuditChain,
+                "authn/v1/audit-chain",
+                "53dc1c62274607a6b4d2c186fead512bd7ec07b94b033f2ff7c2ca4a76909803",
+            ),
+            (
+                KeyPurpose::ErasureLedger,
+                "authn/v1/erasure-ledger",
+                "85b5c6edb88978e5260abaf8cac54ae2717142253e07d287b7013ab095166ddd",
+            ),
+        ];
+        // Labels of purposes that existed but were never used (K-113). A
+        // future purpose must not take one of them.
+        const RETIRED: &[&str] = &[
+            "authn/v1/device-binding",
+            "authn/v1/audit-pseudonym",
+            "authn/v1/oauth-state",
+            "authn/v1/webhook-secret",
+        ];
+        let ring = KeyRing::derive(&[7_u8; 32]).unwrap();
+        for (purpose, label, key) in KNOWN {
+            assert_eq!(purpose.info(), *label, "{purpose:?}");
+            assert_eq!(
+                hex(ring.key(*purpose).unwrap().expose()),
+                *key,
+                "{purpose:?}"
+            );
+        }
+        // Every purpose is pinned above, and labels are unique.
+        for purpose in KeyPurpose::ALL {
+            assert!(
+                KNOWN.iter().any(|(p, ..)| p == purpose),
+                "{purpose:?} has no known-answer entry"
+            );
+            assert!(!RETIRED.contains(&purpose.info()), "{purpose:?}");
+        }
+        let labels: HashSet<_> = KeyPurpose::ALL.iter().map(|p| p.info()).collect();
+        assert_eq!(labels.len(), KeyPurpose::ALL.len());
     }
 
     #[test]

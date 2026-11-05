@@ -154,6 +154,10 @@ pub struct PasswordCredentialRecord {
     pub must_change: bool,
     /// Last change by the user (not updated by transparent rehashing).
     pub changed_at: OffsetDateTime,
+    /// The password stops working at this time (`None`: never). Only the
+    /// one-time initial password of a break-glass admin has one (ADM-05,
+    /// K-110); [`UserRepository::set_password`] clears it.
+    pub expires_at: Option<OffsetDateTime>,
 }
 
 /// Input of [`UserRepository::set_password`] / [`UserRepository::rehash_password`].
@@ -175,6 +179,7 @@ struct PasswordRow {
     pepper_version: Option<i32>,
     must_change: bool,
     changed_at: OffsetDateTime,
+    expires_at: Option<OffsetDateTime>,
 }
 
 impl TryFrom<PasswordRow> for PasswordCredentialRecord {
@@ -193,6 +198,7 @@ impl TryFrom<PasswordRow> for PasswordCredentialRecord {
             pepper_version,
             must_change: row.must_change,
             changed_at: row.changed_at,
+            expires_at: row.expires_at,
         })
     }
 }
@@ -521,7 +527,8 @@ impl UserRepository {
         user: UserId,
     ) -> Result<Option<PasswordCredentialRecord>, StoreError> {
         let row: Option<PasswordRow> = sqlx::query_as(
-            "SELECT user_id, password_hash, algorithm, pepper_version, must_change, changed_at \
+            "SELECT user_id, password_hash, algorithm, pepper_version, must_change, changed_at, \
+               expires_at \
              FROM password_credentials WHERE user_id = $1",
         )
         .bind(user)
@@ -531,7 +538,9 @@ impl UserRepository {
     }
 
     /// Sets (adds or replaces) the password chosen by the user or an admin:
-    /// updates `changed_at` and clears `must_change` unless requested.
+    /// updates `changed_at`, clears `must_change` unless requested and
+    /// always clears `expires_at` (a new password never inherits the expiry
+    /// of the one it replaces).
     pub async fn set_password(
         conn: &mut PgConnection,
         user: UserId,
@@ -545,7 +554,8 @@ impl UserRepository {
              VALUES ($1, $2, $3, $4, $5, $6, $6) \
              ON CONFLICT (user_id) DO UPDATE SET password_hash = EXCLUDED.password_hash, \
                algorithm = EXCLUDED.algorithm, pepper_version = EXCLUDED.pepper_version, \
-               must_change = EXCLUDED.must_change, changed_at = EXCLUDED.changed_at",
+               must_change = EXCLUDED.must_change, changed_at = EXCLUDED.changed_at, \
+               expires_at = NULL",
         )
         .bind(user)
         .bind(hash.password_hash.expose())
@@ -580,6 +590,23 @@ impl UserRepository {
         .bind(pepper_to_db(hash.pepper_version)?)
         .execute(conn)
         .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    /// Sets or clears the expiry of the stored password (ADM-05, K-110:
+    /// the one-time initial password of a break-glass admin). Returns
+    /// whether a password exists. [`Self::set_password`] clears it again.
+    pub async fn set_password_expiry(
+        conn: &mut PgConnection,
+        user: UserId,
+        expires_at: Option<OffsetDateTime>,
+    ) -> Result<bool, StoreError> {
+        let result =
+            sqlx::query("UPDATE password_credentials SET expires_at = $2 WHERE user_id = $1")
+                .bind(user)
+                .bind(expires_at)
+                .execute(conn)
+                .await?;
         Ok(result.rows_affected() == 1)
     }
 

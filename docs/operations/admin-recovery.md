@@ -54,6 +54,15 @@ rust-authentication --config /etc/authn/config.toml create-admin --email breakgl
 rust-authentication --config /etc/authn/config.toml create-admin --email breakglass@example.com
 ```
 
+Bu şifre **tek kullanımlık bir başlangıç şifresidir** (K-110):
+
+- `must_change_password` işaretiyle saklanır (PWD-12). İlk giriş hiçbir zaman doğrudan oturum açmaz: önce hesabın adresine e-postayla gelen kod girilir (posta kutusu kanıtı; yalnızca yazdırılmış şifreyi bulan kişi passkey kaydedemez), sonra passkey kaydı ve yeni şifre seçimi (`change_password`) istenir.
+- Oluşturulduktan **24 saat** sonra (sabit, `authn_admin::BREAK_GLASS_PASSWORD_TTL`) değiştirilmemişse geçersiz olur. Süresi dolmuş şifre, yanlış şifreyle **aynı** yanıtı alır (`401 invalid_credentials`, aynı doğrulama maliyeti): hesabın varlığı ya da durumu sızmaz. İlk girişte seçilen yeni şifrenin süresi dolmaz. Komut çıktısı son geçerlilik zamanını yazar.
+- Oluşturma olayı (`admin.action`, `action: break_glass_admin_created`, `enrollment: password`) son geçerlilik zamanını `initial_login_expires_unix` olarak taşır; süresi dolmuş şifreyle her deneme normal `login.failed` olayıdır.
+- Süresi dolan ya da kaybolan şifre için hesabı silmeye gerek yok: `admin-enrollment-link` (bölüm 5) şifreyi siler ve tek kullanımlık passkey bağlantısı üretir.
+
+> **Bilinen kısıt (K-112):** giriş challenge'ı içinde passkey kaydı adımı henüz yok; platform admininin zorunlu passkey kaydı (`enroll_mfa`, yalnızca `webauthn`) bu yüzden şifreyle başlayan bir girişte tamamlanamaz. Şifreli oluşturulmuş break-glass hesabını kullanılabilir yapmanın bugünkü tek yolu `admin-enrollment-link`'tir. Yeni kurulumda doğrudan `--passkey-link` kullanın.
+
 **Kullanma:** break-glass hesabıyla passkey'le giriş yapılır, step-up yine passkey'le yapılır ve konsoldaki her işlem normal admin uçlarından yürür. Farklar:
 
 - Çift onay istemez (`admin.four_eyes_bypassed`, `exception: break_glass`).
@@ -69,7 +78,7 @@ Hepsi sunucunun yapılandırmasıyla (`--config <dosya>` ya da `AUTHN_CONFIG`, `
 
 | Komut | Bayraklar | Ne yapar |
 |-------|-----------|----------|
-| `create-admin` | `--email <adres>` (zorunlu), `--passkey-link`, `--ttl <süre>` (yalnızca `--passkey-link` ile; varsayılan `30m`, en çok `24h`) | Yeni break-glass hesabı; şifreyi ya da kayıt bağlantısını bir kez yazdırır |
+| `create-admin` | `--email <adres>` (zorunlu), `--passkey-link`, `--ttl <süre>` (yalnızca `--passkey-link` ile; varsayılan `30m`, en çok `24h`) | Yeni break-glass hesabı; tek kullanımlık başlangıç şifresini (ilk girişte değiştirilir, kullanılmazsa 24 saatte geçersiz, K-110) ya da kayıt bağlantısını bir kez yazdırır |
 | `admin-enrollment-link` | `--target <e-posta\|kullanıcı id>`, `--reason <gerekçe>`, `--operator <ad>` (üçü zorunlu), `--ttl <süre>` | Var olan **break-glass** hesabına yeni bağlantı; aynı transaction'da şifre, tüm passkey'ler, MFA faktörleri (kurtarma kodları, güvenilir cihazlar) ve oturumlar silinir, eski açık bağlantılar geçersiz olur. Askıdaki hesapta da çalışır |
 | `suspend-admin` | `--target`, `--reason`, `--operator` | Platform adminini (break-glass dahil) askıya alır; oturumları, güvenilir cihazları ve başlattığı impersonation oturumları biter |
 | `unsuspend-admin` | `--target`, `--reason`, `--operator` | Askıyı kaldırır (doğrulanmış adres → `active`) |

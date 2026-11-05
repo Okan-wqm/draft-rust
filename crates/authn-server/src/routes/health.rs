@@ -67,7 +67,10 @@ pub async fn ready(State(state): State<HealthState>) -> Response {
         .is_ok();
     let migrations_ok = if database_ok {
         match authn_store::migration_status(&state.db).await {
-            Ok(status) => status.is_up_to_date(),
+            // K-106: a schema ahead of this binary (newer release,
+            // expand-only migrations) is ready; pending / failed /
+            // modified migrations of this binary are not.
+            Ok(status) => status.is_compatible(),
             Err(err) => {
                 tracing::warn!(error = %err, "migration status check failed");
                 false

@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use authn_admin::create_break_glass_admin;
 use authn_core::domain::AccountStatus;
-use authn_core::ports::AuditSink;
+use authn_core::ports::{AuditSink, Clock as _};
 use authn_store::UserRepository;
 use authn_testkit::http::TestRequest;
 use axum::http::StatusCode;
@@ -248,6 +248,12 @@ async fn adm_05_break_glass_admin_creation(pool: sqlx::PgPool) {
         .unwrap()
         .unwrap();
     assert_ne!(stored.password_hash.expose(), created.password.expose());
+    // K-110: one-time initial password — changed at first login, expires
+    // after 24 hours if unused.
+    assert!(stored.must_change);
+    let deadline = h.ports.clock.now() + authn_admin::BREAK_GLASS_PASSWORD_TTL;
+    assert_eq!(stored.expires_at, Some(deadline));
+    assert_eq!(created.password_expires_at, deadline);
     assert!(
         h.crypto
             .passwords
@@ -266,6 +272,10 @@ async fn adm_05_break_glass_admin_creation(pool: sqlx::PgPool) {
     let events = h.admin_events("break_glass_admin_created").await;
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].metadata["priority"], "high");
+    assert_eq!(
+        events[0].metadata["initial_login_expires_unix"],
+        deadline.unix_timestamp()
+    );
     // Two calls never share a password and an existing address is never
     // promoted.
     let second = create_break_glass_admin(

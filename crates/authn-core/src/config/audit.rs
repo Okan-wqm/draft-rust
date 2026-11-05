@@ -177,6 +177,12 @@ pub struct AuditConfig {
     pub rate_limits: AuditRateLimits,
     /// Keyed hash chain (K-77).
     pub chain: AuditChainConfig,
+    /// Interval of the scheduled chain checkpoint (K-107): at most one
+    /// `scheduled` checkpoint of the chain head per interval across every
+    /// instance; its `seq:hash` is logged as an external anchor.
+    /// `1h`–`7d`. Default `24h`.
+    #[serde(with = "super::duration")]
+    pub checkpoint_interval: Duration,
 }
 
 impl Default for AuditConfig {
@@ -188,6 +194,7 @@ impl Default for AuditConfig {
             webhooks: WebhookConfig::default(),
             rate_limits: AuditRateLimits::default(),
             chain: AuditChainConfig::default(),
+            checkpoint_interval: hours(24),
         }
     }
 }
@@ -220,6 +227,12 @@ impl AuditConfig {
             "must be at least user_visible_window",
         );
         p.require_range(self.retention, days(30), days(3650), "audit.retention");
+        p.require_range(
+            self.checkpoint_interval,
+            hours(1),
+            days(7),
+            "audit.checkpoint_interval",
+        );
         p.require_range(
             self.user_visible_window,
             days(1),
@@ -363,6 +376,7 @@ mod tests {
             outbox = { poll_interval = "1s", batch_size = 100, max_attempts = 10, backoff_base = "2s", backoff_max = "1h", lease = "60s", concurrency = 16, delivered_retention = "7d", dead_retention = "30d" }
             webhooks = { timeout = "10s", max_attempts = 8, secret_rotation_overlap = "24h", max_endpoints_per_org = 10, backoff_base = "1m", backoff_max = "6h", disable_after_failures = 20, disable_after = "24h", delivery_retention = "30d" }
             rate_limits = { events_read = { limit = 60, period = "1m" }, webhook_write = { limit = 60, period = "1h" }, webhook_redeliver = { limit = 30, period = "1h" } }
+            checkpoint_interval = "24h"
         "#;
         let parsed: AuditConfig = Figment::new().merge(Toml::string(toml)).extract().unwrap();
         assert_eq!(parsed, AuditConfig::default());
@@ -380,5 +394,31 @@ mod tests {
         assert!(text.contains("audit.outbox.concurrency"), "{text}");
         assert!(text.contains("audit.webhooks.timeout"), "{text}");
         assert!(text.contains("audit.rate_limits.events_read"), "{text}");
+    }
+
+    #[test]
+    fn k_107_checkpoint_interval_is_bounded() {
+        for (interval, valid) in [
+            (mins(59), false),
+            (hours(1), true),
+            (hours(24), true),
+            (days(7), true),
+            (days(8), false),
+        ] {
+            let config = AuditConfig {
+                checkpoint_interval: interval,
+                ..AuditConfig::default()
+            };
+            let mut p = ConfigProblems::default();
+            config.validate(&mut p);
+            assert_eq!(p.is_empty(), valid, "{interval:?}: {:?}", p.problems());
+            if !valid {
+                assert!(
+                    p.problems()
+                        .join("\n")
+                        .contains("audit.checkpoint_interval")
+                );
+            }
+        }
     }
 }

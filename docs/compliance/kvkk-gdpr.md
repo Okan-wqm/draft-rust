@@ -33,6 +33,7 @@ Kaynak: `migrations/`. "Kişisel veri" sütunu doğrudan veya dolaylı (kullanı
 | `terms_versions` | — (belge sürümleri; kişisel veri yok) | ACC-11 | silinmez (kişisel değil) |
 | `consents` | kabul edilen belge sürümü, kabul zamanı, **IP adresi**, **user-agent** | ACC-11 ispat yükü | kaskad |
 | `account_deletions` | kullanıcı kimliği (UUID), talep/plan/tamamlanma zamanları, önceki durum | Silme sürecinin yürütülmesi ve **silmenin ispatı** | `users` silindiğinde kalır; içinde e-posta, ad, IP **yoktur** — yalnızca artık hiçbir kayda bağlanamayan rastgele UUID. Bkz. §3 |
+| `erasure_ledger` | silinen hesabın kimliği (UUID), silme zamanı, neden kodu (K-108) | Her tamamlanmış silmenin (ACC-09, ACC-05) defteri: veritabanı dışına aktarılır ve yedekten geri yüklemeden sonra silmeleri yeniden uygulamak için kullanılır (§4.1) | `users` silindiğinde yazılır ve kalır (FK yok); kişisel veri **yoktur** — silmeden sonra kimliğe hiçbir kayıt bağlanmaz. Bkz. §3 |
 | `email_reservations` | e-posta (küçük harfli), kullanıcı kimliği, rezervasyon bitişi | ACC-07: e-posta değişikliğinden sonra eski adresin geri alma süresince başkasınca alınmasını önlemek | kaskad; süresi dolunca temizlik işiyle silinir |
 | `pending_registrations` | kayıt olunan e-posta (küçük harfli), kayıtta gönderilen **şifre hash'i** (Argon2id + pepper), görünen ad, dil, saat dilimi, kabul edilen şart sürümleri, talep eden **IP adresi** ve **user-agent**; link/kod/istemci tutamacının yalnızca hash'i | ACC-01/04: her kaydın kimlik bilgileri kendi doğrulamasına bağlı bekler; yalnızca o kayıt tamamlanınca hesaba yazılır (ön-ele geçirme savunması, ADR 0002) | kaskad; kayıt tamamlanınca hesabın tüm bekleyen kayıtları, süresi dolunca (`account.unverified_purge_after`) temizlik işiyle silinir |
 | `one_time_tokens` | kullanıcı kimliği, hedef e-posta (e-posta değişikliğinde), talep eden **IP**; token/kodun yalnızca hash'i | Doğrulama, sıfırlama, magic link, iptal linkleri | kaskad; süresi dolanlar temizlik işiyle silinir (OPS-06) |
@@ -110,7 +111,8 @@ Kaynak: `migrations/`. "Kişisel veri" sütunu doğrudan veya dolaylı (kullanı
 |-----|--------------|-----|
 | Uygulama logları | maskeli e-posta (`a***@example.com`), maskeli IP, istek kimliği | OPS-03; sırlar ve tam adresler loglanmaz. Log saklama süresini işletmeci belirler (öneri ≤ 90 gün). |
 | E-postalar / SMS'ler | alıcı adresi, görünen ad, link/kod | Dış sağlayıcılarda saklanır (bkz. §7). |
-| Yedekler | Veritabanının tamamı | Silinen veri, yedek rotasyonu dolana kadar yedeklerde kalır; yedekler şifreli tutulmalı, geri yüklemede silinmiş hesaplar `account_deletions` ile yeniden silinmelidir (§10). |
+| Yedekler | Veritabanının tamamı | Silinen veri, yedek rotasyonu dolana kadar yedeklerde kalır; yedekler şifreli tutulmalı, geri yüklemede silinmiş hesaplar veritabanı dışında tutulan **silme defteriyle** (`export-erasures` çıktısı) `reapply-erasures` komutuyla yeniden silinmelidir (§4.1). Geri yüklenen `account_deletions` / `erasure_ledger` yedekten sonraki silmeleri içermez. |
+| Silme defteri dosyaları (`export-erasures`) | silinen hesap kimlikleri (UUID), zaman, neden kodu | Kişisel veri değildir (kimlik hiçbir kayda bağlanmaz); ancak geri yüklenen bir yedekle eşleştirildiğinde "bu hesap silindi" bilgisini taşır — erişimi yedeklerle aynı düzeyde kısıtlayın, yedeklerin en uzun saklama süresi kadar tutun. |
 
 ---
 
@@ -133,6 +135,7 @@ Varsayılanlar konfigürasyonla değiştirilebilir (ARC-07); işletmeci kendi po
 | Outbox | teslim edilen 7 gün, ölü mektup 30 gün | `audit.outbox.*` |
 | Webhook teslim geçmişi | 30 gün | `audit.webhooks.*` |
 | `account_deletions` kaydı | süresiz (silmenin ispatı); kişisel veri içermez | İşletmeci, ispat ihtiyacı bittiğinde (ör. zamanaşımı süresi) `completed`/`cancelled` kayıtları silebilir |
+| `erasure_ledger` ve dışa aktarılan defter dosyaları | en az en eski veritabanı yedeğinin saklama süresi kadar (daha eski bir yedeğe dönülemeyeceği ana kadar gerekir); kişisel veri içermez | Daha kısa tutmayın: geri yüklenebilecek her yedek için defterin o yedekten sonraki kısmı gerekir |
 | Rate limit kovaları | politika periyodu kadar (dakikalar–1 gün) | `protect.rate_limit.*` |
 
 KVKK "Kişisel Verilerin Silinmesi, Yok Edilmesi veya Anonim Hale Getirilmesi Hakkında Yönetmelik" periyodik imha süresini en fazla 6 ay olarak öngörür. Sistemdeki temizlik işleri (OPS-06) saatlik/günlük çalıştırılacak şekilde tasarlanmıştır; `authn-server` zamanlayıcısı bu sınırın çok altında kalır.
@@ -163,9 +166,21 @@ sequenceDiagram
 - Bekleme süresinde hesap girişe açıktır (silmeyi iptal edebilmek için).
 - Silme anında: kişisel veriler kalıcı olarak silinir; audit kayıtlarında kalan takma ad, eşleme tablosu silindiği için **anonim** hale gelir (AUD-05). Hash zinciri bozulmaz.
 - Silmenin ispatı için `account_deletions` satırı (`completed`) kalır; içinde yalnızca hiçbir kayda bağlanamayan rastgele UUID ve zamanlar vardır.
+- Her silme aynı transaction'da `erasure_ledger`'a bir satır yazar (K-108, §4.1).
 - Doğrulanmamış hesaplar (ACC-05) aynı silme yolunu kullanır (`purge_unverified_accounts`), bekleme süresi olmadan.
 - Bir organizasyonun **son sahibi** silinemez; bekleme süresinde diğer sahipler ayrılırsa kalıcı silme ertelenir ve audit'e yazılır (`account.deleted`, `failure`, `last_owner`).
 - E-posta değişikliği geri alındığında (ACC-07) bekleyen bir silme talebi de iptal edilir (saldırganın hesabı silme girişimine karşı).
+
+### 4.1 Yedekten geri yüklemeden sonra silmenin korunması (K-108)
+
+Bir yedeğe dönmek, yedek anından sonra tamamlanmış silmeleri geri alır: silinen hesaplar (kişisel verileriyle) geri gelir. Silme hakkı (KVKK md. 7 ve 11/1-e, GDPR md. 17) bu hesapların yeniden silinmesini gerektirir; geri yüklenen veritabanının kendi tabloları (`account_deletions`, `erasure_ledger`) yedek anındaki hâldedir ve bu silmeleri **bilmez**. Bu yüzden kaynak veritabanının dışındadır:
+
+1. **Kayıt:** her silme `erasure_ledger`'a `user_id`, `erased_at`, `reason` yazar (silmeyle aynı transaction).
+2. **Dışa aktarma:** işletmeci `rust-authentication export-erasures --since <zaman> --output <dosya>` komutunu zamanlanmış olarak (ör. saatlik, çakışan aralıklarla) çalıştırır ve dosyaları yedeklerden ayrı, geri yüklemeyle geri sarılmayan bir depoya yazar.
+3. **Yeniden uygulama:** geri yüklemeden sonra ve `serve`'den **önce** `rust-authentication reapply-erasures --from <birleştirilmiş defter>`. Geri gelen her hesap normal silme yolundan yeniden silinir (audit takma adlaştırması, kaskad, silme kancaları); hesap yoksa yalnızca defter satırı yazılır. Komut idempotenttir, tekrarlanan satırlar zararsızdır.
+4. **İstisnalar:** geri yüklenen veride bir organizasyonun son sahibi olan hesap silinmez, raporlanır (organizasyon devredilip/silinip komut yeniden çalıştırılır); son dışa aktarımdan sonraki silmeler uygulama loglarındaki `account erased` satırlarından deftere eklenir. Organizasyon silmeleri defterde değildir.
+
+Adım adım prosedür: [`docs/operations/backup.md`](../operations/backup.md) §4–§5. Test: `crates/authn-server/tests/erasure_restore.rs` (gerçek veritabanı kopyasıyla geri yükleme benzetimi; idempotentlik; her hesap durumu; son sahip).
 
 ## 5. Dışa aktarma akışı (ACC-10, KVKK md. 11/1-b, GDPR art. 15 ve 20)
 
@@ -251,7 +266,7 @@ Veritabanı ve yedeklerin bulunduğu bölge de bir aktarım konusudur: Türkiye'
 - [ ] Aydınlatma metni (`privacy_policy`) ve kullanım şartları `account.terms` ile yayımlandı; yeni sürümde `requires_reacceptance` değerlendirildi.
 - [ ] Saklama ve imha politikası §3'teki sürelerle uyumlu; temizlik işleri (`purge_unverified_accounts`, `purge_due_deletions`, `purge_expired_reservations`, token/oturum temizliği, audit saklama) zamanlandı.
 - [ ] Log saklama süresi belirlendi; log toplama sistemi maskeli alanları yeniden birleştirmiyor.
-- [ ] Yedekler şifreli; geri yükleme sonrası `account_deletions` (`completed`) listesindeki kullanıcılar yeniden siliniyor.
+- [ ] Yedekler şifreli; silme defteri (`export-erasures`) zamanlanmış olarak yedeklerden ayrı bir depoya aktarılıyor; her geri yüklemede `serve`'den önce `reapply-erasures` çalıştırılıyor (§4.1).
 - [ ] Yurt dışındaki sağlayıcılar için KVKK md. 9 kapsamında standart sözleşme imzalandı ve Kurum'a bildirildi / GDPR SCC'leri mevcut.
 - [ ] İlgili kişi başvuruları (KVKK md. 11, 13: en geç 30 gün; GDPR art. 12(3): bir ay) için süreç tanımlı; self-servis dışa aktarma ve silme bu sürenin içinde kalır.
 - [ ] Organizasyon (B2B) müşterileriyle veri işleme sözleşmesi; davet e-postaları (`invitations`) için aydınlatma.

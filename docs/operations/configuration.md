@@ -36,18 +36,27 @@ Bu belge `rust-authentication`'ın **her** konfigürasyon anahtarını listeler.
 | Kural | Ortam |
 |-------|-------|
 | `crypto.peppers[*].key`, `crypto.keks[*].key`, `crypto.hmac_root_key` depoda yayımlanmış örnek/test anahtarlarından biri olamaz (`KNOWN_PUBLIC_KEYS`: `config/example.toml` ve `authn-testkit` anahtarları) | production, staging |
-| `server.public_base_url` `https` olmalı | production |
-| `webauthn.allowed_origins` web origin'leri `https://` olmalı (`android:apk-key-hash:` serbest) | production |
-| `protect.outbound.allow_private_networks = false` olmalı (SSRF, PRT-12) | production |
-| `protect.rate_limit.backend` `memory` olamaz (instance başına sayar) | production |
-| `admin.four_eyes = false` yasak (K-66) | production |
-| `session.access_token_session_check = true` olmalı (K-58) | production |
-| `protect.captcha.provider` `turnstile` / `hcaptcha` ise `protect.captcha.hostnames` boş olamaz (PRT-05) | production |
+| `server.public_base_url` `https` olmalı | production, staging |
+| `webauthn.allowed_origins` web origin'leri `https://` olmalı (`android:apk-key-hash:` serbest) | production, staging |
+| `protect.outbound.allow_private_networks = false` olmalı (SSRF, PRT-12) | production, staging |
+| `protect.rate_limit.backend` `memory` olamaz (instance başına sayar) | production, staging |
+| `admin.four_eyes = false` yasak (K-66) | production (staging istisnası, aşağıda) |
+| `session.access_token_session_check = true` olmalı (K-58) | production, staging |
+| `protect.captcha.provider` `turnstile` / `hcaptcha` ise `protect.captcha.hostnames` boş olamaz (PRT-05) | production, staging |
 | `notify.email.transport = "log"` ve `notify.sms.provider = "log"` yalnızca development/test | staging, production'da yasak |
-| `notify.email.transport = "disabled"` yasak | production |
+| `notify.email.transport = "disabled"` yasak | production (staging istisnası, aşağıda) |
 | `notify.email.smtp.extra_ca_file` yalnızca development/test | staging, production'da yasak |
 | `crypto.signing_keys.retired_retention >= session.access_token_ttl` | her ortam |
 | `admin.step_up_max_age <= session.step_up_max_age` | her ortam |
+
+**`staging` = `production` güvenlik kuralları (K-111).** Staging dağıtımı çoğunlukla dışarıdan erişilebilir, sıklıkla gerçek verinin bir kopyasını taşır ve üretim yapılandırmasının provasıdır; bu yüzden üretimin tüm güvenlik kuralları staging'de de uygulanır (test: `authn-core` `config::tests::arc_07_k111_staging_enforces_the_production_security_rules`). Bilinçli olarak farklı kalan yalnızca iki gevşetme var:
+
+| Staging istisnası | Gerekçe |
+|-------------------|---------|
+| `admin.four_eyes = false` kabul edilir (ayarsızken yine **açıktır**) | Tek kişilik test ekibi admin akışlarını ikinci bir admin olmadan deneyebilmeli. Üretimde tek admin zaten `no_second_admin` istisnasıyla karşılandığından orada kapatmanın gerekçesi yok |
+| `notify.email.transport = "disabled"` kabul edilir | Gerçek verinin kopyasıyla çalışan bir staging gerçek kullanıcılara asla e-posta göndermemeli. `log` taşıyıcısı ise (kodları loglara yazdığı için) staging'de de yasaktır |
+
+Bunların dışında staging'e özgü bir gevşetme gerekiyorsa (ör. iç ağdaki bir sahte IdP için `allow_private_networks`), ortamı `development` olarak işaretlemeyin; ihtiyacı gerekçesiyle kalan işler listesine yazın.
 
 Zorunlu anahtarlar (varsayılanı yok): `server.public_base_url`, `database.url`, `crypto.peppers`, `crypto.current_pepper_version`, `crypto.keks`, `crypto.current_kek_id`, `crypto.hmac_root_key`.
 
@@ -59,7 +68,7 @@ Zorunlu anahtarlar (varsayılanı yok): `server.public_base_url`, `database.url`
 |---------|-----|-----------|-----------------|
 | `environment` | enum | `production` | yukarıdaki tablo |
 | `bind_addr` | soket adresi | `0.0.0.0:8080` | Genel API dinleyicisi |
-| `metrics_bind_addr` | soket adresi | `127.0.0.1:9090` | Prometheus dinleyicisi (OPS-04); `bind_addr`'dan farklı olmalı. TOML'da kapatma değeri yoktur (alan `Option`, ama varsayılan doludur) — dışarı açmayın, yalnızca iç ağdan kazıyın |
+| `metrics_bind_addr` | soket adresi veya `"off"` | `127.0.0.1:9090` | Prometheus dinleyicisi (OPS-04), kimlik doğrulamasız; `bind_addr`'dan farklı olmalı. `"off"` (veya `""`; büyük/küçük harf duyarsız) dinleyiciyi kapatır (K-109; ortam değişkeniyle `AUTHN__SERVER__METRICS_BIND_ADDR=off`). Docker imajı `0.0.0.0:9090` ayarlar (loopback konteyner dışından erişilemez). **İnternete açmayın**, yalnızca iç ağdan kazıyın |
 | `public_base_url` | URL | **zorunlu** | Mutlak http(s), kimlik bilgisi/sorgu/parça yok; üretimde https. E-postadaki her link yalnızca buradan kurulur; JWT `iss` varsayılanı ve CSRF'in izinli origin'i |
 | `trusted_proxies` | CIDR listesi | `[]` | Yönlendirme başlığını ayarlamasına izin verilen ters vekiller (PRT-06). IPv4'te `/8`'den kısa, özel olmayan IPv6'da `/16`'dan kısa ağlar reddedilir (K-57: `0.0.0.0/0` istemci IP'sini sahtelenebilir yapardı) |
 | `client_ip_header` | enum | `x-forwarded-for` | veya `forwarded` (RFC 7239). Yalnızca eş güvenilir vekil ise okunur; sağdan sola yürünür, en fazla 32 adım |
@@ -433,6 +442,7 @@ Sağlayıcı alt bölümleri (yalnızca yapılandırılanlar etkindir):
 |---------|-----------|-----------------|
 | `retention` | `400d` | 30d–3650d, ≥ `user_visible_window` (AUD-05) |
 | `user_visible_window` | `90d` | 1d–3650d; `GET /v1/me/security-events` penceresi |
+| `checkpoint_interval` | `24h` | 1h–7d (K-107). Zincir başının `scheduled` kontrol noktası bu aralıkta tüm örneklerde **bir** kez yazılır (saatlik kontrol, advisory lock) ve `anchor = "<seq>:<hash>"` olarak loglanır: log hattı onu veritabanı dışına taşımalıdır ([key-management.md §5](key-management.md#5-audit-zinciri-anahtarı-k-77)). Bakım rolüyle çalışır |
 
 | Alt bölüm | Anahtar | Varsayılan | Doğrulama / not |
 |-----------|---------|-----------|-----------------|

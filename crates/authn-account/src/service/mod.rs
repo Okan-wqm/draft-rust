@@ -14,6 +14,7 @@
 //! | [`AccountService::export_data`] | ACC-10 | `POST /v1/me/export` |
 //! | [`AccountService::record_consent`], [`AccountService::terms_requirements`] | ACC-11 | `/v1/me/consents`, authn-session |
 //! | [`AccountService::purge_unverified_accounts`] | ACC-05 | server job |
+//! | [`AccountService::export_erasures`] / [`AccountService::reapply_erasure`] | ACC-09, K-108 | `export-erasures` / `reapply-erasures` CLI |
 //!
 //! Every state change runs in one transaction (ARC-06) that also carries
 //! session revocation (`SessionRevoker`, caller's transaction), outbox
@@ -23,6 +24,7 @@
 mod consent;
 mod deletion;
 mod email_change;
+mod erasure_ledger;
 mod export;
 mod login;
 mod maintenance;
@@ -64,6 +66,9 @@ use crate::hooks::{AccountErasureHook, EmailChangeRevertHook, OrganizationOwners
 use crate::repo::ProfileRepository;
 use crate::tx::AccountTx;
 
+pub use self::erasure_ledger::{
+    ErasureRecord, REAPPLIED_REASON, ReapplyOutcome, ledger_line, parse_ledger_line,
+};
 pub use self::provisioning::{ProvisionOutcome, VerifiedUserProvision};
 pub use self::registration::{
     CredentialConfirmation, LinkConfirmation, MAX_PASSWORD_CONFIRMATIONS,

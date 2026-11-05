@@ -4,7 +4,7 @@
 
 | Kaynak | Nerede | Not |
 |--------|--------|-----|
-| **Prometheus metrikleri** | `server.metrics_bind_addr` (varsayılan `127.0.0.1:9090`), ayrı dinleyici (`metrics-exporter-prometheus`) | Yalnızca iç ağdan kazıyın; konteynerde bkz. [deployment.md §5](deployment.md#5-ağ-ve-vekil) |
+| **Prometheus metrikleri** | `server.metrics_bind_addr` (varsayılan `127.0.0.1:9090`; Docker imajında `0.0.0.0:9090`; `"off"` kapatır, K-109), ayrı ve kimlik doğrulamasız dinleyici (`metrics-exporter-prometheus`) | Yalnızca iç ağdan kazıyın, internete asla açmayın; konteynerde bkz. [deployment.md §5](deployment.md#5-ağ-ve-vekil) |
 | **Yapılandırılmış loglar** | stdout, JSON satırları (`server.log_format = "json"`, varsayılan) | Her HTTP isteği `request_id` (UUIDv7, yanıttaki `x-request-id` ile aynı), `method`, `path` (sorgu dizesi **yok** — OAuth kodları loglanmaz) taşıyan bir span içinde loglanır. Filtre `server.log_filter` / `RUST_LOG`. Sırlar loglanmaz; e-posta/IP maskelenir |
 | **Sağlık** | `GET /health/live`, `GET /health/ready` | [deployment.md §4](deployment.md#4-sağlık-uçları) |
 | **Audit log** | PostgreSQL `audit_events`; admin API `GET /v1/admin/audit-events` | Güvenlik olaylarının kalıcı kaydı; SIEM'e aktarım için `POST /v1/admin/audit-events/export` |
@@ -83,6 +83,8 @@ Eşikler başlangıç önerisidir; trafiğinize göre ayarlayın (PromQL).
 | **P1** | Hazır değil | yük dengeleyicide `/health/ready` ≠ 200 (2 dk) | Veritabanı veya şema ([deployment.md](deployment.md)) |
 | **P2** | 5xx oranı / gecikme | `sum(rate(authn_http_request_duration_seconds_count{status="5xx"}[5m])) / sum(rate(authn_http_request_duration_seconds_count[5m])) > 0.01`; `histogram_quantile(0.99, sum by (le, route) (rate(authn_http_request_duration_seconds_bucket[5m]))) > 0.25` (giriş uçları hariç; bütçeler [performance.md](performance.md#gecikme-bütçeleri)) | Veritabanı, havuz veya bağımlılık sorunu |
 | **P1** | Audit zinciri | zamanlanmış `verify-audit-chain` çıkış kodu ≠ 0 veya log `audit retention purge refused` | [incident-response.md §5](incident-response.md#5-audit-kurcalama-tespiti) |
+| **P2** | Dış audit çıpası yok (K-107) | log hattında son `audit chain scheduled checkpoint` satırı `audit.checkpoint_interval` + 2 saatten eski, veya log `audit chain checkpoint failed` | Bakım rolü (`database.maintenance_url`) eksik ya da yetkisiz; çıpa üretilmezse kesme/geri sarma tespit edilemez ([key-management.md §5](key-management.md#5-audit-zinciri-anahtarı-k-77)) |
+| **P2** | Silme defteri dışa aktarılmıyor (K-108) | zamanlanmış `export-erasures` işinin çıkış kodu ≠ 0 veya son başarılı çalışma 2 saatten eski | Geri yüklemeden sonra silmeler yeniden uygulanamaz ([backup.md §5](backup.md#5-geri-yükleme-sonrası-güvenlik-etkileri)) |
 | **P2** | Refresh token yeniden kullanımı | `increase(authn_refresh_token_reuse_total[15m]) > 5` | Token hırsızlığı veya hatalı istemci (eşzamanlı yenileme); [native.md §3](../integration/native.md#3-refresh-token-rotasyonu) |
 | **P2** | Outbox birikiyor | `authn_outbox_queue_depth{status="pending"} > 1000` (10 dk) veya `increase(authn_outbox_messages_total{outcome="dead"}[1h]) > 0` | E-posta/SMS/webhook teslimi durdu: SMTP, sağlayıcı |
 | **P2** | Bildirim hataları | `rate(authn_notification_failures_total{class="permanent"}[15m]) > 0` | Doğrulama/sıfırlama e-postaları gitmiyor |
@@ -100,4 +102,4 @@ Diğer `reason`/`outcome` değerlerini ilk haftalarda gözlemleyip eşikleri kes
 
 ## 4. Log uyarıları
 
-`level = ERROR` veya `WARN` satırları arasında izlenmeye değer olanlar: `signing key rotation failed`, `audit maintenance failed`, `provider token revocation run failed`, `password reset backlog full`, `HTTP rate limiter unavailable; failing open`, `database.maintenance_url is not set` (açılışta), `no active JWT signing key`, `grace period elapsed; aborting in-flight requests`.
+`level = ERROR` veya `WARN` satırları arasında izlenmeye değer olanlar: `signing key rotation failed`, `audit maintenance failed`, `audit chain checkpoint failed`, `database schema is ahead of this binary` (WARN, kademeli dağıtım sırasında beklenir; sürerse eski örnek değiştirilmemiş demektir), `provider token revocation run failed`, `password reset backlog full`, `HTTP rate limiter unavailable; failing open`, `database.maintenance_url is not set` (açılışta), `no active JWT signing key`, `grace period elapsed; aborting in-flight requests`.

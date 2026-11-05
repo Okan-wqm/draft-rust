@@ -122,6 +122,7 @@ Etiketler kodda sabittir ve **asla değiştirilmez** (değişirse saklanan her M
 | `RateLimitKey` | `authn/v1/rate-limit-key` | `crates/authn-protect/src/keys.rs` | Kişisel veri içeren hız sınırı anahtarlarının anahtarlı hash'i |
 | `KnownDevice` | `authn/v1/known-device` | `crates/authn-protect/src/keys.rs` | `known_devices.device_hash` ("yeni cihaz" sinyali, K-21) |
 | `AuditChain` | `authn/v1/audit-chain` | `crates/authn-audit/src/keys.rs` | Anahtarlı audit zincirinin taban anahtarı (§9) |
+| `ErasureLedger` | `authn/v1/erasure-ledger` | `crates/authn-account/src/service/erasure_ledger.rs` | `export-erasures` satırlarının MAC'i; `reapply-erasures` imzasız/yanlış imzalı satırı reddeder (K-108) |
 | `DeviceBinding` | `authn/v1/device-binding` | **kullanılmıyor** | Ayrılmış etiket. Magic link cihaz bağlama değeri bugün 256 bit `OpaqueToken`'dır, yalnızca SHA-256'sı saklanır (`crates/authn-session/src/login/passwordless.rs`) |
 | `AuditPseudonym` | `authn/v1/audit-pseudonym` | **kullanılmıyor** | Ayrılmış etiket. Audit takma adları bugün rastgele UUID'dir (`audit_subjects`, `crates/authn-audit/src/sink.rs`) |
 | `OAuthState` | `authn/v1/oauth-state` | **kullanılmıyor** | Ayrılmış etiket. OAuth durumu sunucu tarafında saklanır, PKCE doğrulayıcısı zarfla şifrelenir |
@@ -165,8 +166,8 @@ E-postayla giden bağlantılarda token URL **parçasındadır** (`#token=…`): 
 | Claim'ler | `iss` tam eşitlik, `aud` içermeli, `exp`/`iat` zorunlu, `nbf` isteğe bağlı; saat kayması `crypto.jwt_leeway` (varsayılan 30 sn, en çok 5 dk) | `cry_09_registered_claims_are_validated`, `cry_09_leeway_and_max_lifetime_are_configurable` |
 | İçerik | `iss`, `sub`, `aud`, `exp`, `iat`, `nbf`, `jti`, `sid`, `auth_time`, `amr`, `acr`, `org_id`, `scope`; kişisel veri yok. Impersonation token'larında `act` | `ses_08_access_token_claims_follow_rfc_9068_without_personal_data`, `ses_08_native_impersonation_tokens_carry_the_act_claim` |
 | Ömür | `session.access_token_ttl`, varsayılan 10 dk | `ses_06_defaults_follow_the_specification_and_validate` |
-| İptal | Bearer isteklerinde oturum canlılığı her istekte kontrol edilir (`session.access_token_session_check`); üretimde kapatılamaz | `ses_05_revoked_session_rejects_its_access_tokens_at_once`, `ses_08_k58_session_check_cannot_be_switched_off_in_production` |
-| İstemciye hata | Her doğrulama hatası `unauthenticated`; ayrıntılı `JwtError` yalnızca loga | `ses_08_tampered_and_foreign_tokens_are_rejected_by_the_middleware`, `crv_09_forged_tokens_are_refused_through_the_stack` |
+| İptal | Bearer isteklerinde oturum canlılığı her istekte kontrol edilir (`session.access_token_session_check`); üretimde kapatılamaz | `ses_05_revoked_session_rejects_its_access_tokens_at_once`, `ses_08_k58_session_check_cannot_be_switched_off_in_production_or_staging` |
+| İstemciye hata | Her doğrulama hatası `unauthenticated`; ayrıntılı `JwtError` yalnızca loga | `ses_08_tampered_and_foreign_tokens_are_rejected_by_the_middleware`, `cry_09_forged_tokens_are_refused_through_the_stack` |
 
 **İmza anahtarı yaşam döngüsü** (`crates/authn-store/src/signing_keys.rs`):
 

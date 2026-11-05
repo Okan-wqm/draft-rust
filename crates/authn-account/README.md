@@ -84,6 +84,11 @@ async fn purge_due_deletions(&self, max: u32) -> Result<PurgeReport, AuthError> 
 async fn release_expired_locks(&self, max: u32) -> Result<u64, AuthError>            // ACC-06
 async fn purge_expired_reservations(&self, max: u32) -> Result<u64, AuthError>       // ACC-07
 async fn sync_terms_versions(&self) -> Result<usize, AuthError>                       // açılışta (ACC-11)
+
+// Silme defteri (K-108): yedekten geri yüklemeden sonra silmeleri yeniden uygulama
+async fn export_erasures(&self, since: OffsetDateTime, after: Option<&ErasureRecord>, limit: i64)
+    -> Result<Vec<ErasureRecord>, AuthError>                                          // `export-erasures`
+async fn reapply_erasure(&self, entry: &ErasureRecord) -> Result<ReapplyOutcome, AuthError> // `reapply-erasures`
 async fn drain_background_jobs(&self)                                                  // zarif kapanış (OPS-07)
 
 // Server'ın uygulayacağı / kaydedeceği trait'ler
@@ -155,6 +160,7 @@ Ayrıca `session.step_up_max_age` (step-up penceresi) ve `protect.captcha.fail_o
 ## Migration'lar
 
 - `1200_account_lifecycle.sql` — `account_deletions.previous_status`: iptalde dönülecek durum (doğrulanmamış hesap iptalle `active` olamaz); `email_reservations`: e-posta değişikliğinden sonra eski adres geri alma süresince yalnızca eski sahibine ayrılır (kaskad + temizlik işi).
+- `1203_erasure_ledger.sql` — `erasure_ledger (user_id PK, erased_at, reason)` (K-108): her silme (`finish_erasure`, ACC-05 ve ACC-09) aynı transaction'da bir satır yazar; FK yok, kişisel veri yok. Veritabanı dışına aktarılır (`export-erasures`) ve geri yüklemeden sonra `reapply-erasures` ile yeniden uygulanır: geri gelen hesap normal silme yolundan silinir (durum makinesi adım adım, denetimli), son sahip ise raporlanır ve dokunulmaz. Prosedür: `docs/operations/backup.md` §5. Dışa aktarılan her satır `mac` taşır (`ledger_line`, `KeyPurpose::ErasureLedger`); `parse_ledger_line` imzasız ya da yanlış imzalı satırı reddeder, böylece defter deposuna yazabilen biri geri yüklemede hesap sildiremez (K-108 denetimi). Uygulama rolü tabloya yalnızca ekleyebilir (migration `2902`).
 - `1201_pending_registrations.sql` — `pending_registrations`: kayıt başına gönderilen şifre hash'i, profil, onaylar; link/kod/tutamacın yalnızca hash'i; deneme sayaçları; ömür (`unverified_purge_after`). Tamamlanınca hesabın tüm kayıtları silinir (ADR 0002).
 
 ## Güvenlik notları

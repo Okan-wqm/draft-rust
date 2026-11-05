@@ -29,7 +29,13 @@ macro_rules! org_text_enum {
         $vis enum $name {
             $(
                 $(#[$vmeta])*
+                // utoipa does not see the `$text` literal inside the
+                // `serde` attribute of a `macro_rules!` expansion (it is a
+                // `None`-delimited group there), so the schema name is
+                // given explicitly. `tests/openapi.rs` in authn-server
+                // checks that both agree (ARC-09).
                 #[serde(rename = $text)]
+                #[schema(rename = $text)]
                 $variant,
             )+
         }

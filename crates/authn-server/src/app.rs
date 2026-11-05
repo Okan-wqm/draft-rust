@@ -81,6 +81,16 @@ pub fn session_less_routes() -> Router<AppState> {
 /// Builds the complete application router. Fails when a web-protection
 /// setting is unusable (fail fast at start-up, ARC-07).
 pub fn build_router(state: AppState) -> Result<Router, AuthError> {
+    build_router_with_routes(state, Router::new())
+}
+
+/// [`build_router`] with `extra` routes merged into the module routes, so
+/// they run behind the complete middleware stack (authentication, CSRF and
+/// every outer layer). For embedding and for tests of the stack itself.
+pub fn build_router_with_routes(
+    state: AppState,
+    extra: Router<AppState>,
+) -> Result<Router, AuthError> {
     let config = state.config.clone();
     let limits = config.server.limits;
     let protect = &config.protect;
@@ -88,6 +98,7 @@ pub fn build_router(state: AppState) -> Result<Router, AuthError> {
     let sessions = state.services.sessions.clone();
     // (8) authentication + CSRF, for every module route.
     let mut router = module_routes()
+        .merge(extra)
         .layer(from_fn_with_state(sessions, authn_session::authenticate))
         .merge(session_less_routes());
     if config.server.openapi_enabled {
@@ -109,6 +120,13 @@ pub fn build_router(state: AppState) -> Result<Router, AuthError> {
     Ok(router
         .fallback(not_found_fallback)
         .with_state(state)
+        // K-114: a panic in a handler becomes a 500 *inside* the security
+        // headers / CORS layers, so the response carries them (PRT-07);
+        // the request-context layer renders it as the `internal_error`
+        // envelope (ARC-08) and the panic message never reaches the
+        // client. The outer CatchPanicLayer below still catches a panic in
+        // a middleware layer.
+        .layer(CatchPanicLayer::new())
         // (7) rate limit ← CORS ← admin-console CORS ← security headers ←
         // host validation.
         .layer(from_fn_with_state(rate_limit, http_rate_limit))

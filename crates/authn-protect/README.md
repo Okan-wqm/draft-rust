@@ -207,8 +207,8 @@ let redirects = authn_protect::RedirectValidator::from_config(&cfg.protect, &cfg
 - Saat: GCRA zamanı enjekte edilen `Clock`'tan gelir; çoklu instance'ta saatler NTP ile senkron olmalıdır (sapma limitleri sapma kadar gevşetir/sıkılaştırır).
 - Redis arka ucu Redis'in ayakta olmasına bağlıdır; erişilemezse eylem limitleri `service_unavailable` döner (bilinçli kapalı başarısızlık). HTTP katmanı varsayılan olarak açık başarısız olur.
 - Bilinen cihaz kontrolü istemci cihaz kimliğine (`__Host-authn_device` çerezi / `x-device-id`) dayanır; kimlik çalınırsa yumuşak kilit o hesap için aşılabilir (şifre yine gerekir). Daha güçlü kanıt MFA-09 imzalı güvenilir cihaz token'ıdır.
-- Cihaz hash'i için ayrı bir `KeyPurpose` yok; `RateLimitKey` amacı ayrı etiketle kullanılıyor (sözleşme değişikliği talebi açık).
-- CAPTCHA sağlayıcılarının `hostname` alanı doğrulanmıyor (konfigürasyonda beklenen host listesi yok); Turnstile `action` doğrulanıyor.
+- ~~Cihaz hash'i için ayrı bir `KeyPurpose` yok~~ — **kapatıldı (K-21):** `known_devices.device_hash` kendi `KeyPurpose::KnownDevice` alt anahtarını kullanır (`src/keys.rs`).
+- ~~CAPTCHA sağlayıcılarının `hostname` alanı doğrulanmıyor~~ — **kapatıldı (K-58):** Turnstile/hCaptcha yanıtının `hostname`'i `protect.captcha.hostnames` listesine karşı denetlenir (`captcha/siteverify.rs`); liste production ve staging'de zorunludur. Turnstile `action` da doğrulanır.
 - Anonimleştirici ağ listesi başlangıçta okunur; yenilemek için `DefaultRiskEvaluator::with_anonymizing_networks` ile yeni bir değerlendirici kurulmalı (otomatik yenileme yok).
 - Kullanıcı tarafından verilen URL'lerde port kısıtı yok (adres sınıflandırması iç ağları zaten dışlar).
 

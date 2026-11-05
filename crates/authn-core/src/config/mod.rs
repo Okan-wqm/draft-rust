@@ -149,18 +149,24 @@ impl AppConfig {
     }
 
     fn validate_cross_section(&self, p: &mut ConfigProblems) {
-        if matches!(
+        // K-111: staging runs every production security rule. A staging
+        // deployment is usually reachable from outside and often holds a
+        // copy of real data; it is also where the production configuration
+        // is rehearsed. Only two rules legitimately differ, both relaxations
+        // that a single-person, never-mailing staging copy needs:
+        // `admin.four_eyes = false` and `notify.email.transport =
+        // "disabled"` (docs/operations/configuration.md).
+        let production = self.server.environment == Environment::Production;
+        let hardened = matches!(
             self.server.environment,
             Environment::Production | Environment::Staging
-        ) {
+        );
+        if hardened {
             self.reject_public_keys(p);
-        }
-        let production = self.server.environment == Environment::Production;
-        if production {
             p.require(
                 self.server.public_base_url.scheme() == "https",
                 "server.public_base_url",
-                "must use https in production",
+                "must use https in production and staging",
             );
             p.require(
                 self.webauthn
@@ -168,24 +174,17 @@ impl AppConfig {
                     .iter()
                     .all(|o| o.starts_with("https://") || o.starts_with("android:apk-key-hash:")),
                 "webauthn.allowed_origins",
-                "web origins must use https in production",
+                "web origins must use https in production and staging",
             );
             p.require(
                 !self.protect.outbound.allow_private_networks,
                 "protect.outbound.allow_private_networks",
-                "must be false in production (SSRF protection, PRT-12)",
+                "must be false in production and staging (SSRF protection, PRT-12)",
             );
             p.require(
                 self.protect.rate_limit.backend != protect::RateLimitBackend::Memory,
                 "protect.rate_limit.backend",
-                "the in-memory backend is per instance; use postgres or redis in production",
-            );
-            // K-66: a lone admin is already covered by the single-admin
-            // exception, so production has no reason to switch it off.
-            p.require(
-                self.admin.four_eyes != Some(false),
-                "admin.four_eyes",
-                "must not be false in production (K-66 four-eyes approval)",
+                "the in-memory backend is per instance; use postgres or redis in production and staging",
             );
             // K-58: without the per-request session check a revoked or
             // suspended session keeps working until its access token
@@ -194,7 +193,7 @@ impl AppConfig {
             p.require(
                 self.session.access_token_session_check,
                 "session.access_token_session_check",
-                "must stay true in production (K-58: revocation takes effect on the next request)",
+                "must stay true in production and staging (K-58: revocation takes effect on the next request)",
             );
             // K-58 audit: a Turnstile / hCaptcha token solved on another
             // site must not pass; the provider's `hostname` is checked
@@ -205,9 +204,17 @@ impl AppConfig {
                     crate::ports::CaptchaProvider::Turnstile | crate::ports::CaptchaProvider::HCaptcha
                 ) || !self.protect.captcha.hostnames.is_empty(),
                 "protect.captcha.hostnames",
-                "required in production with turnstile / hcaptcha (PRT-05: tokens solved on other sites)",
+                "required in production and staging with turnstile / hcaptcha (PRT-05: tokens solved on other sites)",
             );
         }
+        // K-66: a lone admin is already covered by the single-admin
+        // exception, so production has no reason to switch it off. Staging
+        // exception (K-111): a single tester may run admin flows alone.
+        p.require(
+            !production || self.admin.four_eyes != Some(false),
+            "admin.four_eyes",
+            "must not be false in production (K-66 four-eyes approval)",
+        );
         self.validate_notify_environment(p);
         p.require(
             self.crypto.signing_keys.retired_retention >= self.session.access_token_ttl,
@@ -684,7 +691,7 @@ mod tests {
     }
 
     #[test]
-    fn ses_08_k58_session_check_cannot_be_switched_off_in_production() {
+    fn ses_08_k58_session_check_cannot_be_switched_off_in_production_or_staging() {
         let off = |environment: &str| {
             with_environment(
                 environment,
@@ -692,12 +699,14 @@ mod tests {
             )
         };
         let key = "session.access_token_session_check";
-        let production = problems(&off("production"));
-        assert!(
-            production.iter().any(|p| p.starts_with(key)),
-            "{production:?}"
-        );
-        for environment in ["staging", "development", "test"] {
+        for environment in ["production", "staging"] {
+            let found = problems(&off(environment));
+            assert!(
+                found.iter().any(|p| p.starts_with(key)),
+                "{environment}: {found:?}"
+            );
+        }
+        for environment in ["development", "test"] {
             let found = problems(&off(environment));
             assert!(
                 !found.iter().any(|p| p.starts_with(key)),
@@ -731,6 +740,71 @@ mod tests {
                 "{environment}: {found:?}"
             );
         }
+    }
+
+    /// ARC-07 / K-111: staging runs the production security rules. Before
+    /// the fix staging only refused the published example keys, so a
+    /// staging deployment (often reachable from the internet, often with a
+    /// copy of real data) could run over http, with SSRF protection off,
+    /// per-instance rate limits, no per-request session check and CAPTCHA
+    /// tokens accepted from any site. The two documented exceptions stay
+    /// allowed: four-eyes approval may be switched off and e-mail may be
+    /// `disabled` (a staging copy must be able to never mail real users).
+    #[test]
+    fn arc_07_k111_staging_enforces_the_production_security_rules() {
+        let weak = "
+            [webauthn]
+            allowed_origins = [\"http://localhost:8080\"]
+            [protect.outbound]
+            allow_private_networks = true
+            [protect.rate_limit]
+            backend = \"memory\"
+            [session]
+            access_token_session_check = false
+            [protect.captcha]
+            provider = \"turnstile\"
+            site_key = \"site\"
+            secret_key = \"secret\"
+            ";
+        let expected = [
+            "server.public_base_url: must use https",
+            "webauthn.allowed_origins: web origins must use https",
+            "protect.outbound.allow_private_networks: must be false",
+            "protect.rate_limit.backend: the in-memory backend",
+            "session.access_token_session_check: must stay true",
+            "protect.captcha.hostnames: required",
+        ];
+        for environment in ["production", "staging"] {
+            let found = problems(&with_environment(environment, weak));
+            for rule in expected {
+                assert!(
+                    found.iter().any(|p| p.starts_with(rule)),
+                    "{environment}: {rule} missing in {found:?}"
+                );
+            }
+        }
+        // Development and test keep the relaxed rules.
+        for environment in ["development", "test"] {
+            let found = problems(&with_environment(environment, weak));
+            for rule in expected {
+                assert!(
+                    !found.iter().any(|p| p.starts_with(rule)),
+                    "{environment}: {rule} in {found:?}"
+                );
+            }
+        }
+        // The documented staging exceptions.
+        let exceptions = with_environment("staging", "\n[admin]\nfour_eyes = false\n").replace(
+            "[notify.email]\n            transport = \"log\"",
+            "[notify.email]\n            transport = \"disabled\"",
+        );
+        let found = problems(&exceptions);
+        assert!(
+            !found
+                .iter()
+                .any(|p| p.starts_with("admin.four_eyes") || p.starts_with("notify.")),
+            "{found:?}"
+        );
     }
 
     #[test]

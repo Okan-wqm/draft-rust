@@ -465,6 +465,7 @@ pub async fn delete_organization(
 #[utoipa::path(
     post,
     path = "/v1/orgs/{org_id}/deletion/cancel",
+    operation_id = "cancel_org_deletion",
     tag = "organizations",
     params(("org_id" = OrgId, Path, description = "Organization id")),
     responses(

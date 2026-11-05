@@ -26,24 +26,39 @@
 
 ## OpenAPI belgesini yenilemek
 
-`openapi.json` bu belgenin yazıldığı commit'teki (`47c84a7`) koddan alındı. Kod değişince yenileyin ve iki Markdown dosyasını yeniden üretin:
+`openapi.json`, `authn_server::openapi::document()`'in varsayılan özelliklerle (`passkey`, `sms`) üretilmiş çıktısıdır. `crates/authn-server/tests/openapi.rs` içindeki `doc_04_committed_openapi_json_is_current` testi dosyanın üretilen belgeyle birebir aynı olduğunu denetler; bir `#[utoipa::path]` veya şema değişip dosya yenilenmezse CI kırılır. Yenilemek ve iki Markdown dosyasını yeniden üretmek için:
 
 ```bash
-# 1. Çalışan bir geliştirme sunucusundan (server.openapi_enabled = true, varsayılan):
-curl -sf http://localhost:8080/openapi.json | python3 -m json.tool --indent 2 --no-ensure-ascii > docs/api/openapi.json
+# 1. openapi.json'u koddan yeniden yaz (sunucu çalıştırmak gerekmez):
+UPDATE_OPENAPI=1 cargo test -p authn-server --all-features --test openapi
 # 2. Referansları üret (yeni/silinmiş bir uç veya hata kodu için Türkçe açıklama eksikse betik hata verir):
 python3 -I docs/api/generate_reference.py
 ```
 
+Aynı test dosyası belgenin istemci üretimine uygunluğunu da denetler (ARC-09):
+
+- her `operationId` benzersizdir;
+- işlemlerin `security` gereksinimleri yalnızca `components.securitySchemes`'te tanımlı şemalara başvurur;
+- her `$ref` çözülür;
+- her enum şemasının değerleri, serde'nin o tür için gerçekte yazdığı ve kabul ettiği değerlerin aynısıdır. Belgeye yeni bir enum şeması girerse test, tür listeye eklenene kadar kırmızıdır.
+
 Üretimde `/openapi.json`'u açık bırakmak istemiyorsanız `server.openapi_enabled = false` (uç `404` olur). `GET /openapi.json` kimlik doğrulaması istemez; Host doğrulaması ve oran sınırı uygulanır.
 
-## OpenAPI belgesinin bilinen eksikleri
+## Güvenlik şemaları
 
-Belge kodla birlikte üretilir ama birkaç noktada kodun davranışını tam yansıtmaz. İstemci üretecekseniz bunları bilin (raporlandı; düzeltmesi kod sahiplerinindir):
+`components.securitySchemes` dört kimlik türünü tanımlar ([authentication.md](authentication.md)):
 
-- **Metin enum'larının değerleri yanlış.** `text_enum!` / `org_text_enum!` makrolarıyla tanımlanan 17 enum şemasında (`AuthMethodRef`, `ClientKind`, `FactorKind`, `LoginMethod`, `Permission`, `RequiredAction`, `AccountStatus`, `ApiKeyState`, `DomainStatus`, `InvitationStatus`, `Locale`, `MemberStatus`, `OrgStatus`, `ServiceAccountStatus`, `TermsDocument`, …) OpenAPI Rust varyant adlarını listeler (`"Password"`, `"Pwd"`, `"RecoveryCode"`, `"OrgRead"`), oysa kablodaki gerçek değerler serde `rename` değerleridir (`"password"`, `"pwd"`, `"recovery_code"`, `"org:read"`). utoipa, makro içinden gelen `#[serde(rename = $text)]`'i okumuyor. Bu belgelerdeki değerler (gerçek olanlar) kaynak koddan alınmıştır (`crates/authn-core/src/domain/amr.rs`, `crates/authn-org/src/permission.rs`); OpenAPI'den istemci üretirken bu enum'ları elle düzeltin.
-- **Güvenlik şemaları tanımlı değil.** `components.securitySchemes` yok; yalnızca `POST /v1/token/introspect` tanımsız `api_key` şemasına başvuruyor. Hangi ucun hangi kimliği istediği [endpoints.md](endpoints.md)'deki "Kimlik" sütunundadır.
-- **Yinelenen `operationId`:** `passkey_options` (`POST /v1/login/passkey/options` ve `POST /v1/reauth/passkey/options`) ve `cancel_deletion` (`POST /v1/me/deletion/cancel` ve `POST /v1/orgs/{org_id}/deletion/cancel`). OpenAPI `operationId`'nin benzersiz olmasını ister; bazı kod üreteçleri bu belgeyle çakışan metot adları üretir.
-- **Yanıtta belgelenmemiş alanlar:** `POST /v1/login/challenge/verify` / `step` başarılı olduğunda native yanıtı `trusted_device_token` (güvenilir cihaz seçildiyse) ve bazı adımlarda `data` alanı taşıyabilir; `CredentialsBody` şeması bunları listelemez (`crates/authn-session/src/login/routes.rs`).
-- **`POST /v1/login/password` için `429` açıklaması** `captcha_required`'ı da sayar; bu kodun gerçek durumu `403`'tür ([errors.md](errors.md)).
+| Şema | Tür | Anlamı |
+|------|-----|--------|
+| `session_cookie` | `apiKey`, çerez `__Host-authn_session` | Web oturumu; durum değiştiren isteklerde ayrıca `X-CSRF-Token` |
+| `bearer_jwt` | `http` bearer, `JWT` | Native istemcinin access token'ı |
+| `api_key` | `apiKey`, başlık `X-API-Key` | Organizasyon API anahtarı (`ak_…`) |
+| `api_key_bearer` | `http` bearer, `ak_…` | Aynı API anahtarı, `Authorization: Bearer ak_…` olarak |
+
+Şu an işlem düzeyinde `security` yalnızca `POST /v1/token/introspect`'te yazılıdır (`api_key` veya `api_key_bearer`). Diğer uçların hangi kimliği istediği [endpoints.md](endpoints.md)'deki "Kimlik" sütunundadır.
+
+## OpenAPI belgesi hakkında notlar
+
+- **İşlem düzeyinde güvenlik gereksinimi eksik.** Yukarıdaki şemalar tanımlıdır ama `introspect` dışındaki işlemler `security` taşımaz; üretilen istemcilerde kimliği elle ekleyin ("Kimlik" sütunu, [endpoints.md](endpoints.md)).
+- **Giriş yanıtları `oneOf`'tur.** Girişi başlatan uçların (`/v1/login/password`, `/passkey`, `/magic-link/verify`, `/email-code/verify`) `200` gövdesi `LoginResponse` (`CredentialsBody` veya `ChallengeBody`), challenge adımlarının (`/v1/login/challenge/verify`, `/step`) gövdesi `ChallengeStepResponse`'tur (`ChallengeCompletedBody` veya `ChallengeStatusBody`). İkisini `status` alanı ayırır (`authenticated` / `challenge_required`). `ChallengeCompletedBody`, native istemcide "bu cihaza güven" seçildiyse `trusted_device_token`'ı (web'de `__Host-authn_trusted_device` çerezi) ve son adımın bir kez gösterilen `data`'sını (ör. kurtarma kodları) taşır.
 - `GET /v1/time` ARC-03 deseninin örnek ucudur (`crates/authn-server/src/routes/example.rs`) ve kimlik doğrulaması istemez.

@@ -26,10 +26,7 @@ pub async fn serve(config: AppConfig) -> Result<(), ServerError> {
     if config.database.migrate_on_start {
         authn_store::run_migrations(&pool).await?;
     }
-    let status = authn_store::migration_status(&pool).await?;
-    if !status.is_up_to_date() {
-        return Err(ServerError::SchemaOutdated(format!("{status:?}")));
-    }
+    ensure_compatible_schema(&pool).await?;
 
     if let Some(addr) = config.server.metrics_bind_addr {
         metrics_exporter_prometheus::PrometheusBuilder::new()
@@ -115,6 +112,25 @@ pub async fn serve(config: AppConfig) -> Result<(), ServerError> {
     services.sessions.drain_background_jobs().await;
     tracing::info!("server stopped");
     Ok(())
+}
+
+/// K-106: refuses to start unless every migration of this binary is
+/// applied unchanged. Migrations of a newer release (rolling deployment;
+/// expand-only, contracts §6) are tolerated and logged.
+pub async fn ensure_compatible_schema(
+    pool: &sqlx::PgPool,
+) -> Result<authn_store::MigrationStatus, ServerError> {
+    let status = authn_store::migration_status(pool).await?;
+    if !status.is_compatible() {
+        return Err(ServerError::SchemaOutdated(format!("{status:?}")));
+    }
+    if status.is_ahead() {
+        tracing::warn!(
+            newer_migrations = ?status.unknown_applied,
+            "database schema is ahead of this binary (a newer release migrated); running on the expand-only schema until this instance is replaced"
+        );
+    }
+    Ok(status)
 }
 
 async fn deadline(started: Arc<Notify>, grace: Duration) {

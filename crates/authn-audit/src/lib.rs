@@ -56,7 +56,9 @@ pub use query::{AuditEventDetail, AuditEventFilter, list_events};
 pub use service::{AuditService, AuditServiceParts, MaintenanceReport};
 
 pub use keys::ChainKeys;
-pub use retention::{PurgeReport, create_checkpoint, purge_before, purge_expired};
+pub use retention::{
+    PurgeReport, create_checkpoint, create_scheduled_checkpoint, purge_before, purge_expired,
+};
 pub use sink::{AppendedEvent, ChainKeyActivation, PgAuditSink};
 pub use verify::{
     ChainAnchor, ChainBreak, ChainProblem, ChainReport, verify_chain, verify_chain_from,

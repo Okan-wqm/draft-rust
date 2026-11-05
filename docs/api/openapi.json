@@ -18,13 +18,13 @@
       "AccountStatus": {
         "description": "Lifecycle status of a user account, stored in `users.status`.",
         "enum": [
-          "PendingVerification",
-          "Active",
-          "Locked",
-          "Suspended",
-          "Disabled",
-          "PendingDeletion",
-          "Deleted"
+          "pending_verification",
+          "active",
+          "locked",
+          "suspended",
+          "disabled",
+          "pending_deletion",
+          "deleted"
         ],
         "type": "string"
       },
@@ -398,10 +398,10 @@
       "ApiKeyState": {
         "description": "Derived state of an API key (ORG-08).",
         "enum": [
-          "Active",
-          "Rotating",
-          "Revoked",
-          "Expired"
+          "active",
+          "rotating",
+          "revoked",
+          "expired"
         ],
         "type": "string"
       },
@@ -861,21 +861,21 @@
       "AuthMethodRef": {
         "description": "Authentication Method Reference values (RFC 8176) carried in sessions\nand the `amr` claim of access tokens (SES-08, SES-21).\n\n`email` and `fed` are not registered in RFC 8176; they are documented\nextensions of this system (e-mail OTP / magic link, federated login).",
         "enum": [
-          "Pwd",
-          "Otp",
-          "Hwk",
-          "Swk",
-          "Mfa",
-          "Sms",
-          "User",
-          "Pin",
-          "Fpt",
-          "Face",
-          "Kba",
-          "Rba",
-          "Mca",
-          "Email",
-          "Fed"
+          "pwd",
+          "otp",
+          "hwk",
+          "swk",
+          "mfa",
+          "sms",
+          "user",
+          "pin",
+          "fpt",
+          "face",
+          "kba",
+          "rba",
+          "mca",
+          "email",
+          "fed"
         ],
         "type": "string"
       },
@@ -1105,6 +1105,34 @@
           "required_actions"
         ],
         "type": "object"
+      },
+      "ChallengeCompletedBody": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/CredentialsBody",
+            "description": "The issued credentials."
+          },
+          {
+            "properties": {
+              "data": {
+                "description": "Data the last step returned once (recovery codes after an MFA\nenrollment).",
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
+              "trusted_device_token": {
+                "description": "Native clients that asked to trust the device (`trust_device`,\nMFA-09): the trusted-device token to send as\n`X-Trusted-Device` on later logins. Web clients receive the\n`__Host-authn_trusted_device` cookie instead.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "type": "object"
+          }
+        ],
+        "description": "Body of a login that completed (`authenticated`): the issued\ncredentials plus, after the last challenge step, the trusted-device\ntoken and the data of that step."
       },
       "ChallengeId": {
         "description": "A pending authentication challenge (`auth_challenges.id`).",
@@ -1346,6 +1374,19 @@
           }
         ]
       },
+      "ChallengeStepResponse": {
+        "description": "`200` body of the challenge steps: signed in, or the next step (tell\nthem apart by `status`). Documentation type of the OpenAPI document.",
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/ChallengeCompletedBody",
+            "description": "`status = authenticated`."
+          },
+          {
+            "$ref": "#/components/schemas/ChallengeStatusBody",
+            "description": "`status = challenge_required`."
+          }
+        ]
+      },
       "ChallengeType": {
         "description": "Kind of challenge.",
         "enum": [
@@ -1410,8 +1451,8 @@
       "ClientKind": {
         "description": "Which kind of client a session or challenge belongs to.",
         "enum": [
-          "Web",
-          "Native"
+          "web",
+          "native"
         ],
         "type": "string"
       },
@@ -1933,9 +1974,9 @@
       "DomainStatus": {
         "description": "Status of a claimed domain (ORG-06).",
         "enum": [
-          "Pending",
-          "Verified",
-          "Failed"
+          "pending",
+          "verified",
+          "failed"
         ],
         "type": "string"
       },
@@ -2158,11 +2199,11 @@
       "FactorKind": {
         "description": "Second-factor kinds (MFA-*, PKY-*). Used by MFA policy evaluation,\norganization policies (allowed factors) and login challenges.",
         "enum": [
-          "Totp",
-          "Webauthn",
-          "RecoveryCode",
-          "Email",
-          "Sms"
+          "totp",
+          "webauthn",
+          "recovery_code",
+          "email",
+          "sms"
         ],
         "type": "string"
       },
@@ -3009,10 +3050,10 @@
       "InvitationStatus": {
         "description": "Status of an invitation (ORG-05).",
         "enum": [
-          "Pending",
-          "Accepted",
-          "Revoked",
-          "Expired"
+          "pending",
+          "accepted",
+          "revoked",
+          "expired"
         ],
         "type": "string"
       },
@@ -3132,19 +3173,19 @@
       "Locale": {
         "description": "A supported locale. Only Turkish and English are supported in Phase 1.",
         "enum": [
-          "En",
-          "Tr"
+          "en",
+          "tr"
         ],
         "type": "string"
       },
       "LoginMethod": {
         "description": "Primary login methods (ORG-07 \"allowed login methods\", SES-*).",
         "enum": [
-          "Password",
-          "Passkey",
-          "MagicLink",
-          "EmailCode",
-          "Social"
+          "password",
+          "passkey",
+          "magic_link",
+          "email_code",
+          "social"
         ],
         "type": "string"
       },
@@ -3178,6 +3219,19 @@
           "expires_at"
         ],
         "type": "object"
+      },
+      "LoginResponse": {
+        "description": "`200` body of the login endpoints that start a login: signed in, or a\nchallenge with outstanding steps (tell them apart by `status`).\nDocumentation type of the OpenAPI document.",
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/CredentialsBody",
+            "description": "`status = authenticated`."
+          },
+          {
+            "$ref": "#/components/schemas/ChallengeBody",
+            "description": "`status = challenge_required`."
+          }
+        ]
       },
       "MagicLinkRequest": {
         "additionalProperties": false,
@@ -3521,8 +3575,8 @@
       "MemberStatus": {
         "description": "Status of a membership (ORG-02).",
         "enum": [
-          "Active",
-          "Suspended"
+          "active",
+          "suspended"
         ],
         "type": "string"
       },
@@ -4112,9 +4166,9 @@
       "OrgStatus": {
         "description": "Lifecycle of an organization.",
         "enum": [
-          "Active",
-          "Suspended",
-          "PendingDeletion"
+          "active",
+          "suspended",
+          "pending_deletion"
         ],
         "type": "string"
       },
@@ -4575,29 +4629,29 @@
       "Permission": {
         "description": "One permission of the catalog (ORG-03).",
         "enum": [
-          "OrgRead",
-          "OrgUpdate",
-          "OrgDelete",
-          "OrgTransferOwnership",
-          "MembersRead",
-          "MembersInvite",
-          "MembersUpdate",
-          "MembersRemove",
-          "RolesRead",
-          "RolesManage",
-          "PoliciesRead",
-          "PoliciesManage",
-          "DomainsRead",
-          "DomainsManage",
-          "ApiKeysRead",
-          "ApiKeysManage",
-          "ServiceAccountsRead",
-          "ServiceAccountsManage",
-          "WebhooksRead",
-          "WebhooksManage",
-          "AuditRead",
-          "BillingRead",
-          "BillingManage"
+          "org:read",
+          "org:update",
+          "org:delete",
+          "org:transfer_ownership",
+          "members:read",
+          "members:invite",
+          "members:update",
+          "members:remove",
+          "roles:read",
+          "roles:manage",
+          "policies:read",
+          "policies:manage",
+          "domains:read",
+          "domains:manage",
+          "api_keys:read",
+          "api_keys:manage",
+          "service_accounts:read",
+          "service_accounts:manage",
+          "webhooks:read",
+          "webhooks:manage",
+          "audit:read",
+          "billing:read",
+          "billing:manage"
         ],
         "type": "string"
       },
@@ -4978,11 +5032,11 @@
       "RequiredAction": {
         "description": "Mandatory steps before a full session (SES-22).",
         "enum": [
-          "VerifyMfa",
-          "EnrollMfa",
-          "ChangePassword",
-          "AcceptTerms",
-          "VerifyEmail"
+          "verify_mfa",
+          "enroll_mfa",
+          "change_password",
+          "accept_terms",
+          "verify_email"
         ],
         "type": "string"
       },
@@ -5495,8 +5549,8 @@
       "ServiceAccountStatus": {
         "description": "Status of a service account (ORG-09).",
         "enum": [
-          "Active",
-          "Disabled"
+          "active",
+          "disabled"
         ],
         "type": "string"
       },
@@ -5823,8 +5877,8 @@
       "TermsDocument": {
         "description": "Legal documents whose acceptance is recorded (ACC-11). Stored in\n`terms_versions.document`.",
         "enum": [
-          "TermsOfService",
-          "PrivacyPolicy"
+          "terms_of_service",
+          "privacy_policy"
         ],
         "type": "string"
       },
@@ -6645,6 +6699,32 @@
           "secret"
         ],
         "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "api_key": {
+        "description": "Organization API key `ak_…` (ORG-08) in the `X-API-Key` header.",
+        "in": "header",
+        "name": "X-API-Key",
+        "type": "apiKey"
+      },
+      "api_key_bearer": {
+        "bearerFormat": "ak_…",
+        "description": "Organization API key `ak_…` (ORG-08) as `Authorization: Bearer ak_…`.",
+        "scheme": "bearer",
+        "type": "http"
+      },
+      "bearer_jwt": {
+        "bearerFormat": "JWT",
+        "description": "Native clients: the access token of the session (`Authorization: Bearer <access token>`, SES-08).",
+        "scheme": "bearer",
+        "type": "http"
+      },
+      "session_cookie": {
+        "description": "Web session cookie. State-changing requests also need the `X-CSRF-Token` header (SES-04).",
+        "in": "cookie",
+        "name": "__Host-authn_session",
+        "type": "apiKey"
       }
     }
   },
@@ -9505,11 +9585,11 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ChallengeStatusBody"
+                  "$ref": "#/components/schemas/ChallengeStepResponse"
                 }
               }
             },
-            "description": "Signed in, or the next step"
+            "description": "Signed in (`authenticated`), or the next step (`challenge_required`)"
           },
           "401": {
             "content": {
@@ -9566,11 +9646,11 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/CredentialsBody"
+                  "$ref": "#/components/schemas/ChallengeStepResponse"
                 }
               }
             },
-            "description": "Signed in, or the next step"
+            "description": "Signed in (`authenticated`), or the next step (`challenge_required`)"
           },
           "400": {
             "content": {
@@ -9688,11 +9768,11 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/CredentialsBody"
+                  "$ref": "#/components/schemas/LoginResponse"
                 }
               }
             },
-            "description": "Signed in or challenge"
+            "description": "Signed in (`authenticated`) or more steps needed (`challenge_required`)"
           },
           "400": {
             "content": {
@@ -9790,11 +9870,11 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/CredentialsBody"
+                  "$ref": "#/components/schemas/LoginResponse"
                 }
               }
             },
-            "description": "Signed in or challenge"
+            "description": "Signed in (`authenticated`) or more steps needed (`challenge_required`)"
           },
           "400": {
             "content": {
@@ -9882,11 +9962,11 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/CredentialsBody"
+                  "$ref": "#/components/schemas/LoginResponse"
                 }
               }
             },
-            "description": "Signed in or challenge"
+            "description": "Signed in (`authenticated`) or more steps needed (`challenge_required`)"
           },
           "401": {
             "content": {
@@ -9917,7 +9997,7 @@
     },
     "/v1/login/passkey/options": {
       "post": {
-        "operationId": "passkey_options",
+        "operationId": "login_passkey_options",
         "requestBody": {
           "content": {
             "application/json": {
@@ -9984,7 +10064,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/CredentialsBody"
+                  "$ref": "#/components/schemas/LoginResponse"
                 }
               }
             },
@@ -10008,7 +10088,7 @@
                 }
               }
             },
-            "description": "csrf_failed / account_suspended … (only after a correct password)"
+            "description": "csrf_failed / `captcha_required` / `captcha_failed` (challenge in `details`) / account_suspended … (only after a correct password)"
           },
           "429": {
             "content": {
@@ -10018,7 +10098,7 @@
                 }
               }
             },
-            "description": "rate_limited / login_temporarily_blocked / captcha_required"
+            "description": "rate_limited / login_temporarily_blocked (`Retry-After`)"
           }
         },
         "summary": "SES-01: e-mail + password.",
@@ -10271,7 +10351,7 @@
     },
     "/v1/me/deletion/cancel": {
       "post": {
-        "operationId": "cancel_deletion",
+        "operationId": "cancel_account_deletion",
         "responses": {
           "200": {
             "content": {
@@ -13403,7 +13483,7 @@
     },
     "/v1/orgs/{org_id}/deletion/cancel": {
       "post": {
-        "operationId": "cancel_deletion",
+        "operationId": "cancel_org_deletion",
         "parameters": [
           {
             "description": "Organization id",
@@ -16063,7 +16143,7 @@
     },
     "/v1/reauth/passkey/options": {
       "post": {
-        "operationId": "passkey_options",
+        "operationId": "reauth_passkey_options",
         "responses": {
           "200": {
             "content": {
@@ -16364,6 +16444,9 @@
         "security": [
           {
             "api_key": []
+          },
+          {
+            "api_key_bearer": []
           }
         ],
         "summary": "Token introspection (SES-10, RFC 7662). The client authenticates with an\norganization API key; it only sees tokens of its own organization.",

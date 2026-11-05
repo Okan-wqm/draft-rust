@@ -129,7 +129,13 @@ rust-authentication --config prod.toml verify-audit-chain --legacy-until-seq <se
 
 - `--anchor` doğrulamayı saklama başlangıcı yerine dışarıda saklanan bir kontrol noktasından başlatır (kesme / geri sarma tespiti); `--legacy-until-seq` yapılandırmadaki değeri geçersiz kılar.
 - Bozulmada çıkış kodu `1` ve `audit chain broken after <n> verified events: …`; sorun türleri `key_downgrade`, `unkeyed_event`, `key_switch_unrecorded`, `head_mismatch` ve hash uyuşmazlıkları. Admin API karşılığı: `POST /v1/admin/audit-events/verify`.
-- **Dış çıpaları düzenli toplayın:** günlük bakım işi yalnızca saklama temizliği yaptığında (`audit.retention`, varsayılan 400 gün dolunca) kontrol noktası yazar; ayrı bir periyodik kontrol noktası işi yoktur. Bu yüzden `verify-audit-chain`'i zamanlanmış olarak (ör. günlük) çalıştırıp yazdırdığı `head <seq>:<hash>` değerini WORM depoya ekleyin; sonraki doğrulamalarda en yeni çıpayı `--anchor` ile kullanın.
+- **Dış çıpalar (K-107):** sunucu, `audit.checkpoint_interval` (varsayılan 24 saat; `1h`–`7d`) başına **tüm örneklerde tek** bir `scheduled` kontrol noktası yazar (saatlik kontrol, advisory lock; yeniden başlatma çıpayı ne erteler ne çoğaltır) ve şu satırı `INFO` düzeyinde loglar:
+  ```json
+  {"level":"INFO","fields":{"message":"audit chain scheduled checkpoint; keep this anchor outside the database","checkpoint_seq":1234,"checkpoint_hash":"<64 hex>","anchor":"1234:<64 hex>"}, …}
+  ```
+  Log hattınız bu satırları (`anchor` alanı) veritabanı sunucusundan bağımsız, değiştirilemez bir depoya (WORM) taşımalıdır; ör. `jq -r 'select(.fields.anchor) | .fields.anchor'`. İş bakım rolüyle çalışır (`database.maintenance_url`); uygulama rolünün `audit_chain_checkpoints`'e `INSERT` yetkisi yoktur, bakım URL'si yoksa en az yetkili kurulumda iş her saat `audit chain checkpoint failed` loglar.
+- **Elle çıpa:** `rust-authentication --config prod.toml audit-checkpoint` zincir başına hemen bir `manual` kontrol noktası yazar ve stdout'un **son satırına** `<seq>:<64 hex>` yazdırır (log satırları önce gelebilir): `rust-authentication … audit-checkpoint | tail -n1 >> /worm/audit-anchors.txt`. Olay müdahalesinin başında ve bir yedekten geri yüklemeden önce/sonra kullanın. Bakım URL'si yapılandırılmışsa onunla bağlanır.
+- **Çıpayla doğrulama:** en yeni dış çıpayla `verify-audit-chain --anchor <seq>:<hash>`; çıpadan sonra zincir kesilmiş, geri sarılmış ya da yeniden yazılmışsa doğrulama başarısız olur. `verify-audit-chain`'in yazdırdığı `head <seq>:<hash>` de bir çıpa olarak saklanabilir.
 
 ## 6. Diğer sırlar
 

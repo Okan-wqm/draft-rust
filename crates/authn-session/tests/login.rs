@@ -753,6 +753,44 @@ async fn mfa_09_trusted_device_skips_the_second_factor(pool: PgPool) {
     assert_eq!(status_of(&r), "challenge_required");
 }
 
+/// K-124: a native client gets the trusted-device token in the body of the
+/// completed challenge (documented by `ChallengeCompletedBody`) and skips
+/// the second factor when it sends it back.
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn mfa_09_native_trusted_device_token_is_in_the_body(pool: PgPool) {
+    let h = Harness::new(pool).await;
+    let alice = h.user("alice@example.com").await;
+    let secret = h.enroll_totp(alice).await;
+    let login = password_body("alice@example.com", PASSWORD);
+    let body: Value = h.send(native("/v1/login/password", &login)).await.json();
+    let token = body["challenge_token"].as_str().unwrap().to_owned();
+    let done = h
+        .send(native_challenge(
+            "/v1/login/challenge/verify",
+            &json!({"method": "totp", "code": h.totp_code(&secret), "trust_device": true}),
+            &token,
+        ))
+        .await;
+    done.assert_status(StatusCode::OK);
+    assert!(done.set_cookies().is_empty(), "native gets no cookies");
+    let body: Value = done.json();
+    assert_eq!(body["status"], "authenticated", "{body}");
+    assert!(body["access_token"].as_str().is_some());
+    let device = body["trusted_device_token"].as_str().unwrap().to_owned();
+
+    let again = h
+        .send(
+            native("/v1/login/password", &login).header(authn_mfa::TRUSTED_DEVICE_HEADER, &device),
+        )
+        .await;
+    let again: Value = again.json();
+    assert_eq!(again["status"], "authenticated", "{again}");
+    assert!(
+        again.get("trusted_device_token").is_none(),
+        "issued only by the challenge that asked for it"
+    );
+}
+
 #[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
 async fn mfa_09_trusted_device_is_ignored_when_risk_demands_mfa(pool: PgPool) {
     let h = Harness::new(pool).await;

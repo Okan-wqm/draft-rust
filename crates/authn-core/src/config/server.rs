@@ -85,8 +85,12 @@ pub struct ServerConfig {
     #[serde(default = "defaults::bind_addr")]
     pub bind_addr: SocketAddr,
     /// Prometheus metrics listener (OPS-04), separate port. Default
-    /// `127.0.0.1:9090`.
-    #[serde(default = "defaults::metrics_bind_addr")]
+    /// `127.0.0.1:9090`; `"off"` (or `""`) disables the listener (K-109).
+    /// Never expose it publicly.
+    #[serde(
+        default = "defaults::metrics_bind_addr",
+        deserialize_with = "deserialize_metrics_bind_addr"
+    )]
     pub metrics_bind_addr: Option<SocketAddr>,
     /// **Required.** The only base URL used to build links (NTF-02, PWD-08);
     /// also the default JWT issuer. Must be `https` in production.
@@ -124,6 +128,29 @@ pub struct ServerConfig {
     /// allowed cross-origin; a same-origin console needs no entry).
     #[serde(default)]
     pub admin_console_origins: Vec<String>,
+}
+
+/// Values of `server.metrics_bind_addr` that disable the listener (K-109).
+pub const METRICS_DISABLED: &[&str] = &["off", ""];
+
+/// `server.metrics_bind_addr`: a socket address, or `"off"` / `""` for no
+/// listener (TOML has no null, and `AUTHN__SERVER__METRICS_BIND_ADDR` is a
+/// string as well).
+fn deserialize_metrics_bind_addr<'de, D>(deserializer: D) -> Result<Option<SocketAddr>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let text = String::deserialize(deserializer)?;
+    let text = text.trim();
+    if METRICS_DISABLED
+        .iter()
+        .any(|off| text.eq_ignore_ascii_case(off))
+    {
+        return Ok(None);
+    }
+    text.parse::<SocketAddr>().map(Some).map_err(|_| {
+        serde::de::Error::custom("expected a socket address (e.g. \"127.0.0.1:9090\") or \"off\"")
+    })
 }
 
 /// Whether `value` is exactly an http(s) origin (`scheme://host[:port]`,
@@ -261,5 +288,76 @@ fn is_overly_broad_proxy_range(net: &IpNet) -> bool {
             };
             v6.prefix_len() < 16 && !private("fc00::/7") && !private("fe80::/10")
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::result_large_err)] // figment's error type (test-only)
+mod tests {
+    use figment::Figment;
+    use figment::providers::{Env, Format, Toml};
+
+    use super::*;
+
+    fn parse(extra: &str) -> Result<ServerConfig, figment::Error> {
+        Figment::new()
+            .merge(Toml::string(&format!(
+                "public_base_url = \"https://auth.example.com\"\n{extra}"
+            )))
+            .extract()
+    }
+
+    #[test]
+    fn k_109_metrics_listener_defaults_to_loopback() {
+        let config = parse("").unwrap();
+        assert_eq!(
+            config.metrics_bind_addr,
+            Some(SocketAddr::from(([127, 0, 0, 1], 9090)))
+        );
+    }
+
+    #[test]
+    fn k_109_metrics_listener_can_be_disabled_from_toml() {
+        for value in ["off", "OFF", "", " off "] {
+            let config = parse(&format!("metrics_bind_addr = \"{value}\"")).unwrap();
+            assert_eq!(config.metrics_bind_addr, None, "{value:?}");
+        }
+        let config = parse("metrics_bind_addr = \"0.0.0.0:9090\"").unwrap();
+        assert_eq!(
+            config.metrics_bind_addr,
+            Some(SocketAddr::from(([0, 0, 0, 0], 9090)))
+        );
+        for bad in ["localhost", "9090", "on", "0.0.0.0"] {
+            assert!(
+                parse(&format!("metrics_bind_addr = \"{bad}\"")).is_err(),
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn k_109_metrics_listener_can_be_set_or_disabled_from_the_environment() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("K109__METRICS_BIND_ADDR", "off");
+            let config: ServerConfig = Figment::new()
+                .merge(Toml::string(
+                    "public_base_url = \"https://auth.example.com\"",
+                ))
+                .merge(Env::prefixed("K109__"))
+                .extract()?;
+            assert_eq!(config.metrics_bind_addr, None);
+            jail.set_env("K109__METRICS_BIND_ADDR", "0.0.0.0:9090");
+            let config: ServerConfig = Figment::new()
+                .merge(Toml::string(
+                    "public_base_url = \"https://auth.example.com\"",
+                ))
+                .merge(Env::prefixed("K109__"))
+                .extract()?;
+            assert_eq!(
+                config.metrics_bind_addr,
+                Some(SocketAddr::from(([0, 0, 0, 0], 9090)))
+            );
+            Ok(())
+        });
     }
 }

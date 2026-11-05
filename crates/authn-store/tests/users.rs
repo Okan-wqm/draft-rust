@@ -248,6 +248,71 @@ async fn cry_03_password_credential_lifecycle(pool: PgPool) {
     );
 }
 
+/// ADM-05 / K-110: the expiry of a stored password survives a transparent
+/// rehash but never a password change (a new password does not inherit the
+/// expiry of the one-time initial password it replaces).
+#[sqlx::test(migrations = "../../migrations")]
+async fn adm_05_k110_password_expiry_is_cleared_by_a_new_password(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let user = UserRepository::create(&mut conn, &new_user("glass@example.com"))
+        .await
+        .unwrap();
+    // No password yet: nothing to expire.
+    assert!(
+        !UserRepository::set_password_expiry(&mut conn, user.id, Some(NOW))
+            .await
+            .unwrap()
+    );
+    let first = SensitiveString::new("$argon2id$v=19$m=19456,t=2,p=1$c2FsdHNhbHQ$aGFzaGhhc2hoYXNo");
+    let hash = NewPasswordHash {
+        password_hash: &first,
+        algorithm: "argon2id",
+        pepper_version: Some(1),
+    };
+    UserRepository::set_password(&mut conn, user.id, &hash, true, NOW)
+        .await
+        .unwrap();
+    let stored = UserRepository::find_password(&pool, user.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        stored.expires_at, None,
+        "passwords do not expire by default"
+    );
+    let deadline = NOW + time::Duration::hours(24);
+    assert!(
+        UserRepository::set_password_expiry(&mut conn, user.id, Some(deadline))
+            .await
+            .unwrap()
+    );
+    let second =
+        SensitiveString::new("$argon2id$v=19$m=65536,t=3,p=1$c2FsdHNhbHQ$aGFzaGhhc2hoYXNo");
+    let upgraded = NewPasswordHash {
+        password_hash: &second,
+        algorithm: "argon2id",
+        pepper_version: Some(2),
+    };
+    assert!(
+        UserRepository::rehash_password(&mut conn, user.id, &first, &upgraded)
+            .await
+            .unwrap()
+    );
+    let stored = UserRepository::find_password(&pool, user.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.expires_at, Some(deadline), "rehash keeps the expiry");
+    UserRepository::set_password(&mut conn, user.id, &hash, false, NOW)
+        .await
+        .unwrap();
+    let stored = UserRepository::find_password(&pool, user.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.expires_at, None, "a new password clears the expiry");
+}
+
 #[sqlx::test(migrations = "../../migrations")]
 async fn cry_02_argon2id_hash_requires_pepper_version(pool: PgPool) {
     let mut conn = pool.acquire().await.unwrap();

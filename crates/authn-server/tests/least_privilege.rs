@@ -93,10 +93,14 @@ async fn ops_10_least_privilege_grants_are_exact(pool: PgPool) {
     let (app, maint) = (roles.app.as_str(), roles.maintenance.as_str());
 
     // Append-only: no UPDATE / DELETE / TRUNCATE for the application role.
+    // K-108 audit: the erasure ledger is append-only too (the application
+    // only inserts; a compromised application role must not be able to
+    // delete the record of an erasure before it is exported).
     for table in [
         "audit_events",
         "admin_action_reasons",
         "admin_reason_restrictions",
+        "erasure_ledger",
     ] {
         assert!(privilege(&pool, app, table, "SELECT").await, "{table}");
         assert!(privilege(&pool, app, table, "INSERT").await, "{table}");

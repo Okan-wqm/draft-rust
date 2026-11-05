@@ -425,6 +425,70 @@ async fn adm_05_k11_break_glass_enrollment_link_end_to_end(pool: PgPool) {
     assert_eq!(r.status, StatusCode::OK, "{}", r.text());
 }
 
+/// ADM-05 / K-110: the password printed by `create-admin` is a one-time
+/// initial password. Its first login never yields a session: the mailbox is
+/// confirmed, a passkey is enrolled and a new password chosen first
+/// (PWD-12 `change_password`). Left unused, it stops working after 24 hours
+/// and the rejection is indistinguishable from a wrong password (SES-01).
+/// Before the fix the password never expired and never had to be changed.
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn adm_05_k110_break_glass_initial_password_is_one_time_and_expires(pool: PgPool) {
+    let app = App::new(pool).await;
+    // What `create-admin` (without `--passkey-link`) does.
+    let audit: Arc<dyn AuditSink> = Arc::new(authn_audit::PgAuditSink::keyed(
+        app.pool.clone(),
+        app.ports.clock.clone(),
+        app.services.audit.chain_keys().clone(),
+    ));
+    let created = authn_admin::create_break_glass_admin(
+        &app.pool,
+        &app.services.crypto.passwords,
+        app.ports.clock.as_ref(),
+        &audit,
+        "root@example.com",
+    )
+    .await
+    .unwrap();
+    let password = created.password.expose().to_owned();
+
+    // First use: a challenge that ends with the forced password change,
+    // never a session.
+    let mut browser = app.browser();
+    let body = browser.login(&app, "root@example.com", &password).await;
+    assert_ne!(body["status"], "authenticated", "{body}");
+    let actions = body["required_actions"].as_array().unwrap();
+    assert!(actions.contains(&json!("change_password")), "{body}");
+    assert!(actions.contains(&json!("enroll_mfa")), "{body}");
+    // PWD-12 mailbox proof: an e-mailed code before the passkey enrollment
+    // (whoever found the printed password alone cannot enroll a passkey).
+    assert_eq!(body["allowed_factors"], json!(["email"]), "{body}");
+    assert_eq!(
+        app.send(browser.get("/v1/me")).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+
+    // Unused for longer than the lifetime: the correct password is refused
+    // exactly like a wrong one.
+    app.advance(Duration::from_secs(24 * 60 * 60 + 1));
+    let attempt = |password: String| {
+        let app = &app;
+        async move {
+            let mut browser = app.browser();
+            browser.csrf(app).await;
+            app.send(browser.post(
+                "/v1/login/password",
+                &json!({"email": "root@example.com", "password": password}),
+            ))
+            .await
+        }
+    };
+    let expired = attempt(password.clone()).await;
+    let expired_error = expired.assert_error(StatusCode::UNAUTHORIZED, "invalid_credentials");
+    let wrong = attempt("not-the-password-at-all".to_owned()).await;
+    let wrong_error = wrong.assert_error(StatusCode::UNAUTHORIZED, "invalid_credentials");
+    assert_eq!(expired_error.message, wrong_error.message);
+}
+
 /// ACC-07 / K-20 / K-68: an attacker who took over the session changes the
 /// address, then adds a passkey, TOTP and a recovery path. The owner's
 /// revert link removes every one of them in the revert transaction, and

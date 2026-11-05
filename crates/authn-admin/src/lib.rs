@@ -38,7 +38,7 @@ pub mod settings;
 mod store;
 
 pub use break_glass::{
-    BreakGlassAdmin, BreakGlassEnrollmentLink, create_break_glass_admin,
+    BREAK_GLASS_PASSWORD_TTL, BreakGlassAdmin, BreakGlassEnrollmentLink, create_break_glass_admin,
     create_break_glass_admin_with_passkey_link,
 };
 pub use guard::{AdminCaller, Denial, authorize, is_phishing_resistant_mfa};

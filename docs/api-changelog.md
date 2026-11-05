@@ -2,6 +2,18 @@
 
 İstemcileri, SDK'ları (K-85) ve operatörleri etkileyen değişiklikler. En yeni en üstte. Her madde neyin değiştiğini, kimin ne yapması gerektiğini ve geriye uyumluluğu söyler.
 
+## Wave 8A (2026-11-05)
+
+### K-120 … K-124 — OpenAPI belgesi düzeltmeleri (yalnızca belge; kablo biçimi değişmedi)
+
+- **Ne değişti:** sunucunun davranışı ve JSON gövdeleri aynı; yalnızca `GET /openapi.json` / `docs/api/openapi.json` artık kodu doğru anlatıyor. OpenAPI'den istemci üretenler istemcilerini yeniden üretmeli:
+  - **Enum değerleri** (K-120): `text_enum!` / `org_text_enum!` ile tanımlı 15 enum şeması (`AuthMethodRef`, `ClientKind`, `FactorKind`, `LoginMethod`, `Permission`, `RequiredAction`, `AccountStatus`, `Locale`, `TermsDocument`, `ApiKeyState`, `DomainStatus`, `InvitationStatus`, `MemberStatus`, `OrgStatus`, `ServiceAccountStatus`) Rust varyant adları yerine kablodaki değerleri listeliyor (`"Pwd"` → `"pwd"`, `"OrgRead"` → `"org:read"`). Önceki belgeden üretilmiş istemciler bu alanları yanlış değerlerle (de)serileştiriyordu; elle düzeltme yaptıysanız kaldırabilirsiniz.
+  - **`operationId` yeniden adlandırmaları** (K-121, üretilen metot adlarını değiştirir): `POST /v1/login/passkey/options` → `login_passkey_options`, `POST /v1/reauth/passkey/options` → `reauth_passkey_options`, `POST /v1/me/deletion/cancel` → `cancel_account_deletion`, `POST /v1/orgs/{org_id}/deletion/cancel` → `cancel_org_deletion` (önceden ikişer işlem `passkey_options` / `cancel_deletion` adını paylaşıyordu).
+  - **Güvenlik şemaları** (K-122): `components.securitySchemes` eklendi (`session_cookie`, `bearer_jwt`, `api_key`, `api_key_bearer`); `POST /v1/token/introspect` `api_key` veya `api_key_bearer` ister.
+  - **`POST /v1/login/password` hata kodları** (K-123): `captcha_required` / `captcha_failed` `403` altında listeleniyor (gerçek durum buydu); `429` yalnızca `rate_limited` / `login_temporarily_blocked`.
+  - **Giriş yanıt şemaları** (K-124): girişi başlatan uçların `200` gövdesi `LoginResponse` (`CredentialsBody` | `ChallengeBody`), challenge adımlarınınki `ChallengeStepResponse` (`ChallengeCompletedBody` | `ChallengeStatusBody`); `status` alanı ayırır. `ChallengeCompletedBody` native yanıttaki `trusted_device_token`'ı ve son adımın `data`'sını belgeliyor.
+- **Kalıcı koruma:** `crates/authn-server/tests/openapi.rs` bu dört sınıf hatayı ve `docs/api/openapi.json`'un kodla farkını CI'da yakalar. Yenileme: [`docs/api/README.md`](api/README.md#openapi-belgesini-yenilemek).
+
 ## Wave 5A (2026-11-05)
 
 ### K-79 — Kişisel veri dışa aktarma artık `POST /v1/me/export` (kırıcı değişiklik)

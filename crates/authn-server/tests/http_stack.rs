@@ -176,7 +176,7 @@ async fn ses_04_csrf_protects_other_modules_behind_the_session_layer(pool: PgPoo
 }
 
 #[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
-async fn crv_09_forged_tokens_are_refused_through_the_stack(pool: PgPool) {
+async fn cry_09_forged_tokens_are_refused_through_the_stack(pool: PgPool) {
     let app = App::new(pool).await;
     // alg none / garbage tokens.
     let none = "eyJhbGciOiJub25lIiwidHlwIjoiYXQrand0In0.eyJzdWIiOiJ4In0.";
@@ -292,4 +292,50 @@ async fn tst_02_webhook_urls_cannot_target_internal_services(pool: PgPool) {
     // A public https URL is accepted.
     let r = app.send(create("https://hooks.example.com/in")).await;
     assert!(r.status.is_success(), "{}", r.text());
+}
+
+/// ARC-08 / OPS-02 (K-114): a panicking handler (a bug, or a panic inside a
+/// dependency) answers a generic `500 internal_error` in the stable error
+/// envelope with the request id, never the panic message, and the response
+/// still carries the security headers (PRT-07) like every other response.
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn arc_08_k114_panicking_handler_yields_a_generic_500_envelope(pool: PgPool) {
+    let app = App::new(pool).await;
+    let extra = Router::new().route(
+        "/v1/test/panic",
+        axum::routing::get(|| async {
+            if std::hint::black_box(true) {
+                panic!("boom: secret-token-4242 at /internal/path.rs");
+            }
+            "unreachable"
+        }),
+    );
+    let router = authn_server::app::build_router_with_routes(
+        authn_server::state::AppState::new(app.services.clone()),
+        extra,
+    )
+    .unwrap();
+    let res = TestRequest::get("/v1/test/panic")
+        .header("host", common::HOST)
+        .accept_language("tr")
+        .send(&router)
+        .await;
+    let err = res.assert_error(StatusCode::INTERNAL_SERVER_ERROR, "internal_error");
+    let body = res.text();
+    for leak in ["boom", "secret-token-4242", "internal/path", "panicked"] {
+        assert!(!body.contains(leak), "{leak} leaked: {body}");
+    }
+    assert!(
+        res.header("content-type")
+            .is_some_and(|v| v.starts_with("application/json")),
+        "{body}"
+    );
+    // Same request id in the envelope and the header; localized message.
+    assert_eq!(err.request_id.as_deref(), res.header("x-request-id"));
+    assert!(err.request_id.is_some());
+    assert_ne!(err.message, "Service panicked");
+    // PRT-07 security headers on the panic response too.
+    assert_eq!(res.header("x-content-type-options"), Some("nosniff"));
+    assert!(res.header("content-security-policy").is_some(), "{body}");
+    assert!(res.header("strict-transport-security").is_some(), "{body}");
 }

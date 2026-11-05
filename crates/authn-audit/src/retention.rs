@@ -174,33 +174,113 @@ pub async fn purge_before(
     Ok(report)
 }
 
-/// Records a `manual` checkpoint at the current chain head and returns it.
-/// Export the logged `(seq, hash)` to a system outside this database: it
-/// detects later truncation or rewriting of the chain
+/// Advisory lock key of the scheduled checkpoint (`'authn-audit-ckpt'`).
+const CHECKPOINT_LOCK_KEY: i64 = 0x6175_6469_7463_6b70;
+
+/// Records a `manual` checkpoint at the current chain head and returns it
+/// (`rust-authentication audit-checkpoint`, K-107). Export the printed /
+/// logged `seq:hash` to a system outside this database: it detects later
+/// truncation or rewriting of the chain
 /// ([`crate::verify::verify_chain_from`]).
+///
+/// Needs `SELECT` on `audit_chain_head` and `INSERT` on
+/// `audit_chain_checkpoints`: the maintenance role (migration 1701).
 pub async fn create_checkpoint(pool: &PgPool, clock: &dyn Clock) -> Result<ChainAnchor, AuthError> {
     let mut tx = pool.begin().await?;
-    let (seq, hash): (i64, Vec<u8>) =
-        sqlx::query_as("SELECT last_seq, last_hash FROM audit_chain_head WHERE id FOR SHARE")
-            .fetch_one(&mut *tx)
-            .await?;
-    let hash = chain::hash_from_slice(&hash)
-        .ok_or_else(|| AuthError::internal("audit chain head hash is malformed"))?;
-    sqlx::query(
-        "INSERT INTO audit_chain_checkpoints (seq, hash, reason, created_at) \
-         VALUES ($1, $2, 'manual', $3) ON CONFLICT (seq) DO NOTHING",
-    )
-    .bind(seq)
-    .bind(hash.as_slice())
-    .bind(clock.now())
-    .execute(&mut *tx)
-    .await?;
+    let Some((anchor, _)) = insert_head_checkpoint(&mut tx, "manual", clock.now()).await? else {
+        return Err(AuthError::internal(
+            "the audit chain is empty; nothing to anchor",
+        ));
+    };
     tx.commit().await?;
-    let anchor = ChainAnchor { seq, hash };
     tracing::info!(
         checkpoint_seq = anchor.seq,
         checkpoint_hash = %anchor.hash_hex(),
+        anchor = %format!("{}:{}", anchor.seq, anchor.hash_hex()),
         "audit chain checkpoint"
     );
     Ok(anchor)
+}
+
+/// The scheduled external anchor (K-107): records a `scheduled` checkpoint
+/// at the chain head unless one was recorded less than `interval` ago, and
+/// logs it (`anchor = "<seq>:<hash>"`, the `verify-audit-chain --anchor`
+/// format) so the log pipeline carries it off the database host.
+///
+/// Safe on several instances: a transaction-scoped advisory lock
+/// serialises the check and the insert, so the instances together write at
+/// most one checkpoint per interval however often each of them calls this.
+/// Returns the new checkpoint, or `None` when none was due (or the head did
+/// not move since the last checkpoint at that `seq`).
+pub async fn create_scheduled_checkpoint(
+    pool: &PgPool,
+    clock: &dyn Clock,
+    interval: Duration,
+) -> Result<Option<ChainAnchor>, AuthError> {
+    let now = clock.now();
+    let interval = time::Duration::try_from(interval)
+        .map_err(|_| AuthError::internal("audit checkpoint interval out of range"))?;
+    let mut tx = pool.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(CHECKPOINT_LOCK_KEY)
+        .execute(&mut *tx)
+        .await?;
+    let last: Option<OffsetDateTime> = sqlx::query_scalar(
+        "SELECT max(created_at) FROM audit_chain_checkpoints WHERE reason = 'scheduled'",
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    if last.is_some_and(|last| last > now - interval) {
+        tx.commit().await?;
+        return Ok(None);
+    }
+    let created = insert_head_checkpoint(&mut tx, "scheduled", now).await?;
+    tx.commit().await?;
+    // An empty chain has nothing to anchor; a head that did not move since
+    // another checkpoint is already anchored by it (try again next time).
+    let Some((anchor, true)) = created else {
+        return Ok(None);
+    };
+    tracing::info!(
+        checkpoint_seq = anchor.seq,
+        checkpoint_hash = %anchor.hash_hex(),
+        anchor = %format!("{}:{}", anchor.seq, anchor.hash_hex()),
+        "audit chain scheduled checkpoint; keep this anchor outside the database"
+    );
+    Ok(Some(anchor))
+}
+
+/// Inserts a checkpoint of the committed chain head; `None` for an empty
+/// chain, otherwise the anchor and whether a new row was written (`false`:
+/// a checkpoint at that `seq` exists already). The head row and the event
+/// it points at are written in the same transaction, so a plain read (no
+/// row lock: the maintenance role has no `UPDATE` on the head) always sees
+/// a matching pair.
+async fn insert_head_checkpoint(
+    tx: &mut sqlx::PgConnection,
+    reason: &'static str,
+    now: OffsetDateTime,
+) -> Result<Option<(ChainAnchor, bool)>, AuthError> {
+    let (seq, hash): (i64, Vec<u8>) =
+        sqlx::query_as("SELECT last_seq, last_hash FROM audit_chain_head WHERE id")
+            .fetch_one(&mut *tx)
+            .await?;
+    if seq == 0 {
+        return Ok(None);
+    }
+    let hash = chain::hash_from_slice(&hash)
+        .ok_or_else(|| AuthError::internal("audit chain head hash is malformed"))?;
+    let inserted = sqlx::query(
+        "INSERT INTO audit_chain_checkpoints (seq, hash, reason, created_at) \
+         VALUES ($1, $2, $3, $4) ON CONFLICT (seq) DO NOTHING",
+    )
+    .bind(seq)
+    .bind(hash.as_slice())
+    .bind(reason)
+    .bind(now)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected()
+        == 1;
+    Ok(Some((ChainAnchor { seq, hash }, inserted)))
 }
