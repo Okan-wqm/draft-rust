@@ -190,6 +190,7 @@ impl SessionService {
                 trusted_device_token,
                 extra_required_actions: Vec::new(),
                 require_mailbox_proof: false,
+                verified_password: None,
             },
         )
         .await

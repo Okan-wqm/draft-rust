@@ -63,7 +63,7 @@ Bu sayılar **mutlak üretim tahmini değildir**. Uygulama ile PostgreSQL aynı 
 | `GET /v1/me` (bearer) | 3,3–3,7 ms | 9–13 ms | 10 ifade |
 | `POST /v1/token/refresh` | 3,1–4,2 ms | 8–17 ms | 10 ifade, tek transaction |
 | `POST /v1/token/introspect` | 1,5–2,3 ms | 4–11 ms | 4 ifade |
-| `POST /v1/login/password` (yerel, Argon2id varsayılan) | 39–40 ms | 59 ms | Argon2id ≈ 23–30 ms + 26 ifade (K-128 öncesi 42; bkz. K-128) |
+| `POST /v1/login/password` (yerel, Argon2id varsayılan) | 39–40 ms | 59 ms | Argon2id ≈ 23–30 ms + 27 ifade (K-128 öncesi 42; bkz. K-128) |
 | `POST /v1/login/passkey` (doğrulama isteği) | 18–31 ms | 45–57 ms | WebAuthn doğrulama, oturum, risk/uyarı, audit |
 | `ratelimit/memory` | 2 µs | 3–9 µs | yalnızca tek örnek |
 | `ratelimit/postgres` | 0,36–0,42 ms | 0,9–4 ms | tek `INSERT … ON CONFLICT … RETURNING` |
@@ -159,13 +159,15 @@ Amaç: girişin veritabanı gidiş-dönüşlerini **hiçbir kontrolü gevşetmed
 
 | Yol | Önce | Sonra | Not |
 |-----|------|-------|-----|
-| `POST /v1/login/password` (başarılı, geri dönen kullanıcı) | 42 | **26** | + 2 `BEGIN` |
+| `POST /v1/login/password` (başarılı, geri dönen kullanıcı) | 42 | **27** | + 2 `BEGIN`; K-128 denetimi: 26 + kilit altında şifre yeniden kontrolü (aşağıda) |
 | `POST /v1/login/password` yanlış şifre | 18 | **10** | + 1 `BEGIN` |
 | `POST /v1/login/password` bilinmeyen hesap | **17** | **10** | önce yanlış şifreden bir ifade **eksikti** (aşağıda) |
 | Soft-lock'lu tanımlayıcı (`check_attempt`) | 4 | **2** | var olan / olmayan aynı |
 | Bir audit olayı (`record_in_tx`) | 5–6 | **3** | kilit altında 2 |
 | Bir audit olayı (`record`, kendi transaction'ı) | 7–8 | **3** + `COMMIT` | `SET LOCAL` `BEGIN` ile tek mesaj |
 | `GET /v1/me`, refresh, introspection, bearer `GET` | 10 / 10 / 4 / 2 | aynı | dokunulmadı |
+
+**K-128 denetimi (+1 ifade):** giriş, şifreden önce okunan hesap satırını yeniden kullanır; şifre kimlik bilgisi ise ayrı bir satırdır. Doğrulama ile `users` satır kilidi arasında tamamlanan bir şifre sıfırlama/değiştirme veya `must_change_password` işareti, eski şifreyle bir oturum (ya da challenge) açtırıyordu — değişikliğin iptal ettiği oturumlardan sonra. Artık kilit alındıktan sonra şifre satırı yeniden okunur ve doğrulanan hash, `must_change` ve geçerlilik sonu aynı değilse giriş `conflict` ile biter (`pwd_09_k128_password_replaced_during_a_login_leaves_no_session`, `pwd_12_k128_must_change_set_during_a_login_is_not_skipped`). Bu ifade kilit altında olmak zorundadır; kilit sorgusuna JOIN ile eklenemez (READ COMMITTED'da kilit beklendikten sonra yalnızca kilitlenen satır tazelenir).
 
 Ayrı veritabanı sunucusunda (0,5 ms RTT) başarılı giriş ≈ 8 ms, başarısız giriş ≈ 4 ms daha hızlı olur (16 / 8 gidiş-dönüş × 0,5 ms).
 
@@ -228,7 +230,7 @@ Hedefler sunucu tarafıdır (istemci ağı hariç), "nominal yükte" (doygunluğ
 | `GET /v1/me` | 10 | 10 ms | 40 ms | 3,5 / 9–13 ms |
 | `POST /v1/token/refresh` | 10 | 10 ms | 40 ms | 3,5 / 8–17 ms |
 | `POST /v1/token/introspect` | 4 | 5 ms | 25 ms | 1,8 / 4–11 ms |
-| `POST /v1/login/password` | 26 | 80 ms | 250 ms | 39–40 / 59 ms |
+| `POST /v1/login/password` | 27 | 80 ms | 250 ms | 39–40 / 59 ms |
 | `POST /v1/login/password` (başarısız) | 10 | 80 ms | 250 ms | — (bilinmeyen hesap ve yanlış şifre aynı 10 ifade) |
 | `POST /v1/login/passkey` | — | 50 ms | 150 ms | 18–31 / 45–57 ms |
 

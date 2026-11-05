@@ -45,7 +45,7 @@ use time::OffsetDateTime;
 use tokio::sync::Semaphore;
 use tokio_util::task::TaskTracker;
 
-pub use self::login::LoginPasswordOutcome;
+pub use self::login::{LoginPasswordOutcome, VerifiedPassword};
 pub use self::reset::ResetProof;
 use crate::hooks::{LoginMethodInventory, ProfileHints, ProfileLookup};
 use crate::policy::PasswordPolicy;

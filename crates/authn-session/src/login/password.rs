@@ -133,10 +133,10 @@ impl SessionService {
             .await
             .inspect_err(|e| metrics::login_failed("password", e.code().code()))?;
 
-        let outcome = self
+        let (outcome, verified_password) = self
             .deps()
             .passwords
-            .verify_login_password(ctx, user_id, &login.password)
+            .verify_login_password_checked(ctx, user_id, &login.password)
             .await?;
         let must_change = match outcome {
             LoginPasswordOutcome::Valid => false,
@@ -176,6 +176,7 @@ impl SessionService {
             // RSK-04 / PWD-12: whoever knows the old password may be the
             // reason it must change; it alone never sets the new one.
             require_mailbox_proof: must_change,
+            verified_password,
         };
         let client_kind = client.kind();
         // The row read above is passed on (K-128): the pipeline re-checks it

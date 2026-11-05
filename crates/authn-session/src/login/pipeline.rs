@@ -64,6 +64,12 @@ pub struct LoginSignals {
     /// e-mailed code first (a password whose change is forced — PWD-12,
     /// RSK-04 "this wasn't me" — may be known to someone else).
     pub require_mailbox_proof: bool,
+    /// The stored password the primary authentication verified: the
+    /// account must still have exactly it (re-checked under the account
+    /// row lock) — a reset, change or `must_change_password` committed
+    /// between the verification and the lock ends the login (PWD-06,
+    /// PWD-09, PWD-12; K-128 audit).
+    pub verified_password: Option<authn_password::VerifiedPassword>,
 }
 
 impl std::fmt::Debug for LoginSignals {
@@ -72,6 +78,7 @@ impl std::fmt::Debug for LoginSignals {
             .field("trusted_device_token", &self.trusted_device_token.is_some())
             .field("extra_required_actions", &self.extra_required_actions)
             .field("require_mailbox_proof", &self.require_mailbox_proof)
+            .field("verified_password", &self.verified_password.is_some())
             .finish()
     }
 }
@@ -88,6 +95,8 @@ pub(crate) struct LoginPlan {
     allowed_factors: Vec<FactorKind>,
     metadata: serde_json::Map<String, serde_json::Value>,
     risk_level: RiskLevel,
+    /// The verified password credential (password logins).
+    verified_password: Option<authn_password::VerifiedPassword>,
 }
 
 impl LoginPlan {
@@ -169,7 +178,8 @@ impl SessionService {
     /// read it again). Safe because the decision is applied only while the
     /// row is locked and still in the state the decision was made for
     /// (`LoginPlan::still_matches`: status, lock, verification, admin flag
-    /// — every field the decision depends on).
+    /// — every field the decision depends on) and, for a password login,
+    /// the verified password is still the stored one (`verified_password`).
     pub(crate) async fn run_login_pipeline_for(
         &self,
         ctx: &RequestContext,
@@ -427,6 +437,7 @@ impl SessionService {
             allowed_factors,
             metadata,
             risk_level: assessment.level,
+            verified_password: signals.verified_password.clone(),
         })
     }
 
@@ -450,6 +461,15 @@ impl SessionService {
         if !plan.still_matches(&user) {
             return Err(AuthError::new(codes::common::CONFLICT)
                 .with_context("the account changed during the sign-in"));
+        }
+        // The password services change the credential while holding this
+        // lock: read now, it is the committed state (K-128 audit).
+        if let Some(verified) = &plan.verified_password {
+            let current = UserRepository::find_password(&mut *tx, user.id).await?;
+            if !verified.is_current(current.as_ref()) {
+                return Err(AuthError::new(codes::common::CONFLICT)
+                    .with_context("the password changed during the sign-in"));
+            }
         }
         let LoginPlan {
             org,

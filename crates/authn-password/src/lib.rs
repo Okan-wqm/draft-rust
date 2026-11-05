@@ -43,5 +43,6 @@ pub use hooks::{
 pub use policy::{PasswordPolicy, PolicySettings};
 pub use routes::{PasswordApi, router};
 pub use service::{
-    LoginPasswordOutcome, PasswordService, PasswordServiceDeps, PasswordServiceSettings, ResetProof,
+    LoginPasswordOutcome, PasswordService, PasswordServiceDeps, PasswordServiceSettings,
+    ResetProof, VerifiedPassword,
 };

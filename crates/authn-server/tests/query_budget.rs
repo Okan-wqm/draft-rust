@@ -63,11 +63,13 @@ mod budget {
     /// account, known device, one limiter chain (login limit, soft lock,
     /// CAPTCHA and soft-lock budgets), password, budget refund; terms,
     /// membership policy, MFA facts (4), risk (familiarity, failure
-    /// counters); one transaction (user lock, session, refresh token, last
-    /// login, audit: pseudonym, head lock, append; commit); domain auto-
-    /// join, profile, device/network record (+ commit). Argon2id dominates
-    /// its latency.
-    pub const LOGIN: usize = 26;
+    /// counters); one transaction (user lock, re-check of the verified
+    /// password under that lock — K-128 audit, a concurrent reset or
+    /// change must end the login —, session, refresh token, last login,
+    /// audit: pseudonym, head lock, append; commit); domain auto-join,
+    /// profile, device/network record (+ commit). Argon2id dominates its
+    /// latency.
+    pub const LOGIN: usize = 27;
     /// A failed password login (wrong password, or an address matching no
     /// account: the same statements, see
     /// `ses_01_k_128_unknown_account_runs_the_statements_of_a_wrong_password`).
