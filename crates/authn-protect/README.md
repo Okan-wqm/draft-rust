@@ -19,7 +19,7 @@ Kötüye kullanım koruması ve HTTP sertleştirmesi: rate limit (bellek / Postg
 | RSK-01 | `risk::DefaultRiskEvaluator` (`RiskEvaluator` portu) | `rsk_01_known_context_is_low_risk_and_input_comes_from_the_request` |
 | RSK-02 | yeni cihaz / ağ (/24, /48), hata hızı, TOR/proxy listesi, imkânsız seyahat (yalnızca `GeoIpLookup` ile) | `rsk_02_new_device_new_network_and_failures_raise_the_level`, `rsk_02_impossible_travel_requires_a_geoip_provider` |
 | RSK-03 | `risk::decide`, `RiskAlerts::on_blocked_login` | `rsk_03_policy_mapping_is_configurable`, `rsk_03_blocked_login_is_audited_and_notified_without_mail_bombing` |
-| RSK-04 | `RiskAlerts::on_successful_login` + `NotMeTokenIssuer` | `rsk_04_new_device_login_sends_notification_with_not_me_token`, `rsk_04_alert_and_device_record_commit_together` |
+| RSK-04 | `RiskAlerts::on_successful_login` + `NotMeTokenIssuer` | `rsk_04_new_device_login_sends_notification_with_not_me_token`, `rsk_04_alert_and_device_record_commit_together`, `aud_03_new_device_audit_metadata_holds_no_free_text` |
 
 DOC-03 (`docs/security/`) dokümantasyon aşamasında üretilecek; bu crate'in güvenlik notları aşağıdadır. PRT-06 (istemci IP'si) `authn-core`'da, PRT-11 (gövde/zaman aşımı/eşzamanlılık) `authn-server`'dadır.
 
@@ -107,7 +107,7 @@ Proof-of-work yanıtı: `SHA-256(challenge ":" solution)` en az `difficulty` sı
 ### Risk (RSK-01…04)
 - Puan: yeni cihaz 1, yeni ağ 1, son hatalar 1, anonimleştirici ağ 2, imkânsız seyahat 3; 0 → low, 1–2 → medium, ≥3 → high. Geçmişi olmayan kullanıcıda (kayıttan sonraki ilk giriş) yenilik sinyali üretilmez. Passkey girişlerinde yenilik ve hata sinyalleri sayılmaz.
 - İmkânsız seyahat yalnızca bir `GeoIpLookup` takılırsa; doğruluk yarıçapları mesafeden düşülür, süre en az 1 dk kabul edilir. GeoIP hatası girişi düşürmez (sinyal atlanır, loglanır).
-- `RiskAlerts::on_successful_login`: cihaz/ağ kaydı, "bu ben değilim" token'ı (session'ın `NotMeTokenIssuer`'ı), `NewDeviceLogin` bildirimi ve `risk.new_device_login` audit'i **tek transaction**'da (biri başarısızsa hiçbiri). Bildirimde IP maskeli, cihaz adı woothee'nin sabit sözlüğünden.
+- `RiskAlerts::on_successful_login`: cihaz/ağ kaydı, "bu ben değilim" token'ı (session'ın `NotMeTokenIssuer`'ı), `NewDeviceLogin` bildirimi ve `risk.new_device_login` audit'i **tek transaction**'da (biri başarısızsa hiçbiri). Bildirimde IP maskeli, cihaz adı woothee'nin sabit sözlüğünden. Audit olayının metadata'sında cihaz açıklaması ("Firefox on Linux") **yok** (wave 6B): AUD-03 serbest metni reddettiği için her yeni cihaz girişi bir sansür uyarısı loglanıyor ve değer `[REDACTED]` saklanıyordu. Açıklama user agent'tan türetilir; user agent kişisel veridir ve yalnızca silinebilir `audit_event_pii` tablosunda tutulur (`with_context`, AUD-05), değişmez zincire girmez. Metadata yalnızca `new_network` taşır.
 - `on_blocked_login`: her blok audit'lenir; kullanıcıya bildirim 15 dk'da en fazla bir (şifreyi bilen saldırgan kurbanı e-postaya boğamaz). `suspicious_login_blocked` yalnızca kimlik bilgisi doğrulandıktan **sonra** döner (SES-01).
 
 ### HTTP sertleştirme (PRT-07…10)

@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // integration-test crate
-//! OPS-10 / K-42: the least-privilege roles of migration 2900
+//! OPS-10 / K-42: the least-privilege roles of migrations 2900 / 2901
 //! (`authn_apply_least_privilege`) — the exact grants, and the whole
 //! application running as the restricted application role with audit
 //! maintenance on the separate maintenance-role pool.
@@ -360,4 +360,106 @@ async fn exec_conn(conn: &mut sqlx::PgConnection, sql: String) {
         .execute(conn)
         .await
         .unwrap();
+}
+
+/// Wave 6B (defence in depth after K-77): neither restricted role can
+/// create temporary objects — the primitive of the `pg_temp` hijack of a
+/// SECURITY DEFINER trigger. `TEMPORARY` is a PUBLIC default, so the
+/// helper revokes it from PUBLIC as well, and refuses a set-up in which a
+/// role still has it through another grant.
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn ops_10_restricted_roles_cannot_create_temporary_objects(pool: PgPool) {
+    let roles = create_roles(&pool).await;
+    let (app, maint) = (roles.app.clone(), roles.maintenance.clone());
+    for role in [&app, &maint] {
+        let role_pool = pool_as(&pool, role, &roles.password).await;
+        for sql in [
+            "CREATE TEMP TABLE audit_chain_checkpoints (seq bigint)",
+            "CREATE FUNCTION pg_temp.planted() RETURNS int LANGUAGE sql AS 'SELECT 1'",
+        ] {
+            let err = sqlx::raw_sql(sql).execute(&role_pool).await.unwrap_err();
+            assert!(
+                err.to_string().contains("permission denied"),
+                "{role}: {err}"
+            );
+        }
+        role_pool.close().await;
+    }
+    let public_temp: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM pg_database d, aclexplode(coalesce(d.datacl, \
+         acldefault('d', d.datdba))) a WHERE d.datname = current_database() \
+         AND a.grantee = 0 AND a.privilege_type = 'TEMPORARY')",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(!public_temp, "PUBLIC keeps TEMPORARY on the database");
+
+    // A role that gets TEMPORARY back through membership is refused.
+    let db: String = sqlx::query_scalar("SELECT current_database()")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let carrier = format!("{app}_tmp");
+    exec(&pool, format!("CREATE ROLE {carrier} NOLOGIN")).await;
+    exec(
+        &pool,
+        format!("GRANT TEMPORARY ON DATABASE \"{db}\" TO {carrier}; GRANT {carrier} TO {app}"),
+    )
+    .await;
+    let err = apply(&pool, &app, &maint).await.unwrap_err();
+    assert!(err.to_string().contains("temporary objects"), "{err}");
+    exec(
+        &pool,
+        format!("REVOKE {carrier} FROM {app}; DROP OWNED BY {carrier}; DROP ROLE {carrier}"),
+    )
+    .await;
+    apply(&pool, &app, &maint).await.unwrap();
+    drop_roles(&pool, &roles).await;
+}
+
+/// Wave 6B audit: `has_database_privilege` only counts privileges a role
+/// *inherits*. A membership granted `WITH INHERIT FALSE` (or a `NOINHERIT`
+/// role) still lets the role `SET ROLE` to the member and create a
+/// temporary table there; the table stays in the session's `pg_temp` after
+/// `RESET ROLE`. The helper must refuse that set-up as well.
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn ops_10_temporary_privilege_through_set_role_is_refused(pool: PgPool) {
+    let roles = create_roles(&pool).await;
+    let (app, maint) = (roles.app.clone(), roles.maintenance.clone());
+    let db: String = sqlx::query_scalar("SELECT current_database()")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let carrier = format!("{app}_set");
+    exec(&pool, format!("CREATE ROLE {carrier} NOLOGIN")).await;
+    exec(
+        &pool,
+        format!(
+            "GRANT TEMPORARY ON DATABASE \"{db}\" TO {carrier}; \
+             GRANT {carrier} TO {app} WITH INHERIT FALSE"
+        ),
+    )
+    .await;
+    // The primitive is real: the role reaches pg_temp through SET ROLE.
+    let app_pool = pool_as(&pool, &app, &roles.password).await;
+    let mut conn = app_pool.acquire().await.unwrap();
+    exec_conn(
+        &mut conn,
+        format!("SET ROLE {carrier}; CREATE TEMP TABLE lp_planted (x int); RESET ROLE"),
+    )
+    .await;
+    drop(conn);
+    app_pool.close().await;
+
+    let result = apply(&pool, &app, &maint).await;
+    exec(
+        &pool,
+        format!("REVOKE {carrier} FROM {app}; DROP OWNED BY {carrier}; DROP ROLE {carrier}"),
+    )
+    .await;
+    let err = result.expect_err("a role reaching TEMPORARY through SET ROLE was accepted");
+    assert!(err.to_string().contains("temporary objects"), "{err}");
+    apply(&pool, &app, &maint).await.unwrap();
+    drop_roles(&pool, &roles).await;
 }

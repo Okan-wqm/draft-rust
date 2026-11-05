@@ -14,7 +14,7 @@ environment = "development"            # production | staging | development | te
 public_base_url = "http://localhost:8080"  # REQUIRED; https in production; only source of e-mailed links
 # bind_addr = "0.0.0.0:8080"
 # metrics_bind_addr = "127.0.0.1:9090" # Prometheus (OPS-04)
-# trusted_proxies = []                 # CIDRs allowed to set X-Forwarded-For (PRT-06)
+# trusted_proxies = []                 # CIDRs allowed to set X-Forwarded-For (PRT-06); IPv4 >= /8, public IPv6 >= /16
 # client_ip_header = "x-forwarded-for" # or "forwarded"
 # default_locale = "en"                # en | tr
 # openapi_enabled = true

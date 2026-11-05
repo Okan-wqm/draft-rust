@@ -13,8 +13,9 @@
 //! 3. Organization status: `suspended` → `403 org_suspended`;
 //!    `pending_deletion` → read permissions and `org:delete` (cancel) only.
 //! 4. Organization policy (ORG-07): IP allow-list for every principal
-//!    (fails closed without a client IP), MFA / phishing-resistant MFA and
-//!    the session lifetime cap for user sessions.
+//!    (fails closed without a client IP), MFA / phishing-resistant MFA, the
+//!    allowed login methods and second factors (K-57) and the session
+//!    lifetime cap for user sessions.
 //! 5. Permission: the role's permissions, intersected with the API key's
 //!    scopes for API-key principals; missing → `403 forbidden`.
 //!
@@ -377,6 +378,29 @@ fn decide_access(
             Err(PolicyViolation::IpNotAllowed) => {
                 return Err(AuthError::new(codes::org::ORG_POLICY_IP_DENIED));
             }
+            Err(
+                PolicyViolation::LoginMethodNotAllowed | PolicyViolation::SecondFactorNotAllowed,
+            ) => {
+                return Err(AuthError::internal("unexpected policy violation"));
+            }
+        }
+        // K-57: how the session was established, on every request — not
+        // only at a login that requested this organization or at the
+        // organization switch (a personal-context session acting here).
+        match policy.check_session_methods(
+            principal.login_method,
+            &principal.mfa_factors,
+            &principal.amr,
+            principal.is_impersonated(),
+        ) {
+            Ok(()) => {}
+            Err(PolicyViolation::LoginMethodNotAllowed) => {
+                return Err(AuthError::new(codes::session::LOGIN_METHOD_NOT_ALLOWED));
+            }
+            Err(_) => {
+                return Err(AuthError::new(codes::org::ORG_POLICY_MFA_REQUIRED)
+                    .with_context("the session's second factor is not allowed here"));
+            }
         }
     }
     // 5. Permission.
@@ -458,6 +482,8 @@ mod tests {
             scopes: vec![],
             impersonation: None,
             is_platform_admin: false,
+            login_method: None,
+            mfa_factors: Vec::new(),
         }
     }
 

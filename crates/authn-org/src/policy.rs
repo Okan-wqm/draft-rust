@@ -12,8 +12,9 @@
 //! authn-org itself enforces the parts that can be checked on every request
 //! inside [`crate::OrgService::authorize`]: IP allow-list (all principals,
 //! API keys included), MFA / phishing-resistant MFA (user sessions, from
-//! `amr`) and the session lifetime cap (time since the last
-//! authentication).
+//! `amr`), the allowed login methods and second factors of the session
+//! (K-57, [`OrgPolicy::check_session_methods`]) and the session lifetime
+//! cap (time since the last authentication).
 
 use std::collections::BTreeSet;
 use std::net::IpAddr;
@@ -91,6 +92,10 @@ pub enum PolicyViolation {
     PhishingResistantRequired,
     /// The last authentication is older than the lifetime cap.
     SessionTooOld,
+    /// The session's primary login method is not allowed (K-57).
+    LoginMethodNotAllowed,
+    /// The second factor behind the session's `mfa` is not allowed (K-57).
+    SecondFactorNotAllowed,
 }
 
 impl OrgPolicy {
@@ -123,6 +128,52 @@ impl OrgPolicy {
         self.allowed_mfa_factors
             .as_ref()
             .is_none_or(|list| list.contains(&factor))
+    }
+
+    /// Checks how a user session was established against the policy
+    /// (ORG-07, SES-17; K-57): its primary login method and the second
+    /// factor behind its `mfa` (K-78: the recorded `mfa_factors`, never
+    /// inferred from `amr`). The same rules as the organization switch of
+    /// authn-session, applied on **every** organization request: a
+    /// session acting on the organization without having activated it is
+    /// held to the policy too.
+    ///
+    /// * login method: an unknown method (`None`) passes only while the
+    ///   policy does not restrict methods; a passkey proven later (step-up,
+    ///   `hwk` / `swk` in `amr`) satisfies a policy that allows passkeys;
+    /// * second factor: only when the policy requires MFA and restricts the
+    ///   factors; a passkey is MFA on its own (SES-21).
+    ///
+    /// Impersonation sessions (`impersonated`) are exempt: they carry the
+    /// admin's authentication, not the user's (ADM-04).
+    pub fn check_session_methods(
+        &self,
+        login_method: Option<LoginMethod>,
+        mfa_factors: &[FactorKind],
+        amr: &[AuthMethodRef],
+        impersonated: bool,
+    ) -> Result<(), PolicyViolation> {
+        if impersonated {
+            return Ok(());
+        }
+        let passkey = amr
+            .iter()
+            .any(|a| matches!(a, AuthMethodRef::Hwk | AuthMethodRef::Swk));
+        let method_allowed = match login_method {
+            Some(method) => self.allows_login_method(method),
+            None => self.allowed_login_methods.is_none(),
+        };
+        if !method_allowed && !(passkey && self.allows_login_method(LoginMethod::Passkey)) {
+            return Err(PolicyViolation::LoginMethodNotAllowed);
+        }
+        if let Some(allowed) = &self.allowed_mfa_factors
+            && (self.mfa_required || self.phishing_resistant_mfa_required)
+            && !passkey
+            && !mfa_factors.iter().any(|f| allowed.contains(f))
+        {
+            return Err(PolicyViolation::SecondFactorNotAllowed);
+        }
+        Ok(())
     }
 
     /// The session lifetime cap.
@@ -514,6 +565,70 @@ mod tests {
         // A synced passkey alone is MFA (SES-21).
         assert!(
             p.check_session(&[AuthMethodRef::Swk], Some(now()), now())
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn org_07_k57_login_method_and_second_factor_of_the_session_are_checked() {
+        use AuthMethodRef::{Hwk, Mfa, Otp, Pwd};
+        let open = OrgPolicy::default();
+        assert!(open.check_session_methods(None, &[], &[Pwd], false).is_ok());
+
+        let passkey_only = OrgPolicy {
+            allowed_login_methods: Some(vec![LoginMethod::Passkey]),
+            ..OrgPolicy::default()
+        };
+        let password = Some(LoginMethod::Password);
+        assert_eq!(
+            passkey_only.check_session_methods(password, &[], &[Pwd], false),
+            Err(PolicyViolation::LoginMethodNotAllowed)
+        );
+        // Unknown method (unchecked bearer token): refused when restricted.
+        assert_eq!(
+            passkey_only.check_session_methods(None, &[], &[Pwd], false),
+            Err(PolicyViolation::LoginMethodNotAllowed)
+        );
+        // A passkey proven later (step-up) satisfies a passkey policy.
+        assert!(
+            passkey_only
+                .check_session_methods(password, &[], &[Pwd, Hwk, Mfa], false)
+                .is_ok()
+        );
+        // Impersonation carries the admin's authentication (ADM-04).
+        assert!(
+            passkey_only
+                .check_session_methods(None, &[], &[], true)
+                .is_ok()
+        );
+
+        let webauthn_mfa = OrgPolicy {
+            mfa_required: true,
+            allowed_mfa_factors: Some(vec![FactorKind::Webauthn]),
+            ..OrgPolicy::default()
+        };
+        assert_eq!(
+            webauthn_mfa.check_session_methods(
+                password,
+                &[FactorKind::Totp],
+                &[Pwd, Otp, Mfa],
+                false
+            ),
+            Err(PolicyViolation::SecondFactorNotAllowed)
+        );
+        assert!(
+            webauthn_mfa
+                .check_session_methods(password, &[FactorKind::Webauthn], &[Pwd, Mfa], false)
+                .is_ok()
+        );
+        // Factor restrictions apply only where MFA is required.
+        let restricted_but_optional = OrgPolicy {
+            allowed_mfa_factors: Some(vec![FactorKind::Webauthn]),
+            ..OrgPolicy::default()
+        };
+        assert!(
+            restricted_but_optional
+                .check_session_methods(password, &[FactorKind::Totp], &[Pwd, Otp, Mfa], false)
                 .is_ok()
         );
     }

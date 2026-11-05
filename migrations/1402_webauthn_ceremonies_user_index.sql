@@ -1,0 +1,19 @@
+-- no-transaction
+-- K-70 / wave 6B (authn-webauthn, range 1400-1499): index the referencing
+-- column of a foreign key of webauthn_ceremonies.
+-- Deleting a user (account erasure, ACC-09; purge of unverified
+-- placeholders, ACC-05) cascades to the user's ceremonies.
+-- Without the index every delete of a referenced row scans the whole
+-- ceremony table once per row (the FK action has to find the referencing
+-- ceremonies). Partial: the column is NULL for most ceremonies, and the FK
+-- action only ever looks for non-NULL values.
+--
+-- CONCURRENTLY: no write lock on a live table; it cannot run inside a
+-- transaction, hence the no-transaction marker and one statement per file.
+-- If it is interrupted (deploy killed mid-build, statement timeout, deadlock
+-- with a second instance migrating at the same time), PostgreSQL leaves an
+-- INVALID index behind and the migration is not recorded. No IF NOT EXISTS
+-- on purpose: it would skip over the INVALID index and record the migration
+-- as applied; the re-run fails with "already exists" instead. Then drop it
+-- (DROP INDEX CONCURRENTLY webauthn_ceremonies_user_idx;) and run the migrations again.
+CREATE INDEX CONCURRENTLY webauthn_ceremonies_user_idx ON webauthn_ceremonies (user_id) WHERE user_id IS NOT NULL;

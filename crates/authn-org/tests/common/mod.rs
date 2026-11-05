@@ -12,8 +12,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use authn_core::domain::{
-    AccountStatus, AuthMethodRef, EmailAddress, Impersonation, Locale, Principal,
-    PrincipalCredential, Subject,
+    AccountStatus, AuthMethodRef, EmailAddress, FactorKind, Impersonation, Locale, LoginMethod,
+    Principal, PrincipalCredential, Subject,
 };
 use authn_core::http::RequestContext;
 use authn_core::id::{MembershipId, OrgId, RequestId, RoleId, SessionId, UserId};
@@ -117,6 +117,9 @@ impl Harness {
             scopes: vec![],
             impersonation: None,
             is_platform_admin: false,
+            // As authn-session records it for a password login (K-57).
+            login_method: Some(LoginMethod::Password),
+            mfa_factors: Vec::new(),
         }
     }
 
@@ -135,6 +138,7 @@ impl Harness {
     pub fn with_mfa(&self, user: UserId) -> Principal {
         let mut p = self.fresh(user);
         p.amr = vec![AuthMethodRef::Pwd, AuthMethodRef::Otp, AuthMethodRef::Mfa];
+        p.mfa_factors = vec![FactorKind::Totp];
         p
     }
 

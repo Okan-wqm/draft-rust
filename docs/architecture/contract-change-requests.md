@@ -519,6 +519,7 @@ Dalga A'nın tüm talepleri işlendi; her kaydın **Durum** satırı güncellend
 - **Değişiklik:** migration `1703_audit_keyed_chain.sql`. Kırıcı imzalar (aynı dalgada tüm çağıranlar güncellendi): `verify_chain(pool, &ChainKeys)`, `verify_chain_from(pool, &ChainKeys, anchor)`, `purge_before(pool, &ChainKeys, …)`, `purge_expired(pool, &ChainKeys, …)`, `AuditServiceParts.chain_keys`. Üretim yazıcısı `PgAuditSink::keyed`. `PgAuditSink::new` anahtarsızdır ve yalnızca testler içindir.
 - **Mimardan istenen:** contracts §6 migration tablosuna `1703` (audit) ve `2002` (session, K-78) satırları. §15 admin satırına `audit_chain_keys`. §15 CLI notuna `verify-audit-chain` (anahtarlarla, `--anchor`, `--legacy-until-seq`) ve `rotate-audit-chain-key`. Ayrıntı: `crates/authn-audit/README.md` "K-77: anahtarlı zincir", `docs/handoff/module-apis.md` §6.
 - **Geriye uyumluluk:** eski satırlar değişmez ve eski kuralla doğrulanır. Admin doğrulama yanıtına yalnızca alan eklendi.
+- **Mimar tarafı (wave 6B, 2026-11-05) — İşlendi:** contracts §6 migration tablosuna `1703`, `2002` (ve eksik kalan `1701`, `1702`, `2001`, `2202`, `2050`–`2053`) eklendi. §15.3 admin satırına `audit_chain_keys`, §15.6'ya `verify-audit-chain` (`--anchor`, `--legacy-until-seq`), `rotate-audit-chain-key` ve K-76'nın `grant-admin` / `revoke-admin` komutları yazıldı. K-77'de bulunan `pg_temp` ele geçirmesine karşı derinlemesine savunma: migration `2901` (en az yetkili roller geçici nesne oluşturamaz).
 
 ## authn-notify
 

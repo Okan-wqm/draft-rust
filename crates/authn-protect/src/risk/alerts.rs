@@ -130,7 +130,10 @@ impl RiskAlerts {
                 .with_context(ctx)
                 .with_actor(Actor::User(user))
                 .with_subject(user)
-                .with_meta("device", observation.device_name.clone())
+                // No device description in the metadata (AUD-03, AUD-05):
+                // it is free text derived from the user agent, which is
+                // personal data kept in the erasable `audit_event_pii`
+                // (`with_context` above), never in the immutable chain.
                 .with_meta("new_network", novelty.new_network);
             self.audit.record_in_tx(&mut tx, event).await?;
         }

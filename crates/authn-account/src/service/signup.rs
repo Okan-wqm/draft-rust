@@ -63,6 +63,10 @@ const CAPTCHA_ACTION: &str = "register";
 const MAX_CAPTCHA_RESPONSE_BYTES: usize = 8192;
 /// Most `accepted_terms` entries accepted in one request.
 const MAX_TERMS_ENTRIES: usize = 8;
+/// Budget decisions per sign-up job when the address keeps changing
+/// between the unlocked pre-read and the locked read (see
+/// `AccountService::process_signup`).
+const MAX_SIGNUP_ATTEMPTS: u32 = 3;
 
 /// Everything the background part needs (validated values only).
 struct SignupWork {
@@ -267,18 +271,43 @@ impl AccountService {
     /// budget, resend cooldown) is taken *before* the transaction opens —
     /// the production limiter needs a pooled connection of its own, and the
     /// transaction already holds one (plus the address lock). The decision
-    /// is based on an unlocked pre-read of the address; if the locked read
-    /// disagrees (a concurrent sign-up), no budget was taken for that
-    /// branch and its e-mail is withheld (fail closed: never more mail than
-    /// the budget allows).
+    /// is based on an unlocked pre-read of the address. If the locked read
+    /// disagrees about whether the address is free (a concurrent first
+    /// sign-up created the placeholder, or the placeholder was purged in
+    /// between), the transaction is rolled back and the budget decided
+    /// again for what the address is now — otherwise the registration
+    /// would be stored without its verification e-mail (wave 6B, ACC-02).
+    /// After [`MAX_SIGNUP_ATTEMPTS`] disagreements the last decision stands
+    /// and the e-mail is withheld (fail closed: never more mail than the
+    /// budget allows).
     async fn process_signup(&self, work: SignupWork) -> Result<(), AuthError> {
-        let now = self.now();
-        let budget = self.signup_budget(&work, now).await?;
-        let mut tx = self.begin().await?;
-        lock_email(tx.conn(), work.email.normalized()).await?;
-        let existing = UserRepository::find_by_email(tx.conn(), &work.email).await?;
-        let reserved_by =
-            ReservationRepository::active_owner(tx.conn(), work.email.normalized(), now).await?;
+        let mut attempt = 1;
+        let (tx, existing, reserved_by, budget) = loop {
+            let now = self.now();
+            let budget = self.signup_budget(&work, now).await?;
+            let mut tx = self.begin().await?;
+            lock_email(tx.conn(), work.email.normalized()).await?;
+            let existing = UserRepository::find_by_email(tx.conn(), &work.email).await?;
+            let reserved_by =
+                ReservationRepository::active_owner(tx.conn(), work.email.normalized(), now)
+                    .await?;
+            let free = existing.is_none() && reserved_by.is_none();
+            if free == budget.first_send {
+                break (tx, existing, reserved_by, budget);
+            }
+            if attempt >= MAX_SIGNUP_ATTEMPTS {
+                tracing::warn!(
+                    attempts = attempt,
+                    "address changed between every budget decision and its lock; \
+                     its e-mail may be withheld"
+                );
+                break (tx, existing, reserved_by, budget);
+            }
+            // No connection may be held while the budget is decided again.
+            tx.rollback().await?;
+            attempt += 1;
+        };
+        let mut tx = tx;
         match (existing, reserved_by) {
             (None, None) => match self.create_account(tx, &work, budget.first_send).await {
                 Err(err) if is_email_conflict(&err) => {

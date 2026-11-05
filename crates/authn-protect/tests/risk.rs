@@ -528,3 +528,48 @@ async fn rsk_03_blocked_login_is_audited_and_notified_without_mail_bombing(pool:
         serde_json::json!(["impossible_travel"])
     );
 }
+
+/// Wave 6B: the `risk.new_device_login` audit event carried the
+/// human-readable device description ("Firefox on Linux") as metadata. The
+/// audit sink refuses free text (AUD-03), so every new-device login logged
+/// a redaction warning and stored `[REDACTED]`. The description is derived
+/// from the user agent, which is personal data kept only in the erasable
+/// PII table (AUD-05): it does not belong in the immutable metadata at all.
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn aud_03_new_device_audit_metadata_holds_no_free_text(pool: PgPool) {
+    let f = Fixture::new(&pool);
+    let user = f.user("g@example.com").await;
+    let alerts = f.alerts(f.evaluator(None));
+    let not_me = FakeNotMe::default();
+    let ctx = RequestContext::system(Locale::En);
+    for (ip, agent) in [(ISTANBUL_IP, LAPTOP), (LONDON_IP, PHONE)] {
+        alerts
+            .on_successful_login(
+                &f.input(user, ip, Some(agent)),
+                recipient(user),
+                Locale::En,
+                &not_me,
+                &ctx,
+            )
+            .await
+            .unwrap();
+        f.ports.clock.advance(Duration::from_secs(86_400));
+    }
+    let audited = f.ports.audit.of_kind(SecurityEventKind::NewDeviceLogin);
+    assert_eq!(audited.len(), 1);
+    let meta = &audited[0].metadata;
+    // Only codes and booleans: nothing the AUD-03 sanitizer would redact,
+    // nothing derived from the user agent.
+    assert_eq!(
+        meta.keys().map(String::as_str).collect::<Vec<_>>(),
+        vec!["new_network"],
+        "{meta:?}"
+    );
+    assert_eq!(meta.get("new_network"), Some(&serde_json::json!(true)));
+    // The notification keeps the human-readable description.
+    let sent = f.ports.notifier.with_template("new_device_login");
+    let NotificationKind::NewDeviceLogin { device, .. } = &sent[0].kind else {
+        panic!("wrong kind")
+    };
+    assert_eq!(device, "Firefox on Linux");
+}

@@ -550,6 +550,8 @@ impl Harness {
             scopes: vec![],
             impersonation: None,
             is_platform_admin,
+            login_method: None,
+            mfa_factors: Vec::new(),
         }
     }
 

@@ -446,6 +446,8 @@ impl Harness {
             scopes: vec![],
             impersonation: None,
             is_platform_admin: false,
+            login_method: None,
+            mfa_factors: Vec::new(),
         }
     }
 
@@ -484,6 +486,14 @@ impl Harness {
     pub async fn set_policy(&self, owner: UserId, org: OrgId, input: OrgPolicyInput) {
         let mut principal = self.fresh(owner);
         principal.amr = vec![AuthMethodRef::Hwk, AuthMethodRef::User, AuthMethodRef::Mfa];
+        // A login method the new policy allows (K-57 lock-out guard).
+        principal.login_method = Some(
+            input
+                .allowed_login_methods
+                .as_ref()
+                .and_then(|methods| methods.first().copied())
+                .unwrap_or(authn_core::domain::LoginMethod::Passkey),
+        );
         self.orgs
             .update_policy(
                 &self.ctx_from("198.51.100.7".parse().unwrap(), None),

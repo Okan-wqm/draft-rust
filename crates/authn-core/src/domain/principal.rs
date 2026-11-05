@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::domain::AuthMethodRef;
+use crate::domain::{AuthMethodRef, FactorKind, LoginMethod};
 use crate::error::{AuthError, codes};
 use crate::id::{ApiKeyId, OrgId, ServiceAccountId, SessionId, UserId};
 
@@ -94,6 +94,17 @@ pub struct Principal {
     pub impersonation: Option<Impersonation>,
     /// Platform administrator (ADM-01).
     pub is_platform_admin: bool,
+    /// Primary login method of the session (SES-17, ORG-07: organizations
+    /// restrict it). `None` for API keys, impersonation sessions and bearer
+    /// tokens verified without the live session check — an organization
+    /// that restricts login methods refuses an unknown method (K-57).
+    #[serde(default)]
+    pub login_method: Option<LoginMethod>,
+    /// Second-factor kinds verified for the session at login or step-up
+    /// (K-78); organizations restricting their MFA factors check these
+    /// (ORG-07, K-57). Empty for API keys and unchecked bearer tokens.
+    #[serde(default)]
+    pub mfa_factors: Vec<FactorKind>,
 }
 
 impl Principal {
@@ -211,6 +222,8 @@ mod tests {
             scopes: vec![],
             impersonation: None,
             is_platform_admin: false,
+            login_method: None,
+            mfa_factors: Vec::new(),
         }
     }
 

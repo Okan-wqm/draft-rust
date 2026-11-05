@@ -211,6 +211,8 @@ mod tests {
             scopes: vec![],
             impersonation: None,
             is_platform_admin: true,
+            login_method: None,
+            mfa_factors: Vec::new(),
         }
     }
 

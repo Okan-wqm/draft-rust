@@ -325,6 +325,8 @@ fn challenge_principal(state: &ChallengeState) -> Principal {
         auth_time: state.first_factor_at,
         scopes: Vec::new(),
         is_platform_admin: false,
+        login_method: state.primary_method,
+        mfa_factors: state.mfa_factors.clone(),
         impersonation: None,
     }
 }

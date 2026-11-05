@@ -597,6 +597,92 @@ mod tests {
         assert!(!fixed.iter().any(|p| p.starts_with(key)), "{fixed:?}");
     }
 
+    /// K-57 F1 (PRT-06): a catch-all `trusted_proxies` entry trusts every
+    /// TCP peer and every forwarding hop, so the client IP becomes the
+    /// left-most `X-Forwarded-For` value — chosen by the client. Per-IP
+    /// rate limits, lock-out keys, risk signals, audit IPs and every
+    /// organization IP allow-list (ORG-07) would trust a spoofed address.
+    /// Refused in every environment.
+    #[test]
+    fn prt_06_k57_catch_all_trusted_proxies_are_refused() {
+        for environment in ["production", "staging", "development", "test"] {
+            for net in ["0.0.0.0/0", "::/0"] {
+                let toml = with_environment(environment, "").replace(
+                    "public_base_url = \"http://localhost:8080\"",
+                    &format!(
+                        "public_base_url = \"http://localhost:8080\"\ntrusted_proxies = [\"10.0.0.0/8\", \"{net}\"]"
+                    ),
+                );
+                let found = problems(&toml);
+                assert!(
+                    found
+                        .iter()
+                        .any(|p| p.starts_with("server.trusted_proxies[1]")),
+                    "{environment} {net}: {found:?}"
+                );
+            }
+        }
+        let fine = with_environment("development", "").replace(
+            "public_base_url = \"http://localhost:8080\"",
+            "public_base_url = \"http://localhost:8080\"\ntrusted_proxies = [\"10.0.0.0/8\", \"fd00::/8\"]",
+        );
+        assert!(
+            !problems(&fine)
+                .iter()
+                .any(|p| p.starts_with("server.trusted_proxies")),
+            "{:?}",
+            problems(&fine)
+        );
+    }
+
+    /// K-57 F1 re-audit (PRT-06): the catch-all check alone is bypassed by
+    /// splitting the address space (`0.0.0.0/1` + `128.0.0.0/1`, `::/1` +
+    /// `8000::/1`) or by any other near-catch-all covering large parts of
+    /// the public internet. Real proxy ranges (private networks, published
+    /// load-balancer / CDN ranges) are never shorter than an IPv4 `/8` or a
+    /// global IPv6 `/16`; the private IPv6 ranges (`fc00::/7`,
+    /// `fe80::/10`) stay allowed.
+    #[test]
+    fn prt_06_k57_near_catch_all_trusted_proxies_are_refused() {
+        let with = |nets: &str| {
+            with_environment("production", "").replace(
+                "public_base_url = \"http://localhost:8080\"",
+                &format!("public_base_url = \"http://localhost:8080\"\ntrusted_proxies = [{nets}]"),
+            )
+        };
+        for nets in [
+            "\"0.0.0.0/1\", \"128.0.0.0/1\"",
+            "\"::/1\", \"8000::/1\"",
+            "\"0.0.0.0/4\"",
+            "\"64.0.0.0/7\"",
+            "\"2000::/3\"",
+            "\"2001::/15\"",
+        ] {
+            let found = problems(&with(nets));
+            assert!(
+                found
+                    .iter()
+                    .any(|p| p.starts_with("server.trusted_proxies[0]")),
+                "{nets}: {found:?}"
+            );
+        }
+        for nets in [
+            "\"10.0.0.0/8\", \"172.16.0.0/12\", \"192.168.0.0/16\", \"100.64.0.0/10\"",
+            "\"fc00::/7\", \"fe80::/10\", \"fd00::/8\"",
+            // Published CDN ranges (Cloudflare).
+            "\"104.16.0.0/13\", \"2a06:98c0::/29\", \"2400:cb00::/32\"",
+            "\"127.0.0.1/32\", \"::1/128\"",
+        ] {
+            let found = problems(&with(nets));
+            assert!(
+                !found
+                    .iter()
+                    .any(|p| p.starts_with("server.trusted_proxies")),
+                "{nets}: {found:?}"
+            );
+        }
+    }
+
     #[test]
     fn ses_08_k58_session_check_cannot_be_switched_off_in_production() {
         let off = |environment: &str| {

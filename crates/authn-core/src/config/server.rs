@@ -193,6 +193,19 @@ impl ServerConfig {
             "server.log_filter",
             "must not be empty",
         );
+        // K-57 (PRT-06): a catch-all entry trusts every peer and every
+        // forwarding hop; the client IP would be whatever the client writes
+        // into the forwarding header (rate limits, risk, audit and
+        // organization IP allow-lists all depend on it). Near-catch-alls
+        // (`0.0.0.0/1` + `128.0.0.0/1`, `2000::/3`…) are refused as well.
+        for (i, net) in self.trusted_proxies.iter().enumerate() {
+            p.require(
+                !is_overly_broad_proxy_range(net),
+                &format!("server.trusted_proxies[{i}]"),
+                "is too broad (IPv4 shorter than /8 or public IPv6 shorter than /16): \
+                 the client IP would be spoofable",
+            );
+        }
         for origin in &self.admin_console_origins {
             p.require(
                 is_origin(origin),
@@ -227,6 +240,26 @@ impl ServerConfig {
             trusted_proxies: self.trusted_proxies.clone(),
             client_ip_header: self.client_ip_header,
             default_locale: self.default_locale,
+        }
+    }
+}
+
+/// Whether a `trusted_proxies` entry covers far more than any proxy
+/// deployment (K-57, PRT-06): an IPv4 network shorter than `/8` (no private
+/// range is larger; published load-balancer and CDN ranges are far
+/// narrower) or an IPv6 network shorter than `/16` outside the private
+/// ranges `fc00::/7` (unique local) and `fe80::/10` (link-local). Splitting
+/// the address space (`0.0.0.0/1` + `128.0.0.0/1`) is caught entry by entry.
+fn is_overly_broad_proxy_range(net: &IpNet) -> bool {
+    match net {
+        IpNet::V4(v4) => v4.prefix_len() < 8,
+        IpNet::V6(v6) => {
+            let private = |range: &str| {
+                range
+                    .parse::<ipnet::Ipv6Net>()
+                    .is_ok_and(|range| range.contains(v6))
+            };
+            v6.prefix_len() < 16 && !private("fc00::/7") && !private("fe80::/10")
         }
     }
 }

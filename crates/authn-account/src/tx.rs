@@ -57,4 +57,10 @@ impl AccountTx {
         self.flush_audit().await?;
         authn_store::commit(self.tx).await
     }
+
+    /// Rolls back, discarding the queued audit events.
+    pub(crate) async fn rollback(self) -> Result<(), AuthError> {
+        self.tx.rollback().await?;
+        Ok(())
+    }
 }

@@ -120,6 +120,8 @@ impl SessionRecord {
             // An impersonated principal never carries platform-admin rights.
             is_platform_admin: user_is_platform_admin && impersonation.is_none(),
             impersonation,
+            login_method: self.login_method,
+            mfa_factors: self.mfa_factors.clone(),
         }
     }
 }

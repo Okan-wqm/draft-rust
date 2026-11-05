@@ -141,12 +141,27 @@ impl SessionService {
         if session_id != current.record.id {
             return Err(AuthError::new(codes::common::UNAUTHENTICATED));
         }
+        // K-57: authn-org checks the session's login method and second
+        // factors on every organization request. A bearer principal
+        // verified without the live session check carries neither; the
+        // switch reads them from the stored session (as below).
+        let mut checked = principal.clone();
+        if checked.login_method.is_none()
+            && target.is_some()
+            && let Some(live) = sessions::find_live_by_id(self.pool(), session_id, self.now())
+                .await?
+                .filter(|live| live.record.user_id == user)
+        {
+            checked.login_method = live.record.login_method;
+            checked.mfa_factors =
+                super::authenticate::factors_proven_by(&live.record.mfa_factors, &principal.amr);
+        }
         let policy = match target {
             None => None,
             Some(org) => Some(
                 self.deps()
                     .orgs
-                    .check_membership(principal, org, Some(ctx.client_ip))
+                    .check_membership(&checked, org, Some(ctx.client_ip))
                     .await?
                     .policy,
             ),

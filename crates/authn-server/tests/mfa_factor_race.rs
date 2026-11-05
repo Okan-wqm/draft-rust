@@ -109,6 +109,8 @@ fn principal(app: &App, user: UserId) -> Principal {
         scopes: vec![],
         impersonation: None,
         is_platform_admin: false,
+        login_method: None,
+        mfa_factors: Vec::new(),
     }
 }
 

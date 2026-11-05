@@ -12,11 +12,14 @@
 //!   also still be active and match the token (owner, active organization),
 //!   so a revocation takes effect on the next request. The principal keeps
 //!   the token's own `amr` / `auth_time`: a token minted before a step-up
-//!   never benefits from it. Without the check, revocation takes effect
+//!   never benefits from it (its recorded second factors are limited to
+//!   those its `amr` proves, K-57). Without the check, revocation takes effect
 //!   when the token expires (≤ `access_token_ttl`) and the principal never
 //!   carries platform-admin rights.
 
-use authn_core::domain::{ClientKind, Impersonation, Principal, PrincipalCredential, Subject};
+use authn_core::domain::{
+    AuthMethodRef, ClientKind, FactorKind, Impersonation, Principal, PrincipalCredential, Subject,
+};
 use authn_core::error::{AuthError, codes};
 use authn_core::http::RequestContext;
 use authn_core::id::UserId;
@@ -190,6 +193,8 @@ impl SessionService {
                 impersonation,
                 // Platform-admin rights need the live session check.
                 is_platform_admin: false,
+                login_method: None,
+                mfa_factors: Vec::new(),
             };
             let record = SessionRecord {
                 id: verified.session_id,
@@ -246,6 +251,10 @@ impl SessionService {
         principal.amr.clone_from(&claims.amr);
         principal.acr.clone_from(&claims.acr);
         principal.auth_time = Some(auth_time);
+        // K-57 re-audit: the recorded second factors are the session's,
+        // possibly from a step-up after this token was minted; keep only
+        // those the token's own `amr` proves (never more than it carried).
+        principal.mfa_factors = factors_proven_by(&live.record.mfa_factors, &claims.amr);
         Ok(Authenticated {
             principal,
             session: CurrentSession {
@@ -257,6 +266,30 @@ impl SessionService {
             },
         })
     }
+}
+
+/// The recorded second factors (K-78) of a session that an access token
+/// with `amr` proves: a factor recorded by a step-up after the token was
+/// minted is not in the token's `amr` and is dropped, so a token never
+/// benefits from a later step-up (organization factor policies, ORG-07 /
+/// K-57). Only ever removes factors.
+pub(crate) fn factors_proven_by(
+    mfa_factors: &[FactorKind],
+    amr: &[AuthMethodRef],
+) -> Vec<FactorKind> {
+    mfa_factors
+        .iter()
+        .copied()
+        .filter(|&kind| match kind {
+            // authn-webauthn reports `hwk` or `swk` (synced credential).
+            FactorKind::Webauthn => amr
+                .iter()
+                .any(|a| matches!(a, AuthMethodRef::Hwk | AuthMethodRef::Swk)),
+            _ => authn_mfa::amr::for_factor(kind)
+                .iter()
+                .all(|a| amr.contains(a)),
+        })
+        .collect()
 }
 
 /// Whether `session` is a live, non-impersonation session of `user` at

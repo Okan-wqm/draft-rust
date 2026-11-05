@@ -214,6 +214,8 @@ pub fn user_principal(user: UserId, auth_time: Option<OffsetDateTime>) -> Princi
         scopes: vec![],
         impersonation: None,
         is_platform_admin: false,
+        login_method: None,
+        mfa_factors: Vec::new(),
     }
 }
 
@@ -242,5 +244,7 @@ pub fn service_account_principal(sa: ServiceAccountId, org: OrgId) -> Principal 
         scopes: vec!["webhooks:manage".into()],
         impersonation: None,
         is_platform_admin: false,
+        login_method: None,
+        mfa_factors: Vec::new(),
     }
 }

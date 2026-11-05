@@ -3,12 +3,16 @@
 //! Changing the policy needs `policies:manage` **and** step-up, is audited
 //! (`org.policy_changed` with the old and new values) and refuses changes
 //! that would lock the caller out (`org_policy_lockout`: the caller's IP
-//! outside the new allow-list, or the caller's session not meeting a new
-//! MFA requirement). A tightening change revokes every session whose
+//! outside the new allow-list, the caller's session not meeting a new
+//! MFA requirement, or — K-57 — its login method or second factor no
+//! longer allowed). A tightening change revokes every session whose
 //! active organization is this one, so everybody re-authenticates under the
 //! new rules (authn-session enforces login methods and lifetimes at login /
-//! organization switch; [`crate::OrgService::authorize`] enforces IP, MFA
-//! and lifetime on every organization request).
+//! organization switch; [`crate::OrgService::authorize`] enforces IP, MFA,
+//! allowed login methods and second factors (K-57) and lifetime on every
+//! organization request — so a member session that never activated the
+//! organization, and therefore was not revoked here, is held to the new
+//! rules as well).
 
 use authn_core::domain::{Principal, PrincipalCredential};
 use authn_core::error::{AuthError, codes};
@@ -60,7 +64,31 @@ impl OrgService {
                     return Err(AuthError::new(codes::org::ORG_POLICY_LOCKOUT)
                         .with_details(serde_json::json!({ "reason": "mfa" })));
                 }
-                Ok(()) | Err(PolicyViolation::SessionTooOld | PolicyViolation::IpNotAllowed) => {}
+                Ok(())
+                | Err(
+                    PolicyViolation::SessionTooOld
+                    | PolicyViolation::IpNotAllowed
+                    | PolicyViolation::LoginMethodNotAllowed
+                    | PolicyViolation::SecondFactorNotAllowed,
+                ) => {}
+            }
+            // K-57: organization requests now check the session's login
+            // method and second factor too; never shut out the caller.
+            match policy.check_session_methods(
+                principal.login_method,
+                &principal.mfa_factors,
+                &principal.amr,
+                principal.is_impersonated(),
+            ) {
+                Ok(()) => {}
+                Err(PolicyViolation::LoginMethodNotAllowed) => {
+                    return Err(AuthError::new(codes::org::ORG_POLICY_LOCKOUT)
+                        .with_details(serde_json::json!({ "reason": "login_method" })));
+                }
+                Err(_) => {
+                    return Err(AuthError::new(codes::org::ORG_POLICY_LOCKOUT)
+                        .with_details(serde_json::json!({ "reason": "mfa" })));
+                }
             }
         }
         let previous = auth.policy.clone();

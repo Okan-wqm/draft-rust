@@ -412,6 +412,129 @@ async fn acc_02_concurrent_registrations_for_the_same_address_yield_one_account(
     );
 }
 
+/// Takes the per-address lock of the sign-up job in a transaction of the
+/// test, so that the job's unlocked pre-read happens before the address
+/// changes and its locked read after.
+async fn hold_address_lock(
+    pool: &PgPool,
+    email: &str,
+) -> sqlx::Transaction<'static, sqlx::Postgres> {
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(format!("authn:account:email:{email}"))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx
+}
+
+/// Waits until a sign-up job is blocked on the address lock (its pre-read
+/// is done).
+async fn wait_for_lock_waiter(pool: &PgPool) {
+    for _ in 0..500 {
+        let (waiting,): (i64,) = sqlx::query_as(
+            "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted \
+             AND database = (SELECT oid FROM pg_database WHERE datname = current_database())",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        if waiting > 0 {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("the sign-up job never waited for the address lock");
+}
+
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn acc_02_registration_racing_the_first_registration_still_gets_its_email(pool: PgPool) {
+    // Regression (wave 6B): the job's unlocked pre-read saw a new address
+    // ("first e-mail, always sent") while the locked read found the
+    // placeholder of a concurrent first registration; the registration was
+    // stored but its verification e-mail silently withheld.
+    let h = Harness::new(pool).await;
+    let mut lock = hold_address_lock(&h.pool, "race@example.com").await;
+    let receipt = h
+        .service
+        .signup(
+            &h.ctx(),
+            Harness::signup_input("race@example.com", PASSWORD),
+        )
+        .await
+        .unwrap();
+    wait_for_lock_waiter(&h.pool).await;
+    // A concurrent first registration creates the placeholder meanwhile.
+    let user = authn_core::id::UserId::generate();
+    UserRepository::create(
+        &mut lock,
+        &authn_store::NewUser {
+            id: user,
+            email: authn_core::domain::EmailAddress::parse("race@example.com").unwrap(),
+            status: AccountStatus::PendingVerification,
+            created_at: h.ports.clock.now(),
+        },
+    )
+    .await
+    .unwrap();
+    lock.commit().await.unwrap();
+    h.drain().await;
+
+    assert_eq!(registrations(&h.pool, user).await, 1);
+    let mails = all_verifications(&h, "race@example.com");
+    assert_eq!(mails.len(), 1, "the registration's e-mail was withheld");
+    // The e-mail belongs to the registration of this client.
+    let (token, _) = mails.into_iter().next().unwrap();
+    h.service
+        .verify_email_link(
+            &h.ctx(),
+            &secret(&token),
+            &authn_account::LinkConfirmation {
+                registration: Some(secret(receipt.handle().expose())),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert!(h.password_matches(user, PASSWORD).await);
+}
+
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn acc_02_registration_racing_a_removed_placeholder_still_gets_its_email(pool: PgPool) {
+    // Regression (wave 6B): the pre-read saw an unverified placeholder
+    // (budget taken for a notice) while the locked read found the address
+    // free again (placeholder purged); the new account was created without
+    // its first verification e-mail.
+    let h = Harness::new(pool).await;
+    h.signup_with("race@example.com", ATTACKER).await;
+    let old = h.user("race@example.com").await.unwrap().id;
+    assert_eq!(all_verifications(&h, "race@example.com").len(), 1);
+
+    let mut lock = hold_address_lock(&h.pool, "race@example.com").await;
+    h.service
+        .signup(&h.ctx(), Harness::signup_input("race@example.com", OWNER))
+        .await
+        .unwrap();
+    wait_for_lock_waiter(&h.pool).await;
+    // The unverified placeholder expires meanwhile (ACC-05 purge).
+    sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(old)
+        .execute(&mut *lock)
+        .await
+        .unwrap();
+    lock.commit().await.unwrap();
+    h.drain().await;
+
+    let user = h.user("race@example.com").await.unwrap().id;
+    assert_ne!(user, old);
+    assert_eq!(registrations(&h.pool, user).await, 1);
+    assert_eq!(
+        all_verifications(&h, "race@example.com").len(),
+        2,
+        "the new account's first e-mail was withheld"
+    );
+}
+
 #[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
 async fn acc_05_password_reset_on_unverified_account_hands_it_to_the_mailbox_owner(pool: PgPool) {
     let h = Harness::new(pool).await;

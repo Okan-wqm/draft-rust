@@ -30,7 +30,7 @@ Dalga A. `core`, `crypto`, `store` dışında hiçbir authn crate'ine bağımlı
 | Hata kodu dosyası | `crates/authn-core/src/error/codes/webauthn.rs` |
 | Uygulanan portlar | `DataExporter` (`PasskeyDataExporter`, bölüm `passkeys`) |
 | Sahip olunan tablolar | `webauthn_user_handles`, `webauthn_credentials`, `webauthn_ceremonies` |
-| Migration | `1400_webauthn_hardening.sql` (aralık `1400–1499`) |
+| Migration | `1400_webauthn_hardening.sql`, `1401_webauthn_enrollment_binding.sql`, `1402`–`1404` (wave 6B, K-70: `webauthn_ceremonies` yabancı anahtar indeksleri `user_id`, `session_id`, `challenge_id`; `CREATE INDEX CONCURRENTLY`, dosya başına tek ifade, `IF NOT EXISTS` yok; testler `authn-server/tests/schema_foreign_keys.rs`) (aralık `1400–1499`) |
 | Fuzz hedefi | `fuzz/fuzz_targets/webauthn_response_parse.rs` (kaydı §13 talebinde) |
 
 ## Genel API
