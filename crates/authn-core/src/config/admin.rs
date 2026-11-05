@@ -22,6 +22,16 @@ pub struct AdminConfig {
     /// Impersonation maximum duration. Default `60m`.
     #[serde(with = "super::duration")]
     pub impersonation_max_ttl: Duration,
+    /// Four-eyes approval of critical operations (K-66): emergency
+    /// operations and actions on another platform admin need the approval
+    /// of a second platform admin. Unset: on in `production` and `staging`,
+    /// off in `development` and `test` (`authn_admin::AdminSettings`);
+    /// `false` is refused in `production`.
+    pub four_eyes: Option<bool>,
+    /// Lifetime of a four-eyes approval request (K-66). Default `30m`,
+    /// 5 min – 2 h.
+    #[serde(with = "super::duration")]
+    pub four_eyes_approval_ttl: Duration,
 }
 
 impl Default for AdminConfig {
@@ -31,6 +41,8 @@ impl Default for AdminConfig {
             step_up_max_age: mins(10),
             impersonation_default_ttl: mins(15),
             impersonation_max_ttl: mins(60),
+            four_eyes: None,
+            four_eyes_approval_ttl: mins(30),
         }
     }
 }
@@ -49,6 +61,12 @@ impl AdminConfig {
             mins(1),
             mins(60),
             "admin.impersonation_max_ttl",
+        );
+        p.require_range(
+            self.four_eyes_approval_ttl,
+            mins(5),
+            hours(2),
+            "admin.four_eyes_approval_ttl",
         );
         p.require(
             !self.impersonation_default_ttl.is_zero()

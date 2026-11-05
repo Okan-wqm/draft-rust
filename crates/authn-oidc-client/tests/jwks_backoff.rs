@@ -1,7 +1,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // integration-test crate
 //! K-16 (SOC-03): JWKS download failures back off per URL — during a
 //! provider outage a flood of verifications does not become a flood of
-//! requests to the provider.
+//! requests to the provider. K-61: stale keys are used only for a bounded
+//! time.
 
 mod common;
 
@@ -118,4 +119,59 @@ async fn soc_03_jwks_backoff_is_bounded_and_keeps_stale_keys() {
         assert!(key(at(now)).await.unwrap().is_some());
     }
     assert_eq!(hits(&server).await, 13, "one attempt per maximal backoff");
+}
+
+/// K-61 (SOC-03): during a JWKS outage cached keys are used only until
+/// they are `jwks_max_staleness` old; afterwards verification fails closed
+/// with the stable `service_unavailable` code, and works again as soon as
+/// the provider answers.
+#[tokio::test]
+async fn soc_03_k61_stale_keys_expire_after_the_max_staleness() {
+    let server = MockServer::start().await;
+    let url = Url::parse(&format!("{}/jwks", server.uri())).unwrap();
+    let http = client();
+    let cache = JwksCache::new(Duration::from_secs(600), Duration::from_secs(60))
+        .with_max_staleness(Duration::from_secs(3 * 3600));
+    let t0 = OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap();
+    let at = |secs: i64| t0 + time::Duration::seconds(secs);
+    let key = |now| cache.key(&http, &url, OutboundTarget::Trusted, "key-a", now);
+
+    mount_keys(&server).await;
+    assert!(key(at(0)).await.unwrap().is_some());
+    mount_outage(&server).await;
+    // Within the bound: the stale key verifies (outage tolerance) — both
+    // on a failed download and while backing off.
+    assert!(key(at(2 * 3600)).await.unwrap().is_some());
+    assert!(key(at(2 * 3600 + 1)).await.unwrap().is_some());
+    assert!(key(at(3 * 3600)).await.unwrap().is_some());
+    // Beyond it: fail closed, on a failed download and during the backoff.
+    let err = key(at(3 * 3600 + 400)).await.unwrap_err();
+    assert!(err.is(authn_core::error::codes::common::SERVICE_UNAVAILABLE));
+    let err = key(at(3 * 3600 + 401)).await.unwrap_err();
+    assert!(err.is(authn_core::error::codes::common::SERVICE_UNAVAILABLE));
+    // The provider recovers: fresh keys verify again.
+    mount_keys(&server).await;
+    assert!(key(at(4 * 3600)).await.unwrap().is_some());
+
+    // The bound is never below the cache lifetime.
+    let floor = JwksCache::new(Duration::from_secs(600), Duration::from_secs(60))
+        .with_max_staleness(Duration::from_secs(1));
+    assert!(format!("{floor:?}").contains("max_staleness: 600s"));
+}
+
+/// K-61: the default bound is 24 hours.
+#[tokio::test]
+async fn soc_03_k61_default_max_staleness_is_a_day() {
+    let server = MockServer::start().await;
+    let url = Url::parse(&format!("{}/jwks", server.uri())).unwrap();
+    let http = client();
+    let cache = JwksCache::new(Duration::from_secs(600), Duration::from_secs(60));
+    let t0 = OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap();
+    let at = |secs: i64| t0 + time::Duration::seconds(secs);
+    let key = |now| cache.key(&http, &url, OutboundTarget::Trusted, "key-a", now);
+    mount_keys(&server).await;
+    assert!(key(at(0)).await.unwrap().is_some());
+    mount_outage(&server).await;
+    assert!(key(at(23 * 3600)).await.unwrap().is_some());
+    assert!(key(at(24 * 3600 + 1000)).await.is_err());
 }

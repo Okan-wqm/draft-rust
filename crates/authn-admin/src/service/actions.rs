@@ -37,8 +37,9 @@ use authn_store::{NewPasswordHash, UserRepository};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use utoipa::ToSchema;
+use uuid::Uuid;
 
-use super::{AdminService, TargetPolicy, meta};
+use super::{AdminService, CriticalOperation, TargetPolicy, meta};
 use crate::guard::AdminCaller;
 use crate::reason::Justification;
 
@@ -76,7 +77,9 @@ pub struct ForcedReset {
 fn with_admin_target(
     mut metadata: serde_json::Map<String, Value>,
     admin_target: bool,
+    four_eyes: serde_json::Map<String, Value>,
 ) -> serde_json::Map<String, Value> {
+    metadata.extend(four_eyes);
     if admin_target {
         metadata.insert("target_is_admin".to_owned(), Value::from(true));
         metadata.insert("priority".to_owned(), Value::from("high"));
@@ -110,12 +113,39 @@ impl AdminService {
         user: UserId,
         reason: &Justification,
     ) -> Result<ActionOutcome, AuthError> {
+        self.suspend_user_approved(caller, ctx, user, reason, None)
+            .await
+    }
+
+    /// [`Self::suspend_user`] with a four-eyes approval (K-66): required when
+    /// the target is another platform admin and `admin.four_eyes` is on.
+    pub async fn suspend_user_approved(
+        &self,
+        caller: &AdminCaller,
+        ctx: &RequestContext,
+        user: UserId,
+        reason: &Justification,
+        approval: Option<Uuid>,
+    ) -> Result<ActionOutcome, AuthError> {
         const ACTION: &str = "suspend_user";
-        let admin_target = self.guard_admin_target(caller, ctx, user, ACTION).await?;
-        let mut tx = self.begin().await?;
-        let target = self
-            .lock_target(&mut tx, caller, user, TargetPolicy::NotBreakGlass)
+        let operation = CriticalOperation::SuspendAdmin(user);
+        self.four_eyes_precheck_target(caller, ctx, &operation, approval)
             .await?;
+        let (mut tx, target, admin_target) = self
+            .begin_on_target(caller, ctx, user, TargetPolicy::NotBreakGlass, ACTION)
+            .await?;
+        let four_eyes = match self
+            .four_eyes_on_admin_target(&mut tx, caller, ctx, admin_target, &operation, approval)
+            .await?
+        {
+            Ok(four_eyes) => four_eyes,
+            Err(refusal) => {
+                tx.rollback().await?;
+                return Err(self
+                    .refuse_four_eyes(caller, ctx, &operation, refusal, approval)
+                    .await);
+            }
+        };
         let transition = self
             .deps()
             .accounts
@@ -151,7 +181,8 @@ impl AdminService {
                         ("to", Value::from(transition.to.as_str())),
                         ("sessions_revoked", Value::from(revoked)),
                     ]),
-                    admin_target || target.is_platform_admin,
+                    admin_target,
+                    four_eyes,
                 ),
             )
             .await?;
@@ -219,15 +250,42 @@ impl AdminService {
         user: UserId,
         reason: &Justification,
     ) -> Result<ActionOutcome, AuthError> {
+        self.unlock_user_approved(caller, ctx, user, reason, None)
+            .await
+    }
+
+    /// [`Self::unlock_user`] with a four-eyes approval (K-66): required when
+    /// the target is another platform admin and `admin.four_eyes` is on.
+    pub async fn unlock_user_approved(
+        &self,
+        caller: &AdminCaller,
+        ctx: &RequestContext,
+        user: UserId,
+        reason: &Justification,
+        approval: Option<Uuid>,
+    ) -> Result<ActionOutcome, AuthError> {
         const ACTION: &str = "unlock_user";
-        let admin_target = self.guard_admin_target(caller, ctx, user, ACTION).await?;
+        let operation = CriticalOperation::UnlockAdmin(user);
+        self.four_eyes_precheck_target(caller, ctx, &operation, approval)
+            .await?;
         // Read before the transaction: never wait for a second pooled
         // connection while holding one.
         let soft_locked = self.deps().protection.locked_until(user).await?.is_some();
-        let mut tx = self.begin().await?;
-        let target = self
-            .lock_target(&mut tx, caller, user, TargetPolicy::NotSelf)
+        let (mut tx, target, admin_target) = self
+            .begin_on_target(caller, ctx, user, TargetPolicy::NotSelf, ACTION)
             .await?;
+        let four_eyes = match self
+            .four_eyes_on_admin_target(&mut tx, caller, ctx, admin_target, &operation, approval)
+            .await?
+        {
+            Ok(four_eyes) => four_eyes,
+            Err(refusal) => {
+                tx.rollback().await?;
+                return Err(self
+                    .refuse_four_eyes(caller, ctx, &operation, refusal, approval)
+                    .await);
+            }
+        };
         let status_unlocked = target.status == AccountStatus::Locked;
         if status_unlocked {
             self.deps()
@@ -254,7 +312,8 @@ impl AdminService {
                         ("account_unlocked", Value::from(status_unlocked)),
                         ("soft_lock_cleared", Value::from(soft_locked)),
                     ]),
-                    admin_target || target.is_platform_admin,
+                    admin_target,
+                    four_eyes,
                 ),
             )
             .await?;
@@ -280,12 +339,39 @@ impl AdminService {
         user: UserId,
         reason: &Justification,
     ) -> Result<ActionOutcome, AuthError> {
+        self.revoke_user_sessions_approved(caller, ctx, user, reason, None)
+            .await
+    }
+
+    /// [`Self::revoke_user_sessions`] with a four-eyes approval (K-66): required when
+    /// the target is another platform admin and `admin.four_eyes` is on.
+    pub async fn revoke_user_sessions_approved(
+        &self,
+        caller: &AdminCaller,
+        ctx: &RequestContext,
+        user: UserId,
+        reason: &Justification,
+        approval: Option<Uuid>,
+    ) -> Result<ActionOutcome, AuthError> {
         const ACTION: &str = "revoke_user_sessions";
-        let admin_target = self.guard_admin_target(caller, ctx, user, ACTION).await?;
-        let mut tx = self.begin().await?;
-        let target = self
-            .lock_target(&mut tx, caller, user, TargetPolicy::NotBreakGlass)
+        let operation = CriticalOperation::RevokeAdminSessions(user);
+        self.four_eyes_precheck_target(caller, ctx, &operation, approval)
             .await?;
+        let (mut tx, _target, admin_target) = self
+            .begin_on_target(caller, ctx, user, TargetPolicy::NotBreakGlass, ACTION)
+            .await?;
+        let four_eyes = match self
+            .four_eyes_on_admin_target(&mut tx, caller, ctx, admin_target, &operation, approval)
+            .await?
+        {
+            Ok(four_eyes) => four_eyes,
+            Err(refusal) => {
+                tx.rollback().await?;
+                return Err(self
+                    .refuse_four_eyes(caller, ctx, &operation, refusal, approval)
+                    .await);
+            }
+        };
         let revoked = self
             .deps()
             .sessions
@@ -302,7 +388,8 @@ impl AdminService {
                 Some(reason),
                 with_admin_target(
                     meta([("sessions_revoked", Value::from(revoked))]),
-                    admin_target || target.is_platform_admin,
+                    admin_target,
+                    four_eyes,
                 ),
             )
             .await?;

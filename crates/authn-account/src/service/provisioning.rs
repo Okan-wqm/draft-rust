@@ -107,11 +107,13 @@ impl AccountService {
     /// `request.email` (ADR 0002: e.g. the provider's verified `email`
     /// claim). In order, under the address's advisory lock:
     ///
-    /// 1. an account with the address exists → [`ProvisionOutcome::Existing`]
+    /// 1. the disposable-domain list (ACC-12) refuses the domain →
+    ///    `email_domain_not_allowed` — decided from the address alone,
+    ///    before any lookup, so the answer is the same whether or not an
+    ///    account or a reservation exists (K-63);
+    /// 2. an account with the address exists → [`ProvisionOutcome::Existing`]
     ///    (nothing written);
-    /// 2. the address is reserved (ACC-07) → [`ProvisionOutcome::Reserved`];
-    /// 3. the disposable-domain list (ACC-12) refuses the domain →
-    ///    `email_domain_not_allowed`;
+    /// 3. the address is reserved (ACC-07) → [`ProvisionOutcome::Reserved`];
     /// 4. otherwise the account (`active`, verified), the profile (display
     ///    name normalized with the ACC-03 rules — dropped when it fails
     ///    them —, language, `UTC`), the `user.created` domain event and the
@@ -129,15 +131,19 @@ impl AccountService {
     ) -> Result<ProvisionOutcome, AuthError> {
         let now = self.now();
         let email = request.email;
+        // K-63: the domain is decided first, from the address alone, so
+        // `email_domain_not_allowed` is the answer whether or not an
+        // account or a reservation exists (no existence signal in body,
+        // status or time).
+        if let Some(list) = &self.settings().disposable_domains {
+            list.check(email)?;
+        }
         lock_email(&mut *conn, email.normalized()).await?;
         if let Some(existing) = UserRepository::find_by_email(&mut *conn, email).await? {
             return Ok(ProvisionOutcome::Existing(existing));
         }
         if self.is_address_reserved_in(&mut *conn, email).await? {
             return Ok(ProvisionOutcome::Reserved);
-        }
-        if let Some(list) = &self.settings().disposable_domains {
-            list.check(email)?;
         }
         let user = UserId::generate();
         match UserRepository::create(

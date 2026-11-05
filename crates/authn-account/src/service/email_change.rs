@@ -570,6 +570,11 @@ impl AccountService {
                 },
             )
             .await?;
+        // K-20: other modules remove the login methods added while the
+        // address was changed (passkeys, MFA factors, linked identities).
+        for hook in self.revert_hooks() {
+            hook.after_revert_in_tx(tx.conn(), ctx, user.id).await?;
+        }
         let password_reset_required = self
             .invalidate_password(&mut tx, user.id, &unusable)
             .await?;

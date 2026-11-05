@@ -29,6 +29,12 @@ const REFRESH: &str = "provider-refresh-token";
 
 /// Web Sign in with Apple of `sub`; returns the account.
 async fn apple_web_login(h: &Harness, sub: &str) -> UserId {
+    apple_web_login_with(h, sub, None).await
+}
+
+/// Web Sign in with Apple of `sub` whose token response carries `refresh`
+/// (default: [`REFRESH`]).
+async fn apple_web_login_with(h: &Harness, sub: &str, refresh: Option<&str>) -> UserId {
     let started = h.start("apple", None).await;
     let mut claims = h.claims(
         &h.idp.issuer("/apple"),
@@ -38,7 +44,24 @@ async fn apple_web_login(h: &Harness, sub: &str) -> UserId {
         &format!("{sub}@privaterelay.appleid.com"),
     );
     claims["email_verified"] = json!("true");
-    h.token_for("/apple", &started, &claims).await;
+    match refresh {
+        None => h.token_for("/apple", &started, &claims).await,
+        Some(refresh) => {
+            claims["nonce"] = json!(started.param("nonce"));
+            h.idp
+                .mount_token_once(
+                    "/apple",
+                    json!({
+                        "access_token": "provider-access-token",
+                        "refresh_token": refresh,
+                        "expires_in": 3600,
+                        "token_type": "Bearer",
+                        "id_token": sign_rs256(KEY_A, "key-a", &claims),
+                    }),
+                )
+                .await;
+        }
+    }
     let body = format!("state={}&code=apple-code", started.param("state"));
     let res = TestRequest::post("/v1/oauth/apple/callback")
         .header("content-type", "application/x-www-form-urlencoded")
@@ -316,9 +339,9 @@ async fn acc_09_account_deletion_revokes_the_apple_token(pool: PgPool) {
     let audited = h
         .ports
         .audit
-        .of_kind(SecurityEventKind::IdentityUnlinked)
+        .of_kind(SecurityEventKind::IdentityProviderTokenRevoked)
         .into_iter()
-        .find(|e| e.metadata.get("step").is_some())
+        .next()
         .unwrap();
     assert_eq!(audited.actor, Actor::System);
     assert_eq!(audited.metadata["outcome"], "revoked");
@@ -372,7 +395,7 @@ async fn acc_09_revocation_failures_are_retried_then_audited_never_blocking(pool
     let failed = h
         .ports
         .audit
-        .of_kind(SecurityEventKind::IdentityUnlinked)
+        .of_kind(SecurityEventKind::IdentityProviderTokenRevoked)
         .into_iter()
         .find(|e| e.reason.as_deref() == Some("provider_token_revocation_failed"))
         .unwrap();
@@ -460,4 +483,171 @@ async fn soc_07_service_build_decrypts_an_envelope_encrypted_apple_key(pool: PgP
         .unwrap_err();
     use authn_core::secret::ExposeSecret as _;
     assert!(!format!("{err:?}").contains(sealed.expose_secret()));
+}
+
+// --- K-59 / K-60 / K-20 ---------------------------------------------------------
+
+/// K-59 (SOC-07, SOC-08): a new Sign in with Apple replaces the stored
+/// refresh token; the replaced one is still valid at Apple, so it is queued
+/// for revocation in the sign-in transaction and revoked by the job. The
+/// same token handed out again is not revoked.
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn soc_07_k59_relogin_queues_the_replaced_apple_token(pool: PgPool) {
+    let h = Harness::new(pool).await;
+    let user = apple_web_login_with(&h, "apple-again", Some("refresh-one")).await;
+    assert_eq!(queued(&h).await, 0);
+    assert_eq!(
+        apple_web_login_with(&h, "apple-again", Some("refresh-two")).await,
+        user
+    );
+    assert_eq!(
+        open_refresh(&h, &stored(&h, "apple").await).await,
+        "refresh-two"
+    );
+    assert_eq!(queued(&h).await, 1, "the replaced token is queued");
+    // The same token again: nothing to revoke.
+    apple_web_login_with(&h, "apple-again", Some("refresh-two")).await;
+    assert_eq!(queued(&h).await, 1);
+
+    mount_revoke(&h, 200, json!({})).await;
+    assert_eq!(
+        h.service
+            .process_token_revocations(10)
+            .await
+            .unwrap()
+            .revoked,
+        1
+    );
+    let requests = h.idp.requests_to("/apple/revoke").await;
+    assert_eq!(requests.len(), 1);
+    let form = form_of(&requests[0]);
+    assert_eq!(
+        form["token"], "refresh-one",
+        "the old token, not the new one"
+    );
+    assert_eq!(form["client_id"], APPLE_WEB);
+    assert_eq!(
+        open_refresh(&h, &stored(&h, "apple").await).await,
+        "refresh-two"
+    );
+}
+
+/// K-60: revocation outcomes have their own audit kind
+/// (`identity.provider_token_revoked`); a stored token that cannot be
+/// decrypted at unlink is recorded as a failed *revocation* — the unlink
+/// itself is one successful `identity.unlinked`, never a failed one.
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn soc_06_k60_unreadable_token_is_not_shown_as_a_failed_unlink(pool: PgPool) {
+    let h = Harness::new(pool).await;
+    let user = apple_web_login(&h, "apple-corrupt").await;
+    h.user_password(user).await;
+    let row = stored(&h, "apple").await;
+    // Sealed for another row: authentic ciphertext, wrong AAD.
+    let foreign = h
+        .crypto
+        .envelopes
+        .seal(
+            b"other",
+            &EnvelopeContext::new("identities", "refresh_token_ciphertext", "elsewhere").unwrap(),
+        )
+        .await
+        .unwrap();
+    sqlx::query("UPDATE identities SET refresh_token_ciphertext = $1 WHERE id = $2")
+        .bind(foreign)
+        .bind(row.id)
+        .execute(&h.pool)
+        .await
+        .unwrap();
+    TestRequest::delete(&format!("/v1/me/identities/{}", row.id))
+        .send(&h.app_as(h.fresh(user)))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    assert_eq!(queued(&h).await, 0);
+    let unlinked = h.ports.audit.of_kind(SecurityEventKind::IdentityUnlinked);
+    assert_eq!(unlinked.len(), 1);
+    assert!(unlinked[0].reason.is_none(), "{:?}", unlinked[0]);
+    let revoked = h
+        .ports
+        .audit
+        .of_kind(SecurityEventKind::IdentityProviderTokenRevoked);
+    assert_eq!(revoked.len(), 1);
+    assert_eq!(
+        revoked[0].reason.as_deref(),
+        Some("provider_token_unreadable")
+    );
+    assert_eq!(revoked[0].actor, Actor::System);
+    assert_eq!(revoked[0].subject_user, Some(user));
+    assert_eq!(
+        SecurityEventKind::IdentityProviderTokenRevoked.as_str(),
+        "identity.provider_token_revoked"
+    );
+}
+
+/// K-20 (ACC-07): the e-mail change revert removes every linked identity
+/// inside the caller's transaction, queues the Apple token and audits each
+/// removal as a system `identity.unlinked` with `reason =
+/// email_change_reverted`; nothing happens if the caller rolls back.
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn acc_07_k20_revert_removes_every_linked_identity_in_the_transaction(pool: PgPool) {
+    let h = Harness::new(pool).await;
+    let user = apple_web_login(&h, "apple-revert").await;
+    // Rolled back: nothing changes.
+    let mut tx = h.pool.begin().await.unwrap();
+    assert_eq!(
+        h.service
+            .remove_all_identities_in_tx(&mut tx, &h.ctx(), user)
+            .await
+            .unwrap(),
+        1
+    );
+    tx.rollback().await.unwrap();
+    assert_eq!(h.identity_count().await, 1);
+    assert_eq!(queued(&h).await, 0);
+
+    let mut tx = h.pool.begin().await.unwrap();
+    authn_store::UserRepository::lock_for_update(&mut tx, user)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        h.service
+            .remove_all_identities_in_tx(&mut tx, &h.ctx(), user)
+            .await
+            .unwrap(),
+        1
+    );
+    tx.commit().await.unwrap();
+    assert_eq!(h.identity_count().await, 0);
+    assert_eq!(queued(&h).await, 1, "Apple token queued for revocation");
+    let removed: Vec<_> = h
+        .ports
+        .audit
+        .of_kind(SecurityEventKind::IdentityUnlinked)
+        .into_iter()
+        .filter(|e| {
+            e.metadata
+                .get("reason")
+                .is_some_and(|r| r == "email_change_reverted")
+        })
+        .collect();
+    assert_eq!(
+        removed.len(),
+        2,
+        "one per call (the first was rolled back by the test)"
+    );
+    assert!(
+        removed
+            .iter()
+            .all(|e| e.actor == Actor::System && e.subject_user == Some(user))
+    );
+    // No identity left: a second run is a no-op.
+    let mut tx = h.pool.begin().await.unwrap();
+    assert_eq!(
+        h.service
+            .remove_all_identities_in_tx(&mut tx, &h.ctx(), user)
+            .await
+            .unwrap(),
+        0
+    );
+    tx.commit().await.unwrap();
 }

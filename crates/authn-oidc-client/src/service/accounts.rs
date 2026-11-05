@@ -180,6 +180,8 @@ impl OidcClientService {
             .provider_by_storage_id(&external.provider)
             .is_some_and(|p| p.keep_refresh_token_for_revocation);
         if !store_all && !keep_refresh {
+            self.queue_replaced_refresh_token(conn, identity, None)
+                .await?;
             store::set_tokens(conn, identity, &SealedTokens::default()).await?;
             return Ok(());
         }
@@ -191,6 +193,14 @@ impl OidcClientService {
         if !store_all && tokens.refresh_token.is_none() {
             return Ok(());
         }
+        // K-59: the refresh token about to be overwritten (or cleared)
+        // stays valid at the provider until revoked.
+        self.queue_replaced_refresh_token(
+            conn,
+            identity,
+            tokens.refresh_token.as_ref().map(|r| r.expose().as_bytes()),
+        )
+        .await?;
         let access = if store_all {
             Some(
                 self.seal(
@@ -225,6 +235,35 @@ impl OidcClientService {
                 expires_at: if store_all { tokens.expires_at } else { None },
                 client_id: external.client_id.as_deref(),
             },
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// K-59: queues the stored refresh token of `identity` for revocation
+    /// when a sign-in replaces it with `replacement` (`None`: cleared). The
+    /// row is locked first, so concurrent sign-ins each queue the token
+    /// they actually replace.
+    async fn queue_replaced_refresh_token(
+        &self,
+        conn: &mut PgConnection,
+        identity: IdentityId,
+        replacement: Option<&[u8]>,
+    ) -> Result<(), AuthError> {
+        let Some(row) = store::lock_identity(&mut *conn, identity).await? else {
+            return Ok(());
+        };
+        if row.refresh_token_ciphertext.is_none() {
+            return Ok(());
+        }
+        super::revocation::queue_replaced_token(
+            conn,
+            &self.deps().envelopes,
+            self.deps().audit.as_ref(),
+            self.now(),
+            row.user_id,
+            &row,
+            replacement,
         )
         .await?;
         Ok(())
@@ -654,6 +693,51 @@ impl OidcClientService {
         authn_store::commit(tx).await?;
         tracing::info!(user = %user, identity = %identity, "identity unlinked");
         Ok(())
+    }
+
+    /// Removes **every** identity linked to `user` inside the caller's
+    /// transaction (ACC-07 e-mail change revert, K-20: whoever held the
+    /// account may have linked their own provider account). For the
+    /// server's `authn_account::EmailChangeRevertHook`; the caller has
+    /// locked the user row. Uses only `conn`; no last-login-method check
+    /// (the owner regains access through the restored mailbox with a
+    /// password reset). Each stored Apple token is queued for revocation
+    /// (K-35) and each removal is audited as `identity.unlinked`
+    /// (`Actor::System`, `reason = email_change_reverted`); no notice is
+    /// sent (the revert notice covers it). Returns how many were removed.
+    pub async fn remove_all_identities_in_tx(
+        &self,
+        conn: &mut PgConnection,
+        ctx: &RequestContext,
+        user: UserId,
+    ) -> Result<u32, AuthError> {
+        let now = self.now();
+        let mut removed = 0_u32;
+        for row in store::identities_of(&mut *conn, user).await? {
+            super::revocation::queue_identity_revocation(
+                &mut *conn,
+                &self.deps().envelopes,
+                self.deps().audit.as_ref(),
+                now,
+                user,
+                &row,
+            )
+            .await?;
+            if !store::delete_identity(&mut *conn, row.id, user).await? {
+                continue;
+            }
+            removed = removed.saturating_add(1);
+            let event = SecurityEvent::new(SecurityEventKind::IdentityUnlinked, now)
+                .with_context(ctx)
+                .with_actor(Actor::System)
+                .with_subject(user)
+                .with_resource("identity", row.id)
+                .with_meta("provider", row.provider.clone())
+                .with_meta("reason", "email_change_reverted");
+            self.deps().audit.record_in_tx(&mut *conn, event).await?;
+            tracing::info!(user = %user, identity = %row.id, "identity removed by e-mail change revert");
+        }
+        Ok(removed)
     }
 
     /// The decrypted provider tokens of one of `user`'s identities, if

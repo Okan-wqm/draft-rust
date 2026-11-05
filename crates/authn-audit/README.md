@@ -34,6 +34,7 @@ Dalga A: yalnızca `authn-core`, `authn-crypto`, `authn-store`. Organizasyon yet
 | `AuditService::new(AuditServiceParts { pool, clock, cipher, policy, rate_limiter, config, step_up_max_age })` | Router durumu; `sink()`, `event_publisher()`, `webhooks()`, `outbox_handlers(http)`, `outbox_worker(handlers)`, `run_maintenance(&maintenance_pool)` |
 | `router::<S>()`, `AuditApi` (utoipa) | HTTP endpoint'leri ve OpenAPI |
 | `list_events(&pool, &AuditEventFilter, &PageRequest)` → `Page<AuditEventDetail>` | Platform geneli sorgu (admin, ADM-07) |
+| `hide_from_subject_in_tx(conn, event_id, until, now)` | K-62: olayı ilgili kişinin kendi listesinden (`GET /v1/me/security-events`, `list_user_security_events`) `until`'e kadar gizler. Çağıranın transaction'ında çalışır. Tablo `audit_subject_view_holds` (migration `1701`) ekleme-yalnızcadır (trigger), daha geç bir kayıt süreyi uzatır, olay saklama süresiyle silinince kaskadla gider. Personel görünümleri (`list_events`, organizasyon günlüğü) etkilenmez. Kullanıcı: authn-admin yasal kısıtlaması. Migration `1701` `authn_audit_apply_least_privilege`'i yeni tabloyla günceller (uygulama: `SELECT, INSERT`; bakım: `SELECT`). |
 | `webhooks::{WebhookManager, WebhookFanout, WebhookDeliverer, build_signed_request, signed_delivery_headers, validate_webhook_url, rewrap_webhook_secrets}` | Webhook bileşenleri; `rewrap_webhook_secrets` KEK rotasyonu (`rotate-kek`/`reencrypt`) içindir |
 
 ## Endpoint'ler
@@ -107,6 +108,14 @@ Her bulgu için düzeltme olmadan başarısız olan bir regresyon testi vardır.
 | Düşük | `AuditAccessPolicy` istemci IP'sini almadığından organizasyon IP izin listesi (ORG-07) audit/webhook uç noktalarında uygulanamıyordu (authn-org talebi). | `check(…, client_ip: Option<IpAddr>)`; handler'lar çözülmüş istemci IP'sini iletir. | `aud_04_access_policy_receives_the_client_ip` |
 
 Ayrıca authn-org'un talep ettiği `SecurityEventKind` türleri eklendi: `org.domain_added`, `org.deletion_cancelled`, `org.ownership_transfer_cancelled`.
+
+### Bağımsız güvenlik denetimi — wave 3B (2026-11-05)
+
+| Önem | Bulgu | Düzeltme | Regresyon testi |
+|------|-------|----------|-----------------|
+| Düşük | `audit_subject_view_holds` (K-62) bir olayı tek bir satırla süresiz olarak öznenin görünümünden gizleyebiliyordu (üst sınır yoktu). | `hide_from_subject_in_tx` en çok 180 gün kabul eder (`holds::MAX_HOLD`, aşılırsa `validation_failed`); tablo CHECK'i aynı sınırı uygular. Uzatma yeni, audit'li bir satırdır. | `aud_04_k62_a_hold_lasts_at_most_180_days` |
+
+Bekletmeyi kullananlar: authn-admin'in kısıtlama ve uzatma notları (K-62) ve başka bir admini hedefleyen four-eyes istek ve karar olayları; bunlar istek süresi dolana kadar hedeften gizlenir (K-66).
 
 ### Kabul edilen riskler (gerekçeli)
 

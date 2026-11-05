@@ -28,6 +28,9 @@ mod defaults {
     pub(super) const fn statement_timeout() -> Duration {
         super::secs(30)
     }
+    pub(super) const fn maintenance_max_connections() -> u32 {
+        2
+    }
 }
 
 /// `[database]` section.
@@ -59,6 +62,16 @@ pub struct DatabaseConfig {
     /// (run `rust-authentication migrate` explicitly).
     #[serde(default)]
     pub migrate_on_start: bool,
+    /// Connection URL of the **maintenance role** (OPS-10): audit retention
+    /// purge and checkpoints run with it, so the application role needs no
+    /// `DELETE` on `audit_events` (see `docs/operations/least-privilege.md`).
+    /// Default: none (maintenance uses the application pool — acceptable
+    /// only when the application role is not restricted).
+    #[serde(default)]
+    pub maintenance_url: Option<SecretString>,
+    /// Pool size of the maintenance role. Default 2.
+    #[serde(default = "defaults::maintenance_max_connections")]
+    pub maintenance_max_connections: u32,
 }
 
 impl DatabaseConfig {
@@ -74,7 +87,24 @@ impl DatabaseConfig {
             max_lifetime: defaults::max_lifetime(),
             statement_timeout: defaults::statement_timeout(),
             migrate_on_start: false,
+            maintenance_url: None,
+            maintenance_max_connections: defaults::maintenance_max_connections(),
         }
+    }
+
+    /// The configuration of the maintenance-role pool (OPS-10): the same
+    /// settings with `maintenance_url` and `maintenance_max_connections`;
+    /// `None` when no maintenance role is configured.
+    #[must_use]
+    pub fn maintenance(&self) -> Option<Self> {
+        let url = self.maintenance_url.clone()?;
+        Some(Self {
+            url,
+            max_connections: self.maintenance_max_connections,
+            min_connections: 0,
+            maintenance_url: None,
+            ..self.clone()
+        })
     }
 
     /// Validates the section.
@@ -94,6 +124,19 @@ impl DatabaseConfig {
             self.min_connections <= self.max_connections,
             "database.min_connections",
             "must not exceed max_connections",
+        );
+        if let Some(url) = &self.maintenance_url {
+            let url = url.expose_secret();
+            p.require(
+                url.starts_with("postgres://") || url.starts_with("postgresql://"),
+                "database.maintenance_url",
+                "must be a postgres:// URL",
+            );
+        }
+        p.require(
+            (1..=100).contains(&self.maintenance_max_connections),
+            "database.maintenance_max_connections",
+            "must be between 1 and 100",
         );
         p.require_range(
             self.acquire_timeout,

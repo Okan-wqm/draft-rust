@@ -449,3 +449,127 @@ async fn aud_04_access_policy_receives_the_client_ip(pool: PgPool) {
     let seen = h.policy.client_ips();
     assert_eq!(seen, vec![Some(client), Some(client)]);
 }
+
+/// K-62 (AUD-04): an event under a hold is hidden from its subject's own
+/// list until the hold passes; staff listings still show it; holds are
+/// append-only.
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn aud_04_k62_held_events_are_hidden_from_the_subject_until_the_hold_ends(pool: PgPool) {
+    use authn_core::ports::Clock as _;
+    let clock = std::sync::Arc::new(authn_testkit::FakeClock::new());
+    let sink = authn_audit::PgAuditSink::new(pool.clone(), clock.clone());
+    let user = authn_core::id::UserId::generate();
+    sqlx::query(
+        "INSERT INTO users (id, email, email_normalized, status, created_at, updated_at) \
+         VALUES ($1, 'held@example.com', 'held@example.com', 'active', now(), now())",
+    )
+    .bind(user)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let visible = SecurityEvent::new(SecurityEventKind::LoginSucceeded, clock.now())
+        .with_actor(authn_core::ports::Actor::User(user))
+        .with_subject(user);
+    let held = SecurityEvent::new(SecurityEventKind::AdminAction, clock.now())
+        .with_actor(authn_core::ports::Actor::System)
+        .with_subject(user)
+        .with_meta("action", "restrict_justification");
+    let held_id = held.id;
+    sink.record(visible).await.unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    sink.record_in_tx(&mut tx, held).await.unwrap();
+    authn_audit::hide_from_subject_in_tx(
+        &mut tx,
+        held_id,
+        clock.now() + std::time::Duration::from_secs(3600),
+        clock.now(),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let kinds = |now| {
+        let pool = pool.clone();
+        async move {
+            authn_audit::query::list_user_security_events(
+                &pool,
+                user,
+                now,
+                std::time::Duration::from_secs(86_400),
+                &authn_core::domain::PageRequest {
+                    limit: Some(50),
+                    cursor: None,
+                },
+            )
+            .await
+            .unwrap()
+            .items
+            .into_iter()
+            .map(|e| e.kind)
+            .collect::<Vec<_>>()
+        }
+    };
+    assert_eq!(kinds(clock.now()).await, vec!["login.succeeded"]);
+    // Staff view: unaffected.
+    let all = authn_audit::list_events(
+        &pool,
+        &authn_audit::AuditEventFilter::default(),
+        &authn_core::domain::PageRequest::default(),
+    )
+    .await
+    .unwrap();
+    assert!(all.items.iter().any(|e| e.id == held_id));
+    // After the hold: visible again.
+    clock.advance(std::time::Duration::from_secs(3601));
+    assert_eq!(kinds(clock.now()).await.len(), 2);
+    // Append-only.
+    for sql in [
+        "DELETE FROM audit_subject_view_holds",
+        "UPDATE audit_subject_view_holds SET hidden_until = hidden_until + interval '1 day'",
+        "TRUNCATE audit_subject_view_holds",
+    ] {
+        let mut tx = pool.begin().await.unwrap();
+        assert!(sqlx::query(sql).execute(&mut *tx).await.is_err(), "{sql}");
+        tx.rollback().await.unwrap();
+    }
+}
+
+/// K-62 audit finding (scope of holds): a hold hides an event for at most
+/// 180 days from when it is added (the longest legal restriction period);
+/// anything longer is refused by the API and by the table itself, so no
+/// caller can withhold an event from its subject indefinitely with one
+/// row (an extension is a new, audited row).
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn aud_04_k62_a_hold_lasts_at_most_180_days(pool: PgPool) {
+    use authn_core::ports::Clock as _;
+    let clock = std::sync::Arc::new(authn_testkit::FakeClock::new());
+    let sink = authn_audit::PgAuditSink::new(pool.clone(), clock.clone());
+    let event = SecurityEvent::new(SecurityEventKind::AdminAction, clock.now())
+        .with_actor(authn_core::ports::Actor::System)
+        .with_meta("action", "restrict_justification");
+    let id = event.id;
+    sink.record(event).await.unwrap();
+    let day = std::time::Duration::from_secs(86_400);
+    let mut tx = pool.begin().await.unwrap();
+    authn_audit::hide_from_subject_in_tx(&mut tx, id, clock.now() + day * 180, clock.now())
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    let err =
+        authn_audit::hide_from_subject_in_tx(&mut tx, id, clock.now() + day * 181, clock.now())
+            .await
+            .unwrap_err();
+    assert_eq!(err.code().code(), "validation_failed");
+    tx.rollback().await.unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    let direct = sqlx::query(
+        "INSERT INTO audit_subject_view_holds (event_id, hidden_until, created_at) \
+         VALUES ($1, now() + interval '181 days', now())",
+    )
+    .bind(id)
+    .execute(&mut *tx)
+    .await;
+    assert!(direct.is_err(), "the table refuses an over-long hold");
+    tx.rollback().await.unwrap();
+}

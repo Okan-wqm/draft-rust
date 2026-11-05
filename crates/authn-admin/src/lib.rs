@@ -50,8 +50,9 @@ pub use routes::{AdminApi, router};
 pub use routes::{AdminEnrollmentApi, enrollment_router};
 pub use service::{
     ActionOutcome, AdminActionsDataExporter, AdminAuditEvent, AdminAuditFilter, AdminService,
-    AdminServiceDeps, AdminUserDetail, AdminUserSummary, AuditExport, BulkResetOutcome,
-    ChainVerification, EmergencyOutcome, ForcedReset, ImpersonationOptions, KeyRotationOutcome,
-    PasswordState, UserSearch, UserStatusFilter, VerifiedAnchor,
+    AdminServiceDeps, AdminUserDetail, AdminUserSummary, ApprovalView, AuditExport,
+    BulkResetOutcome, ChainVerification, CriticalOperation, EmergencyOutcome, ForcedReset,
+    ImpersonationOptions, KeyRotationOutcome, PasswordState, RESTRICTION_MAX_PERIOD, UserSearch,
+    UserStatusFilter, VerifiedAnchor,
 };
 pub use settings::AdminSettings;

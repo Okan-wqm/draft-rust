@@ -180,6 +180,13 @@ impl AppConfig {
                 "protect.rate_limit.backend",
                 "the in-memory backend is per instance; use postgres or redis in production",
             );
+            // K-66: a lone admin is already covered by the single-admin
+            // exception, so production has no reason to switch it off.
+            p.require(
+                self.admin.four_eyes != Some(false),
+                "admin.four_eyes",
+                "must not be false in production (K-66 four-eyes approval)",
+            );
         }
         self.validate_notify_environment(p);
         p.require(
@@ -525,6 +532,30 @@ mod tests {
                 "{environment}: {found:?}"
             );
         }
+    }
+
+    #[test]
+    fn adm_06_k66_four_eyes_cannot_be_switched_off_in_production() {
+        let off =
+            |environment: &str| with_environment(environment, "\n[admin]\nfour_eyes = false\n");
+        let production = problems(&off("production"));
+        assert!(
+            production.iter().any(|p| p.starts_with("admin.four_eyes")),
+            "{production:?}"
+        );
+        for environment in ["staging", "development", "test"] {
+            let found = problems(&off(environment));
+            assert!(
+                !found.iter().any(|p| p.starts_with("admin.four_eyes")),
+                "{environment}: {found:?}"
+            );
+        }
+        let on = with_environment("production", "\n[admin]\nfour_eyes = true\n");
+        assert!(
+            !problems(&on)
+                .iter()
+                .any(|p| p.starts_with("admin.four_eyes"))
+        );
     }
 
     #[test]

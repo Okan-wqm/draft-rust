@@ -91,6 +91,13 @@ async fn ops_09_openapi_documents_every_module(pool: PgPool) {
         "/v1/orgs",
         "/v1/captcha/challenge",
         "/v1/me/security-events",
+        "/v1/oauth/{provider}/start",
+        "/v1/oauth/{provider}/callback",
+        "/v1/me/identities",
+        "/v1/admin/users",
+        "/v1/admin/users/{user_id}/impersonate",
+        "/v1/admin/enrollment/options",
+        "/v1/admin/enrollment/verify",
     ] {
         assert!(
             doc["paths"][path].is_object(),
@@ -219,4 +226,70 @@ async fn tst_02_one_time_reset_token_is_consumed_exactly_once_under_concurrency(
         "exactly one reset wins: {:?}",
         results.iter().map(|r| r.status).collect::<Vec<_>>()
     );
+}
+
+/// TST-02 / PRT-12: SSRF through the webhook URL. Every non-public target
+/// is refused at registration through the full stack (the delivery-time
+/// defence — DNS resolution, address vetting and pinning in the SSRF-safe
+/// client — is covered by authn-protect and authn-audit).
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn tst_02_webhook_urls_cannot_target_internal_services(pool: PgPool) {
+    let app = App::new(pool).await;
+    app.user("owner@example.com").await;
+    let mut owner = app.browser();
+    let body = owner.login(&app, "owner@example.com", PASSWORD).await;
+    assert_eq!(body["status"], "authenticated", "{body}");
+    let r = owner
+        .send(
+            &app,
+            owner.post("/v1/orgs", &json!({"name": "Acme", "slug": "acme"})),
+        )
+        .await;
+    assert!(r.status.is_success(), "{}", r.text());
+    let org = r.json::<Value>()["id"].as_str().unwrap().to_owned();
+    let create = |url: &str| {
+        owner.post(
+            &format!("/v1/orgs/{org}/webhooks"),
+            &json!({"url": url, "event_types": ["user.created"]}),
+        )
+    };
+    for url in [
+        "https://127.0.0.1/hook",
+        "https://localhost/hook",
+        "https://[::1]/hook",
+        "https://169.254.169.254/latest/meta-data/",
+        "https://10.0.0.5/hook",
+        "https://192.168.1.1/hook",
+        "https://[fd00::1]/hook",
+        "https://[::ffff:127.0.0.1]/hook",
+        "https://0.0.0.0/hook",
+        "https://metadata.google.internal/hook",
+        "https://printer.local/hook",
+        "https://intranet/hook",
+        "http://hooks.example.com/hook",
+        "https://user:pw@hooks.example.com/hook",
+        "file:///etc/passwd",
+        "gopher://hooks.example.com/",
+    ] {
+        let r = app.send(create(url)).await;
+        assert_eq!(
+            r.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{url}: {}",
+            r.text()
+        );
+        assert!(
+            r.text().contains("webhook_url_invalid"),
+            "{url}: {}",
+            r.text()
+        );
+    }
+    let none: i64 = sqlx::query_scalar("SELECT count(*) FROM webhook_endpoints")
+        .fetch_one(&app.pool)
+        .await
+        .unwrap();
+    assert_eq!(none, 0);
+    // A public https URL is accepted.
+    let r = app.send(create("https://hooks.example.com/in")).await;
+    assert!(r.status.is_success(), "{}", r.text());
 }

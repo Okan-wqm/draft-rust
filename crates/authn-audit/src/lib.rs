@@ -12,6 +12,7 @@
 //! | [`sanitize`] | AUD-03 | Structural "no secrets, no personal data" enforcement |
 //! | [`verify`] | AUD-02 | Full / from-anchor chain verification |
 //! | [`retention`] | AUD-05 | Retention purge through the checkpointed escape hatch |
+//! | [`holds`] | AUD-04, K-62 | Events withheld from the subject's own view for a limited time |
 //! | [`query`], [`api`] | AUD-04, AUD-07 | Own security events, organization audit log, webhook endpoints (HTTP) |
 //! | [`policy`] | AUD-04, AUD-07, ORG-10 | [`AuditAccessPolicy`] — authorization delegated to the server |
 //! | [`outbox`] | AUD-06 | [`OutboxEventPublisher`], [`OutboxWorker`], [`OutboxHandler`] registry |
@@ -31,6 +32,7 @@
 pub mod api;
 pub mod canonical;
 pub mod chain;
+pub mod holds;
 pub mod outbox;
 pub mod policy;
 pub mod query;
@@ -42,6 +44,7 @@ pub mod verify;
 pub mod webhooks;
 
 pub use api::{AuditApi, router};
+pub use holds::hide_from_subject_in_tx;
 pub use outbox::{
     HandlerError, NewOutboxMessage, OutboxEventPublisher, OutboxHandler, OutboxHandlers,
     OutboxMessage, OutboxRepository, OutboxWorker,

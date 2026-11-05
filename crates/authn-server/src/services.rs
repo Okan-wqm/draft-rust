@@ -9,13 +9,18 @@
 //!    `AccountAwareSessionRevoker` (given to every other module);
 //! 4. password, passkeys, organizations, audit service (RBAC policy);
 //! 5. the late hooks are bound;
-//! 6. login protection, risk, `SessionService`.
+//! 6. login protection, risk, `SessionService`;
+//! 7. social login (`OidcClientService`, needs the session issuer) and its
+//!    account hooks (erasure: provider token revocation; e-mail change
+//!    revert: every added login method is removed, K-20);
+//! 8. platform admin (`AdminService`).
 
 use std::sync::Arc;
 
 use authn_account::{
     AccountAwareSessionRevoker, AccountService, AccountServiceDeps, AccountServiceSettings,
 };
+use authn_admin::{AdminService, AdminServiceDeps, AdminSettings};
 use authn_audit::{AuditService, AuditServiceParts, OutboxEventPublisher, PgAuditSink};
 use authn_core::config::AppConfig;
 use authn_core::error::AuthError;
@@ -26,6 +31,9 @@ use authn_core::ports::{
 use authn_crypto::CryptoServices;
 use authn_mfa::{MfaService, MfaServiceDeps, MfaServiceSettings};
 use authn_notify::NotifyServices;
+use authn_oidc_client::{
+    OidcClientService, OidcClientServiceDeps, OidcClientSettings, ProviderRegistry,
+};
 use authn_org::{OrgService, OrgServiceDeps, OrgServiceSettings};
 use authn_password::{
     PasswordPolicy, PasswordService, PasswordServiceDeps, PasswordServiceSettings,
@@ -36,7 +44,10 @@ use authn_session::{PgSessionRevoker, SessionService, SessionServiceDeps, Sessio
 use authn_webauthn::{WebauthnService, WebauthnServiceDeps, WebauthnServiceSettings};
 use sqlx::PgPool;
 
-use crate::hooks::{LateHooks, ServerAuditAccess, ServerOwnership, ServerPasskeyPolicy};
+use crate::hooks::{
+    HookAnchors, Late, LateHooks, ServerAuditAccess, ServerOidcLoginMethods, ServerOwnership,
+    ServerPasskeyPolicy, ServerRevertHook, ServerSessionLiveness, ServerSigningKeyCache,
+};
 
 /// Ports that tests (and alternative deployments) may replace.
 #[derive(Clone)]
@@ -52,7 +63,14 @@ pub struct Ports {
     /// Notifier override (tests record notifications); `None` = the
     /// outbox notifier of authn-notify.
     pub notifier: Option<Arc<dyn Notifier>>,
+    /// Rewrites the social-login provider registry before the service is
+    /// built (tests point the providers at fake identity providers);
+    /// `None` in production.
+    pub oidc_registry: Option<RegistryOverride>,
 }
+
+/// See [`Ports::oidc_registry`].
+pub type RegistryOverride = Arc<dyn Fn(&mut ProviderRegistry) + Send + Sync>;
 
 impl Ports {
     /// The production ports from the configuration.
@@ -74,6 +92,7 @@ impl Ports {
             breach_checker,
             dns,
             notifier: None,
+            oidc_registry: None,
         })
     }
 }
@@ -85,6 +104,10 @@ pub struct Services {
     pub config: Arc<AppConfig>,
     /// Application database pool.
     pub pool: PgPool,
+    /// Pool of the maintenance role (OPS-10: audit retention purge,
+    /// checkpoints); the application pool when no separate role is
+    /// configured (`database.maintenance_url`).
+    pub maintenance_pool: PgPool,
     /// Clock.
     pub clock: Arc<dyn Clock>,
     /// Crypto material (keys, hashers, envelopes).
@@ -123,6 +146,13 @@ pub struct Services {
     pub revoker: Arc<dyn SessionRevoker>,
     /// The `SessionIssuer` port (social login, admin).
     pub issuer: Arc<dyn SessionIssuer>,
+    /// Social login (SOC-01 … SOC-09).
+    pub oidc: OidcClientService,
+    /// Platform admin API (ADM-01 … ADM-08).
+    pub admin: AdminService,
+    /// Strong references of the late-bound hooks (see [`crate::hooks::Late`]);
+    /// held only to keep them alive as long as a `Services` handle exists.
+    _anchors: Arc<HookAnchors>,
 }
 
 impl std::fmt::Debug for Services {
@@ -138,6 +168,18 @@ impl Services {
     pub async fn build(
         config: Arc<AppConfig>,
         pool: PgPool,
+        ports: Ports,
+    ) -> Result<Self, AuthError> {
+        let maintenance_pool = pool.clone();
+        Self::build_with_maintenance_pool(config, pool, maintenance_pool, ports).await
+    }
+
+    /// [`Services::build`] with a separate pool of the maintenance role
+    /// (OPS-10).
+    pub async fn build_with_maintenance_pool(
+        config: Arc<AppConfig>,
+        pool: PgPool,
+        maintenance_pool: PgPool,
         ports: Ports,
     ) -> Result<Self, AuthError> {
         let clock = ports.clock.clone();
@@ -221,6 +263,8 @@ impl Services {
             Arc::new(authn_mfa::MfaDataExporter),
             Arc::new(authn_webauthn::PasskeyDataExporter),
             Arc::new(authn_org::OrgDataExporter),
+            Arc::new(authn_oidc_client::IdentityDataExporter),
+            Arc::new(authn_admin::AdminActionsDataExporter::new(clock.clone())),
         ];
         let validator = Arc::new(PasswordPolicy::from_config(
             &config.password,
@@ -301,11 +345,14 @@ impl Services {
             step_up_max_age: config.session.step_up_max_age,
         });
 
-        // 5. Late hooks.
-        hooks.login_methods.webauthn.bind(webauthn.clone());
-        hooks.mfa_policy.webauthn.bind(webauthn.clone());
-        hooks.profiles.accounts.bind(accounts.clone());
-        hooks.account_methods.mfa.bind(mfa.clone());
+        // 5. Late hooks (weak references; the strong ones are the anchors).
+        let webauthn_anchor = Arc::new(webauthn.clone());
+        let mfa_anchor = Arc::new(mfa.clone());
+        let accounts_anchor = Arc::new(accounts.clone());
+        hooks.login_methods.webauthn.bind(&webauthn_anchor);
+        hooks.mfa_policy.webauthn.bind(&webauthn_anchor);
+        hooks.profiles.accounts.bind(&accounts_anchor);
+        hooks.account_methods.mfa.bind(&mfa_anchor);
 
         // 6. Login protection, risk, sessions.
         let risk_store = RiskStore::new(pool.clone(), hasher.clone());
@@ -355,9 +402,71 @@ impl Services {
             SessionSettings::from_app_config(&config),
         )?;
         let issuer: Arc<dyn SessionIssuer> = Arc::new(sessions.clone());
+
+        // 7. Social login (needs the session issuer) and its erasure hook.
+        let oidc = build_oidc(
+            &config,
+            &ports,
+            OidcClientServiceDeps {
+                pool: pool.clone(),
+                clock: clock.clone(),
+                http: http.clone(),
+                envelopes: crypto.envelopes.clone(),
+                rate_limiter: rate_limiter.clone(),
+                audit: audit_sink.clone(),
+                events: events.clone(),
+                sessions: issuer.clone(),
+                accounts: accounts.clone(),
+                login_methods: Arc::new(ServerOidcLoginMethods {
+                    webauthn: webauthn.clone(),
+                }),
+                session_liveness: Arc::new(ServerSessionLiveness),
+                notifier: notifier.clone(),
+            },
+        )
+        .await?;
+        accounts.register_erasure_hook(Arc::new(oidc.erasure_hook()));
+        // K-20: an e-mail change revert removes every login method the
+        // attacker could have added.
+        let oidc_anchor = Arc::new(oidc.clone());
+        let revert_hook = ServerRevertHook {
+            webauthn: webauthn.clone(),
+            mfa: mfa.clone(),
+            oidc: Late::default(),
+        };
+        revert_hook.oidc.bind(&oidc_anchor);
+        accounts.register_revert_hook(Arc::new(revert_hook));
+        let anchors = Arc::new(HookAnchors {
+            webauthn: webauthn_anchor,
+            mfa: mfa_anchor,
+            accounts: accounts_anchor,
+            oidc: oidc_anchor,
+        });
+
+        // 8. Platform admin (needs the issuer and the account-aware revoker).
+        let admin = AdminService::new(
+            AdminServiceDeps {
+                pool: pool.clone(),
+                clock: clock.clone(),
+                audit: audit_sink.clone(),
+                sessions: revoker.clone(),
+                issuer: issuer.clone(),
+                accounts: accounts.clone(),
+                mfa: mfa.clone(),
+                webauthn: webauthn.clone(),
+                passwords: passwords.clone(),
+                protection: protection.clone(),
+                hasher: crypto.passwords.clone(),
+                envelopes: crypto.envelopes.clone(),
+                signing_keys: Arc::new(ServerSigningKeyCache(sessions.clone())),
+                rate_limiter: rate_limiter.clone(),
+            },
+            AdminSettings::from_app_config(&config),
+        );
         Ok(Self {
             config,
             pool,
+            maintenance_pool,
             clock,
             crypto,
             rate_limiter,
@@ -377,6 +486,30 @@ impl Services {
             sessions,
             revoker,
             issuer,
+            oidc,
+            admin,
+            _anchors: anchors,
         })
     }
+}
+
+/// `OidcClientService::build` (the Apple key is decrypted and every
+/// provider setting validated at start-up), with the test override of the
+/// provider registry.
+async fn build_oidc(
+    config: &AppConfig,
+    ports: &Ports,
+    deps: OidcClientServiceDeps,
+) -> Result<OidcClientService, AuthError> {
+    let settings = OidcClientSettings::from_app_config(config);
+    let Some(rewrite) = &ports.oidc_registry else {
+        return OidcClientService::build(deps, settings).await;
+    };
+    let mut settings = settings;
+    if let Some(apple) = settings.config.apple.as_mut() {
+        authn_oidc_client::apple::resolve_private_key(apple, &deps.envelopes).await?;
+    }
+    let mut registry = ProviderRegistry::from_settings(&settings)?;
+    rewrite(&mut registry);
+    OidcClientService::with_registry(deps, settings, registry)
 }

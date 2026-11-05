@@ -14,18 +14,26 @@
 //! * account erasure — [`ProviderTokenErasureHook`], registered by the
 //!   server with `AccountService::register_erasure_hook` and run inside
 //!   the erasure transaction before the cascade deletes `identities`;
-//! * unlinking the identity (`DELETE /v1/me/identities/{id}`).
+//! * unlinking the identity (`DELETE /v1/me/identities/{id}`), and the
+//!   removal of every identity by an e-mail change revert
+//!   ([`OidcClientService::remove_all_identities_in_tx`], K-20);
+//! * a later sign-in that replaces (or clears) the stored refresh token
+//!   (K-59): the old token stays valid at Apple until revoked, so it is
+//!   queued — unless the provider handed out the very same token again.
 //!
 //! [`OidcClientService::process_token_revocations`] (background job) calls
 //! the provider's revocation endpoint (`POST /auth/revoke` with an ES256
 //! client secret for the token's client id). A failure never blocks the
 //! deletion: the row is retried with exponential backoff
 //! ([`revocation_backoff`]) and given up after [`MAX_REVOCATION_ATTEMPTS`];
-//! the final outcome — revoked or abandoned — is audited (`identity.unlinked`
-//! with `step = provider_token_revocation`, `Actor::System`). The queue row
+//! the final outcome — revoked or abandoned — is audited as
+//! `identity.provider_token_revoked` (`Actor::System`; K-60: a dedicated
+//! kind, so nobody reads a revocation outcome as an unlink). The queue row
 //! holds no user id and is deleted at the end either way. A token that can
-//! no longer be decrypted (KEK removed, corrupt row) is audited and
-//! dropped instead of blocking anything.
+//! no longer be decrypted (KEK removed, corrupt row) is audited
+//! (`identity.provider_token_revoked`, failed, `provider_token_unreadable`)
+//! and dropped instead of blocking anything; the unlink itself succeeds and
+//! is recorded as a successful `identity.unlinked`.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -35,6 +43,7 @@ use authn_account::AccountErasureHook;
 use authn_core::error::AuthError;
 use authn_core::id::UserId;
 use authn_core::ports::{Actor, AuditSink, Clock, SecurityEvent, SecurityEventKind};
+use authn_core::secret::constant_time_eq;
 use authn_crypto::envelope::{EnvelopeCipher, EnvelopeContext};
 use secrecy::zeroize::Zeroizing;
 use sqlx::PgConnection;
@@ -87,9 +96,8 @@ fn after(now: OffsetDateTime, wait: Duration) -> OffsetDateTime {
 }
 
 fn revocation_event(now: OffsetDateTime, provider: &str) -> SecurityEvent {
-    SecurityEvent::new(SecurityEventKind::IdentityUnlinked, now)
+    SecurityEvent::new(SecurityEventKind::IdentityProviderTokenRevoked, now)
         .with_actor(Actor::System)
-        .with_meta("step", "provider_token_revocation")
         .with_meta("provider", provider.to_owned())
 }
 
@@ -104,6 +112,42 @@ pub(crate) async fn queue_identity_revocation(
     now: OffsetDateTime,
     user: UserId,
     row: &IdentityRow,
+) -> Result<bool, AuthError> {
+    queue_stored_token(conn, envelopes, audit, now, user, row, None).await
+}
+
+/// K-59: a sign-in is about to overwrite (or clear) the stored refresh
+/// token of `row` with `replacement`. The old token is queued for
+/// revocation unless it is the same token (compared in constant time).
+pub(crate) async fn queue_replaced_token(
+    conn: &mut PgConnection,
+    envelopes: &EnvelopeCipher,
+    audit: &dyn AuditSink,
+    now: OffsetDateTime,
+    user: UserId,
+    row: &IdentityRow,
+    replacement: Option<&[u8]>,
+) -> Result<bool, AuthError> {
+    queue_stored_token(
+        conn,
+        envelopes,
+        audit,
+        now,
+        user,
+        row,
+        Some(replacement.unwrap_or_default()),
+    )
+    .await
+}
+
+async fn queue_stored_token(
+    conn: &mut PgConnection,
+    envelopes: &EnvelopeCipher,
+    audit: &dyn AuditSink,
+    now: OffsetDateTime,
+    user: UserId,
+    row: &IdentityRow,
+    unless_equal_to: Option<&[u8]>,
 ) -> Result<bool, AuthError> {
     let (Some(sealed), Some(client_id)) = (
         row.refresh_token_ciphertext.as_deref(),
@@ -122,18 +166,25 @@ pub(crate) async fn queue_identity_revocation(
                 &EnvelopeContext::new("identities", "refresh_token_ciphertext", row.id)?,
             )
             .await?;
+        if unless_equal_to.is_some_and(|new| constant_time_eq(token.expose(), new)) {
+            return Ok(None);
+        }
         envelopes
             .seal(
                 token.expose(),
                 &EnvelopeContext::new("oauth_token_revocations", "token_ciphertext", id)?,
             )
             .await
+            .map(Some)
     }
     .await;
-    let Ok(resealed) = resealed else {
-        {
+    let resealed = match resealed {
+        Ok(Some(resealed)) => resealed,
+        Ok(None) => return Ok(false),
+        Err(_) => {
             tracing::warn!(identity = %row.id, "stored provider token unreadable; not revoked");
             crate::metrics::token_revocation(&row.provider, "unreadable");
+            // K-60: its own kind — the unlink (or sign-in) itself succeeds.
             let event = revocation_event(now, &row.provider)
                 .with_subject(user)
                 .with_resource("identity", row.id)

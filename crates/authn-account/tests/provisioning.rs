@@ -243,6 +243,50 @@ async fn acc_12_provisioning_honours_the_disposable_domain_list(pool: PgPool) {
     );
 }
 
+/// K-63: the domain list is decided before any lookup — an existing
+/// account with a (now) blocked address is answered exactly like a
+/// missing one.
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn acc_12_k63_blocked_domain_is_decided_before_the_account_lookup(pool: PgPool) {
+    let h = Harness::with(pool, |s| {
+        s.disposable_domains = Some(Arc::new(DisposableDomains::from_domains([
+            "mailinator.com",
+        ])));
+    })
+    .await;
+    let mut tx = h.pool.begin().await.unwrap();
+    let created = h
+        .service
+        .provision_verified_user_in_tx(
+            &mut tx,
+            &h.ctx(),
+            provision(&email("old@example.com"), None),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(created, ProvisionOutcome::Created(_)));
+    tx.commit().await.unwrap();
+    sqlx::query(
+        "UPDATE users SET email = 'old@mailinator.com', email_normalized = 'old@mailinator.com'",
+    )
+    .execute(&h.pool)
+    .await
+    .unwrap();
+    for address in ["old@mailinator.com", "new@mailinator.com"] {
+        let mut tx = h.pool.begin().await.unwrap();
+        let err = h
+            .service
+            .provision_verified_user_in_tx(&mut tx, &h.ctx(), provision(&email(address), None))
+            .await
+            .unwrap_err();
+        assert!(
+            err.is(authn_core::error::codes::account::EMAIL_DOMAIN_NOT_ALLOWED),
+            "{address}: {err:?}"
+        );
+        tx.rollback().await.unwrap();
+    }
+}
+
 /// K-14: when an administrator marks an address verified (ADM-03), the
 /// user's own events carry neither the administrator's user id nor the
 /// administrator's IP / user agent (`Actor::System`, no client context;

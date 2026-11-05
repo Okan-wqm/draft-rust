@@ -8,25 +8,36 @@
 //! error rather than guessing.
 
 use std::net::IpAddr;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, Weak};
 
 use async_trait::async_trait;
 use authn_account::{AccountService, OrganizationOwnership};
 use authn_audit::{AccessDecision, AuditAccessPolicy, AuditPermission};
 use authn_core::domain::{LoginMethod, Principal};
 use authn_core::error::AuthError;
-use authn_core::id::{OrgId, UserId};
+use authn_core::http::RequestContext;
+use authn_core::id::{OrgId, SessionId, UserId};
 use authn_mfa::{MfaPolicySource, MfaService, OrgMfaPolicy};
+use authn_oidc_client::OidcClientService;
 use authn_org::{OrgService, Permission};
 use authn_password::{LoginMethodInventory, ProfileHints, ProfileLookup};
+use authn_session::SessionService;
 use authn_store::UserRepository;
 use authn_webauthn::{
     AccountMethodsSource, MfaFacts, PasskeyPolicy, PasskeyPolicySource, WebauthnService,
 };
 use sqlx::PgConnection;
+use time::OffsetDateTime;
 
 /// A service bound after construction (breaks the MFA ↔ passkey cycle).
-pub struct Late<T>(OnceLock<T>);
+///
+/// It holds only a **weak** reference: the strong one lives in
+/// [`HookAnchors`], owned by [`crate::services::Services`]. A strong
+/// reference here would close a reference cycle (passkeys → this hook →
+/// MFA → its hook → passkeys; accounts → revert hook → social login →
+/// accounts) and every service — with its database pool — would outlive
+/// the last `Services` handle (leaked pools in tests; no clean shutdown).
+pub struct Late<T>(OnceLock<Weak<T>>);
 
 impl<T> Default for Late<T> {
     fn default() -> Self {
@@ -36,28 +47,36 @@ impl<T> Default for Late<T> {
 
 impl<T> Late<T> {
     /// Binds the value (the first call wins).
-    pub fn bind(&self, value: T) {
-        let _ = self.0.set(value);
+    pub fn bind(&self, value: &Arc<T>) {
+        let _ = self.0.set(Arc::downgrade(value));
     }
 
-    fn get(&self) -> Result<&T, AuthError> {
+    fn get(&self) -> Result<Arc<T>, AuthError> {
         self.0
             .get()
-            .ok_or_else(|| AuthError::internal("hook used before the services were bound"))
+            .and_then(Weak::upgrade)
+            .ok_or_else(|| AuthError::internal("hook used outside the services' lifetime"))
     }
 }
 
-/// Whether the user has a linked external identity (authn-oidc-client's
-/// `identities` table), read through `conn`.
+/// The strong references the [`Late`] hooks point to; dropped with the
+/// last [`crate::services::Services`] handle.
+pub struct HookAnchors {
+    /// Passkeys.
+    pub webauthn: Arc<WebauthnService>,
+    /// MFA.
+    pub mfa: Arc<MfaService>,
+    /// Accounts.
+    pub accounts: Arc<AccountService>,
+    /// Social login.
+    pub oidc: Arc<OidcClientService>,
+}
+
+/// Whether the user has a linked external identity (authn-oidc-client),
+/// read through `conn` (SOC-06: a linked identity is a
+/// [`LoginMethod::Social`]).
 async fn has_identity(conn: &mut PgConnection, user: UserId) -> Result<bool, AuthError> {
-    Ok(
-        sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS (SELECT 1 FROM identities WHERE user_id = $1)",
-        )
-        .bind(user)
-        .fetch_one(&mut *conn)
-        .await?,
-    )
+    Ok(OidcClientService::linked_identity_count_in(conn, user).await? > 0)
 }
 
 /// The organization MFA policies of every active membership, combined
@@ -283,6 +302,127 @@ impl AuditAccessPolicy for ServerAuditAccess {
     }
 }
 
+/// `authn_oidc_client::LoginMethodInventory` (SOC-06): the account's
+/// **strong** login methods besides linked identities, read only through
+/// `conn` (the unlink transaction holds the user row lock).
+///
+/// Passwordless e-mail logins (magic link, e-mail code) are deliberately
+/// not counted, exactly as in the password (PWD-11) and passkey (PKY-04)
+/// adapters: they exist for every account with an address, so counting
+/// them would make the "last login method" rule vacuous; the three rules
+/// stay identical and can only refuse, never strand an account.
+pub struct ServerOidcLoginMethods {
+    /// Passkey store.
+    pub webauthn: WebauthnService,
+}
+
+#[async_trait]
+impl authn_oidc_client::LoginMethodInventory for ServerOidcLoginMethods {
+    async fn other_login_methods(
+        &self,
+        conn: &mut PgConnection,
+        user: UserId,
+    ) -> Result<Vec<LoginMethod>, AuthError> {
+        let mut methods = Vec::new();
+        if UserRepository::find_password(&mut *conn, user)
+            .await?
+            .is_some()
+        {
+            methods.push(LoginMethod::Password);
+        }
+        if self
+            .webauthn
+            .passkey_count_in(&mut *conn, user, true)
+            .await?
+            > 0
+        {
+            methods.push(LoginMethod::Passkey);
+        }
+        Ok(methods)
+    }
+}
+
+/// `authn_oidc_client::SessionLiveness` (K-03): the session that started a
+/// link flow must still be a live, non-impersonation session of the same
+/// user — authn-session's check on the caller's connection.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct ServerSessionLiveness;
+
+#[async_trait]
+impl authn_oidc_client::SessionLiveness for ServerSessionLiveness {
+    async fn is_active(
+        &self,
+        conn: &mut PgConnection,
+        session: SessionId,
+        user: UserId,
+        now: OffsetDateTime,
+    ) -> Result<bool, AuthError> {
+        authn_session::is_session_active_in(conn, session, user, now).await
+    }
+}
+
+/// `authn_admin::SigningKeyCache` (ADM-06): an emergency rotation drops
+/// this instance's cached signing keys at once; other instances refresh
+/// after `session.signing_key_cache_ttl`.
+#[derive(Clone)]
+pub struct ServerSigningKeyCache(pub SessionService);
+
+impl authn_admin::SigningKeyCache for ServerSigningKeyCache {
+    fn invalidate_signing_keys(&self) {
+        self.0.invalidate_signing_keys();
+    }
+}
+
+/// `authn_account::EmailChangeRevertHook` (ACC-07, K-20): reverting an
+/// e-mail change means the account was taken over through its mailbox, so
+/// every login method that could have been added meanwhile goes, in the
+/// revert transaction (authn-account already revoked every session and
+/// trusted device and made the password unusable): all passkeys, every
+/// MFA factor and recovery code, and every linked social identity (their
+/// provider tokens are queued for revocation). The owner signs in again
+/// through the restored mailbox (password reset) and re-enrols.
+pub struct ServerRevertHook {
+    /// Passkeys.
+    pub webauthn: WebauthnService,
+    /// MFA factors, recovery codes, trusted devices.
+    pub mfa: MfaService,
+    /// Linked identities (weak: the social login service holds the
+    /// account service, which holds this hook).
+    pub oidc: Late<OidcClientService>,
+}
+
+#[async_trait]
+impl authn_account::EmailChangeRevertHook for ServerRevertHook {
+    async fn after_revert_in_tx(
+        &self,
+        conn: &mut PgConnection,
+        ctx: &RequestContext,
+        user: UserId,
+    ) -> Result<(), AuthError> {
+        // Resolve the late-bound service first: outside the services'
+        // lifetime the hook fails (and authn-account rolls the revert
+        // back) before touching anything.
+        let oidc = self.oidc.get()?;
+        let passkeys = self
+            .webauthn
+            .remove_all_passkeys_in_tx(&mut *conn, ctx, user)
+            .await?;
+        let mfa = self.mfa.reset_user_mfa_in_tx(&mut *conn, ctx, user).await?;
+        let identities = oidc
+            .remove_all_identities_in_tx(&mut *conn, ctx, user)
+            .await?;
+        tracing::info!(
+            user = %user,
+            passkeys,
+            factors = mfa.factors,
+            recovery_codes = mfa.recovery_codes,
+            identities,
+            "login methods removed after e-mail change revert"
+        );
+        Ok(())
+    }
+}
+
 /// The late-bound hooks, kept together so [`crate::services`] can bind
 /// them once.
 #[derive(Default)]
@@ -295,4 +435,29 @@ pub struct LateHooks {
     pub mfa_policy: Arc<ServerMfaPolicy>,
     /// PKY-04.
     pub account_methods: Arc<ServerAccountMethods>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A late-bound hook never answers without its service: unbound, or
+    /// after the last `Services` handle (and with it the anchor) is gone,
+    /// every use is an error — callers propagate it, so the security check
+    /// behind the hook fails closed (no "no other login method" guess).
+    #[test]
+    fn ops_07_late_hooks_fail_closed_outside_the_services_lifetime() {
+        let late: Late<u32> = Late::default();
+        assert!(late.get().is_err(), "unbound");
+        let anchor = Arc::new(7);
+        late.bind(&anchor);
+        assert_eq!(*late.get().unwrap(), 7);
+        // The first binding wins.
+        let other = Arc::new(8);
+        late.bind(&other);
+        assert_eq!(*late.get().unwrap(), 7);
+        drop(anchor);
+        let err = late.get().unwrap_err();
+        assert!(err.status().is_server_error(), "{err}");
+    }
 }

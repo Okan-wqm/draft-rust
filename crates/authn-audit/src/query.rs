@@ -496,7 +496,8 @@ async fn pseudonym_of(pool: &PgPool, user: UserId) -> Result<Option<Uuid>, AuthE
 }
 
 /// A user's own security events of the last `window` before `now`
-/// (AUD-04): events about the user or performed by the user.
+/// (AUD-04): events about the user or performed by the user, except those
+/// under a hold of [`crate::holds`] until a later instant (K-62).
 pub async fn list_user_security_events(
     pool: &PgPool,
     user: UserId,
@@ -521,6 +522,8 @@ pub async fn list_user_security_events(
         "WHERE (e.subject_pseudonym = $1 OR e.actor_pseudonym = $1) \
            AND e.occurred_at >= $2 \
            AND ($3::timestamptz IS NULL OR (e.occurred_at, e.id) < ($3, $4)) \
+           AND NOT EXISTS (SELECT 1 FROM audit_subject_view_holds h \
+                           WHERE h.event_id = e.id AND h.hidden_until > $6) \
          ORDER BY e.occurred_at DESC, e.id DESC LIMIT $5"
     ))
     .bind(me)
@@ -528,6 +531,7 @@ pub async fn list_user_security_events(
     .bind(after_ts)
     .bind(after_id)
     .bind(i64::from(limit) + 1)
+    .bind(now)
     .fetch_all(pool)
     .await?;
     let details: Vec<AuditEventDetail> = rows.into_iter().map(AuditEventDetail::from).collect();

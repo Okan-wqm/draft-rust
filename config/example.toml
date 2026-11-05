@@ -21,6 +21,9 @@ public_base_url = "http://localhost:8080"  # REQUIRED; https in production; only
 # shutdown_grace_period = "30s"
 log_format = "pretty"                  # json (default) | pretty
 # log_filter = "info"
+# admin_console_origins = []           # K-67: origins of an admin console served from ANOTHER origin; only
+#                                      # these may send x-impersonation-session cross-origin. Each must also
+#                                      # be in protect.cors.allowed_origins. Default: none (same-origin console).
 
 [server.limits]                        # PRT-11
 # body_limit_bytes = 65536
@@ -36,6 +39,9 @@ url = "postgres://postgres:postgres@localhost:5432/authn"   # REQUIRED
 # max_lifetime = "30m"
 # statement_timeout = "30s"
 migrate_on_start = true                # default false
+# maintenance_url = "postgres://authn_maintenance:...@localhost:5432/authn"  # OPS-10: maintenance role for audit
+#                                      # retention/checkpoints (docs/operations/least-privilege.md); default: app pool
+# maintenance_max_connections = 2
 
 [crypto]
 current_pepper_version = 1             # REQUIRED
@@ -205,6 +211,7 @@ allowed_origins = ["http://localhost:8080"]  # exact match; rp_id or its subdoma
 # store_provider_tokens = false
 # jwks_cache_ttl = "1h"
 # jwks_refresh_min_interval = "60s"    # SOC-03: min gap between JWKS downloads forced by an unknown kid, 10s-1h
+# jwks_max_staleness = "24h"           # K-61: cached provider keys are used during a JWKS outage only this long, then fail closed; jwks_cache_ttl-7d
 # start_per_ip = { limit = 60, period = "10m" }     # web flow starts per client IP
 # native_per_ip = { limit = 60, period = "10m" }    # native nonces + native logins per client IP
 # callback_per_ip = { limit = 60, period = "10m" }  # web callbacks per client IP (before the state lookup)
@@ -348,3 +355,5 @@ tls = "starttls"                       # starttls | tls (plain text is not suppo
 # step_up_max_age = "10m"
 # impersonation_default_ttl = "15m"
 # impersonation_max_ttl = "60m"
+# four_eyes = true                     # K-66: emergency + admin-targeting actions need a second admin's approval; unset = on in production/staging; false is refused in production
+# four_eyes_approval_ttl = "30m"       # K-66: lifetime of an approval request, 5m-2h

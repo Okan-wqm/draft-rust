@@ -19,13 +19,16 @@
 //! | `POST` | `/v1/admin/users/{user_id}/reset-mfa` | ADM-03 |
 //! | `POST` | `/v1/admin/users/{user_id}/mark-email-verified` | ADM-03 |
 //! | `POST` | `/v1/admin/users/{user_id}/impersonate` | ADM-04 |
+//! | `GET`, `POST` | `/v1/admin/approvals` | K-66 (four-eyes requests) |
+//! | `POST` | `/v1/admin/approvals/{approval_id}/approve`, `…/deny` | K-66 |
 //! | `POST` | `/v1/admin/emergency/revoke-all-sessions` | ADM-06 |
 //! | `POST` | `/v1/admin/emergency/rotate-signing-key` | ADM-06 |
 //! | `POST` | `/v1/admin/emergency/force-password-change` | ADM-06 |
 //! | `GET` | `/v1/admin/audit-events` | ADM-07 |
 //! | `POST` | `/v1/admin/audit-events/export` | ADM-07 |
 //! | `POST` | `/v1/admin/audit-events/verify` | ADM-07, K-09 |
-//! | `POST` | `/v1/admin/audit-events/{event_id}/restrict` | ADM-08, K-39 |
+//! | `POST` | `/v1/admin/audit-events/{event_id}/restrict` | ADM-08, K-39, K-62 |
+//! | `POST` | `/v1/admin/audit-events/{event_id}/restrict/extend` | ADM-08, K-62 |
 //! | `POST` | `/v1/admin/enrollment/options`, `/v1/admin/enrollment/verify` | ADM-05, K-11 ([`enrollment_router`], no session) |
 
 use authn_core::domain::{ClientKind, Page};
@@ -46,9 +49,9 @@ use crate::guard::AdminCaller;
 use crate::reason::Justification;
 use crate::service::{
     ActionOutcome, AdminAuditEvent, AdminAuditFilter, AdminService, AdminUserDetail,
-    AdminUserSummary, AuditExport, BulkResetOutcome, ChainVerification, EmergencyOutcome,
-    ForcedReset, ImpersonationOptions, KeyRotationOutcome, PasswordState, UserSearch,
-    UserStatusFilter, VerifiedAnchor,
+    AdminUserSummary, ApprovalView, AuditExport, BulkResetOutcome, ChainVerification,
+    CriticalOperation, EmergencyOutcome, ForcedReset, ImpersonationOptions, KeyRotationOutcome,
+    PasswordState, UserSearch, UserStatusFilter, VerifiedAnchor,
 };
 
 /// The admin router. Requires [`AdminService`] from the state and the
@@ -84,6 +87,18 @@ where
         )
         .route("/v1/admin/users/{user_id}/impersonate", post(impersonate))
         .route(
+            "/v1/admin/approvals",
+            get(list_approvals).post(request_approval),
+        )
+        .route(
+            "/v1/admin/approvals/{approval_id}/approve",
+            post(approve_approval),
+        )
+        .route(
+            "/v1/admin/approvals/{approval_id}/deny",
+            post(deny_approval),
+        )
+        .route(
             "/v1/admin/emergency/revoke-all-sessions",
             post(emergency_revoke_all_sessions),
         )
@@ -101,6 +116,10 @@ where
         .route(
             "/v1/admin/audit-events/{event_id}/restrict",
             post(restrict_justification),
+        )
+        .route(
+            "/v1/admin/audit-events/{event_id}/restrict/extend",
+            post(extend_restriction),
         )
 }
 
@@ -143,13 +162,18 @@ pub struct AdminEnrollmentApi;
         reset_mfa,
         mark_email_verified,
         impersonate,
+        list_approvals,
+        request_approval,
+        approve_approval,
+        deny_approval,
         emergency_revoke_all_sessions,
         emergency_rotate_signing_key,
         emergency_force_password_change,
         list_audit_events,
         export_audit_events,
         verify_audit_chain,
-        restrict_justification
+        restrict_justification,
+        extend_restriction
     ),
     components(schemas(
         AdminUserSummary,
@@ -158,6 +182,9 @@ pub struct AdminEnrollmentApi;
         PasswordState,
         UserStatusFilter,
         ReasonRequest,
+        ApprovalRequest,
+        DecisionRequest,
+        ApprovalView,
         MustChangePasswordRequest,
         ForcePasswordResetRequest,
         ImpersonateRequest,
@@ -167,6 +194,7 @@ pub struct AdminEnrollmentApi;
         ForcePasswordChangeRequest,
         ExportRequest,
         VerifyChainRequest,
+        RestrictRequest,
         VerifiedAnchor,
         ActionOutcome,
         ForcedReset,
@@ -190,6 +218,121 @@ pub struct AdminApi;
 pub struct ReasonRequest {
     /// Mandatory justification, 1–1000 printable characters (ADM-08).
     pub reason: Option<String>,
+    /// Four-eyes approval (K-66) — only for suspend, unlock and
+    /// revoke-sessions (used when the target is another platform admin and
+    /// `admin.four_eyes` is on); refused (`validation_failed`) on the other
+    /// actions.
+    #[schema(value_type = Option<String>)]
+    pub approval_id: Option<uuid::Uuid>,
+}
+
+/// Body of `POST /v1/admin/approvals` (K-66): the exact operation to be
+/// approved. Parameters not used by the operation are refused.
+#[derive(Debug, Default, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ApprovalRequest {
+    /// `revoke_all_sessions`, `rotate_signing_key`,
+    /// `force_password_change_before`, `suspend_user`, `unlock_user` or
+    /// `revoke_user_sessions`.
+    pub action: String,
+    /// Target platform admin (`suspend_user`, `unlock_user`,
+    /// `revoke_user_sessions` only).
+    pub target_user_id: Option<UserId>,
+    /// `revoke_all_sessions` only (default `false`).
+    pub include_own_session: Option<bool>,
+    /// `force_password_change_before` only (RFC 3339, required).
+    pub changed_before: Option<String>,
+    /// `force_password_change_before` only (default `true`).
+    pub revoke_sessions: Option<bool>,
+    /// Mandatory justification (ADM-08).
+    pub reason: Option<String>,
+}
+
+/// Body of `POST /v1/admin/approvals/{approval_id}/approve` and `…/deny`.
+#[derive(Debug, Default, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DecisionRequest {
+    /// Mandatory justification of the decision (ADM-08).
+    pub reason: Option<String>,
+}
+
+fn invalid_field(field: &'static str) -> AuthError {
+    AuthError::new(codes::common::VALIDATION_FAILED)
+        .with_details(serde_json::json!({ "field": field }))
+}
+
+fn parse_instant(value: &str, field: &'static str) -> Result<OffsetDateTime, AuthError> {
+    if value.len() > 64 {
+        return Err(invalid_field(field));
+    }
+    OffsetDateTime::parse(value, &Rfc3339).map_err(|_| invalid_field(field))
+}
+
+impl ApprovalRequest {
+    /// The operation, strictly validated: unknown actions, a missing or
+    /// superfluous target and parameters of another operation are refused.
+    fn operation(&self) -> Result<CriticalOperation, AuthError> {
+        let emergency_params = (
+            self.include_own_session.is_some(),
+            self.changed_before.is_some() || self.revoke_sessions.is_some(),
+        );
+        let targeted = matches!(
+            self.action.as_str(),
+            "suspend_user" | "unlock_user" | "revoke_user_sessions"
+        );
+        if targeted != self.target_user_id.is_some() {
+            return Err(invalid_field("target_user_id"));
+        }
+        let operation = match (self.action.as_str(), self.target_user_id) {
+            ("suspend_user", Some(u)) => CriticalOperation::SuspendAdmin(u),
+            ("unlock_user", Some(u)) => CriticalOperation::UnlockAdmin(u),
+            ("revoke_user_sessions", Some(u)) => CriticalOperation::RevokeAdminSessions(u),
+            ("revoke_all_sessions", None) => CriticalOperation::RevokeAllSessions {
+                include_own_session: self.include_own_session.unwrap_or(false),
+            },
+            ("rotate_signing_key", None) => CriticalOperation::RotateSigningKey,
+            ("force_password_change_before", None) => CriticalOperation::ForcePasswordChange {
+                changed_before: self
+                    .changed_before
+                    .as_deref()
+                    .ok_or_else(|| invalid_field("changed_before"))
+                    .and_then(|v| parse_instant(v, "changed_before"))?,
+                revoke_sessions: self.revoke_sessions.unwrap_or(true),
+            },
+            _ => return Err(invalid_field("action")),
+        };
+        let allowed = match operation {
+            CriticalOperation::RevokeAllSessions { .. } => (true, false),
+            CriticalOperation::ForcePasswordChange { .. } => (false, true),
+            _ => (false, false),
+        };
+        if (emergency_params.0 && !allowed.0) || (emergency_params.1 && !allowed.1) {
+            return Err(invalid_field("action"));
+        }
+        Ok(operation)
+    }
+}
+
+/// Body of `POST /v1/admin/audit-events/{event_id}/restrict` and
+/// `…/restrict/extend` (K-62).
+#[derive(Debug, Default, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RestrictRequest {
+    /// Mandatory restriction note / extension justification (ADM-08).
+    pub reason: Option<String>,
+    /// Review date (RFC 3339): the restriction ends then unless extended;
+    /// after now and at most 180 days ahead.
+    pub review_at: Option<String>,
+}
+
+fn parse_review_at(value: Option<&str>) -> Result<OffsetDateTime, AuthError> {
+    value
+        .filter(|v| v.len() <= 64)
+        .and_then(|v| OffsetDateTime::parse(v, &Rfc3339).ok())
+        .ok_or_else(|| {
+            AuthError::new(codes::common::VALIDATION_FAILED)
+                .with_details(serde_json::json!({ "field": "review_at" }))
+        })
 }
 
 /// Body of `POST /v1/admin/users/{user_id}/must-change-password`.
@@ -246,6 +389,9 @@ pub struct EmergencyRequest {
     /// The operation's name, repeated: `revoke_all_sessions` /
     /// `rotate_signing_key`.
     pub confirm: Option<String>,
+    /// Four-eyes approval (K-66), when `admin.four_eyes` is on.
+    #[schema(value_type = Option<String>)]
+    pub approval_id: Option<uuid::Uuid>,
 }
 
 /// Body of `POST /v1/admin/emergency/revoke-all-sessions`.
@@ -259,6 +405,9 @@ pub struct RevokeAllRequest {
     /// Also revoke the caller's own session (default `false`: the caller's
     /// session is kept, K-10).
     pub include_own_session: Option<bool>,
+    /// Four-eyes approval (K-66), when `admin.four_eyes` is on.
+    #[schema(value_type = Option<String>)]
+    pub approval_id: Option<uuid::Uuid>,
 }
 
 /// Body of `POST /v1/admin/emergency/force-password-change`.
@@ -274,6 +423,9 @@ pub struct ForcePasswordChangeRequest {
     pub changed_before: String,
     /// Also revoke the affected accounts' sessions (default `true`).
     pub revoke_sessions: Option<bool>,
+    /// Four-eyes approval (K-66), when `admin.four_eyes` is on.
+    #[schema(value_type = Option<String>)]
+    pub approval_id: Option<uuid::Uuid>,
 }
 
 /// Body of `POST /v1/admin/audit-events/export`.
@@ -397,7 +549,7 @@ macro_rules! reason_action {
             responses(
                 (status = 200, description = "Done", body = ActionOutcome),
                 (status = 401, description = "unauthenticated / step_up_required", body = ErrorEnvelope),
-                (status = 403, description = "forbidden / admin_phishing_resistant_mfa_required / admin_target_not_allowed", body = ErrorEnvelope),
+                (status = 403, description = "forbidden / admin_phishing_resistant_mfa_required / admin_target_not_allowed / admin_approval_required / admin_approval_invalid (K-66)", body = ErrorEnvelope),
                 (status = 404, description = "not_found", body = ErrorEnvelope),
                 (status = 409, description = "account_status_transition_not_allowed", body = ErrorEnvelope),
                 (status = 422, description = "admin_reason_required", body = ErrorEnvelope),
@@ -411,16 +563,52 @@ macro_rules! reason_action {
             Json(body): Json<ReasonRequest>,
         ) -> Result<Response, AuthError> {
             let reason = Justification::parse(body.reason.as_deref())?;
+            if body.approval_id.is_some() {
+                return Err(invalid_field("approval_id"));
+            }
             Ok(ok(service.$method(&caller, &ctx, user_id, &reason).await?))
         }
     };
+
+    ($(#[$doc:meta])* $name:ident, $path:literal, $method:ident, approved) => {
+        $(#[$doc])*
+        #[utoipa::path(
+            post,
+            path = $path,
+            tag = "admin",
+            params(("user_id" = String, Path, description = "User id")),
+            request_body = ReasonRequest,
+            responses(
+                (status = 200, description = "Done", body = ActionOutcome),
+                (status = 401, description = "unauthenticated / step_up_required", body = ErrorEnvelope),
+                (status = 403, description = "forbidden / admin_phishing_resistant_mfa_required / admin_target_not_allowed / admin_approval_required / admin_approval_invalid (K-66)", body = ErrorEnvelope),
+                (status = 404, description = "not_found", body = ErrorEnvelope),
+                (status = 409, description = "account_status_transition_not_allowed", body = ErrorEnvelope),
+                (status = 422, description = "admin_reason_required", body = ErrorEnvelope),
+            )
+        )]
+        pub async fn $name(
+            State(service): State<AdminService>,
+            caller: AdminCaller,
+            ctx: RequestContext,
+            Path(user_id): Path<UserId>,
+            Json(body): Json<ReasonRequest>,
+        ) -> Result<Response, AuthError> {
+            let reason = Justification::parse(body.reason.as_deref())?;
+            Ok(ok(service
+                .$method(&caller, &ctx, user_id, &reason, body.approval_id)
+                .await?))
+        }
+    };
+
 }
 
 reason_action!(
     /// Suspends the account and revokes its sessions and trusted devices.
     suspend_user,
     "/v1/admin/users/{user_id}/suspend",
-    suspend_user
+    suspend_user_approved,
+    approved
 );
 reason_action!(
     /// Lifts a suspension (regular users only).
@@ -432,13 +620,15 @@ reason_action!(
     /// Ends a temporary lock and clears the login soft lock.
     unlock_user,
     "/v1/admin/users/{user_id}/unlock",
-    unlock_user
+    unlock_user_approved,
+    approved
 );
 reason_action!(
     /// Revokes every session and trusted device of the account.
     revoke_user_sessions,
     "/v1/admin/users/{user_id}/revoke-sessions",
-    revoke_user_sessions
+    revoke_user_sessions_approved,
+    approved
 );
 reason_action!(
     /// Resets the account's MFA and notifies the user (regular users only).
@@ -560,6 +750,103 @@ pub async fn impersonate(
     Ok(no_store(response))
 }
 
+// --- four-eyes approvals (K-66) ---------------------------------------------------
+
+/// Recent four-eyes approval requests (last 7 days, newest first).
+#[utoipa::path(
+    get,
+    path = "/v1/admin/approvals",
+    tag = "admin",
+    responses(
+        (status = 200, description = "Approval requests", body = [ApprovalView]),
+        (status = 401, description = "unauthenticated / step_up_required", body = ErrorEnvelope),
+        (status = 403, description = "forbidden / admin_phishing_resistant_mfa_required", body = ErrorEnvelope),
+    )
+)]
+pub async fn list_approvals(
+    State(service): State<AdminService>,
+    caller: AdminCaller,
+) -> Result<Response, AuthError> {
+    Ok(ok(service.list_approvals(&caller).await?))
+}
+
+/// Requests a second platform admin's approval of a critical operation
+/// (K-66): an emergency operation or an action on another platform admin,
+/// with its exact parameters. Expires after `admin.four_eyes_approval_ttl`.
+#[utoipa::path(
+    post,
+    path = "/v1/admin/approvals",
+    tag = "admin",
+    request_body = ApprovalRequest,
+    responses(
+        (status = 200, description = "Pending approval request", body = ApprovalView),
+        (status = 401, description = "unauthenticated / step_up_required", body = ErrorEnvelope),
+        (status = 403, description = "forbidden / admin_target_not_allowed", body = ErrorEnvelope),
+        (status = 404, description = "not_found (target)", body = ErrorEnvelope),
+        (status = 422, description = "admin_reason_required / validation_failed", body = ErrorEnvelope),
+        (status = 429, description = "rate_limited: more than 3 pending or 10 per hour requests of this admin (K-66)", body = ErrorEnvelope),
+    )
+)]
+pub async fn request_approval(
+    State(service): State<AdminService>,
+    caller: AdminCaller,
+    ctx: RequestContext,
+    Json(body): Json<ApprovalRequest>,
+) -> Result<Response, AuthError> {
+    let reason = Justification::parse(body.reason.as_deref())?;
+    let operation = body.operation()?;
+    Ok(ok(service
+        .request_approval(&caller, &ctx, operation, &reason)
+        .await?))
+}
+
+macro_rules! decision {
+    ($(#[$doc:meta])* $name:ident, $path:literal, $approve:literal) => {
+        $(#[$doc])*
+        #[utoipa::path(
+            post,
+            path = $path,
+            tag = "admin",
+            params(("approval_id" = String, Path, description = "Approval request id")),
+            request_body = DecisionRequest,
+            responses(
+                (status = 200, description = "Decided", body = ApprovalView),
+                (status = 401, description = "unauthenticated / step_up_required", body = ErrorEnvelope),
+                (status = 403, description = "forbidden / admin_phishing_resistant_mfa_required / admin_self_approval_not_allowed / admin_target_not_allowed / admin_approval_invalid (decided or expired)", body = ErrorEnvelope),
+                (status = 404, description = "not_found", body = ErrorEnvelope),
+                (status = 422, description = "admin_reason_required", body = ErrorEnvelope),
+            )
+        )]
+        pub async fn $name(
+            State(service): State<AdminService>,
+            caller: AdminCaller,
+            ctx: RequestContext,
+            Path(approval_id): Path<uuid::Uuid>,
+            Json(body): Json<DecisionRequest>,
+        ) -> Result<Response, AuthError> {
+            let reason = Justification::parse(body.reason.as_deref())?;
+            Ok(ok(service
+                .decide_approval(&caller, &ctx, approval_id, $approve, &reason)
+                .await?))
+        }
+    };
+}
+
+decision!(
+    /// Approves another admin's pending request (K-66). The approver passes
+    /// the full admin guard (passkey session, step-up) and is neither the
+    /// requester nor the target.
+    approve_approval,
+    "/v1/admin/approvals/{approval_id}/approve",
+    true
+);
+decision!(
+    /// Denies another admin's pending request (K-66). Final.
+    deny_approval,
+    "/v1/admin/approvals/{approval_id}/deny",
+    false
+);
+
 // --- emergency (ADM-06) ------------------------------------------------------------
 
 /// Revokes every session of every user — except the caller's own session
@@ -573,7 +860,7 @@ pub async fn impersonate(
     responses(
         (status = 200, description = "Done", body = EmergencyOutcome),
         (status = 401, description = "unauthenticated / step_up_required", body = ErrorEnvelope),
-        (status = 403, description = "forbidden", body = ErrorEnvelope),
+        (status = 403, description = "forbidden / admin_approval_required / admin_approval_invalid (K-66)", body = ErrorEnvelope),
         (status = 422, description = "admin_reason_required / admin_confirmation_required", body = ErrorEnvelope),
         (status = 429, description = "rate_limited (K-08: per-admin / global budget, cool-down)", body = ErrorEnvelope),
     )
@@ -587,11 +874,12 @@ pub async fn emergency_revoke_all_sessions(
     let reason = Justification::parse(body.reason.as_deref())?;
     require_confirmation(body.confirm.as_deref(), "revoke_all_sessions")?;
     Ok(ok(service
-        .revoke_all_sessions(
+        .revoke_all_sessions_approved(
             &caller,
             &ctx,
             &reason,
             body.include_own_session.unwrap_or(false),
+            body.approval_id,
         )
         .await?))
 }
@@ -606,7 +894,7 @@ pub async fn emergency_revoke_all_sessions(
     responses(
         (status = 200, description = "Done", body = KeyRotationOutcome),
         (status = 401, description = "unauthenticated / step_up_required", body = ErrorEnvelope),
-        (status = 403, description = "forbidden", body = ErrorEnvelope),
+        (status = 403, description = "forbidden / admin_approval_required / admin_approval_invalid (K-66)", body = ErrorEnvelope),
         (status = 422, description = "admin_reason_required / admin_confirmation_required", body = ErrorEnvelope),
     )
 )]
@@ -619,7 +907,7 @@ pub async fn emergency_rotate_signing_key(
     let reason = Justification::parse(body.reason.as_deref())?;
     require_confirmation(body.confirm.as_deref(), "rotate_signing_key")?;
     Ok(ok(service
-        .rotate_signing_key(&caller, &ctx, &reason)
+        .rotate_signing_key_approved(&caller, &ctx, &reason, body.approval_id)
         .await?))
 }
 
@@ -634,7 +922,7 @@ pub async fn emergency_rotate_signing_key(
     responses(
         (status = 200, description = "Done", body = BulkResetOutcome),
         (status = 401, description = "unauthenticated / step_up_required", body = ErrorEnvelope),
-        (status = 403, description = "forbidden", body = ErrorEnvelope),
+        (status = 403, description = "forbidden / admin_approval_required / admin_approval_invalid (K-66)", body = ErrorEnvelope),
         (status = 422, description = "admin_reason_required / admin_confirmation_required / validation_failed", body = ErrorEnvelope),
     )
 )]
@@ -656,12 +944,13 @@ pub async fn emergency_force_password_change(
             .with_details(serde_json::json!({ "field": "changed_before" }))
     })?;
     Ok(ok(service
-        .force_password_change_before(
+        .force_password_change_before_approved(
             &caller,
             &ctx,
             before,
             body.revoke_sessions.unwrap_or(true),
             &reason,
+            body.approval_id,
         )
         .await?))
 }
@@ -751,21 +1040,23 @@ pub async fn verify_audit_chain(
 }
 
 /// Withholds the justification of an admin action from the subject's data
-/// export under a legal restriction (K-39, KVKK art. 28 / GDPR art. 23).
-/// The restriction note (`reason`) is mandatory; the restriction is itself
-/// audited and cannot be lifted through the API.
+/// export under a legal restriction until `review_at` (K-39, K-62; KVKK
+/// art. 28 / GDPR art. 23). The restriction note (`reason`) and the review
+/// date (at most 180 days ahead) are mandatory; the restriction is itself
+/// audited, hidden from the subject while active, and cannot be lifted
+/// early through the API.
 #[utoipa::path(
     post,
     path = "/v1/admin/audit-events/{event_id}/restrict",
     tag = "admin",
     params(("event_id" = String, Path, description = "Audit event of the admin action")),
-    request_body = ReasonRequest,
+    request_body = RestrictRequest,
     responses(
         (status = 200, description = "Restricted", body = ActionOutcome),
         (status = 401, description = "unauthenticated / step_up_required", body = ErrorEnvelope),
         (status = 403, description = "forbidden / admin_target_not_allowed", body = ErrorEnvelope),
         (status = 404, description = "not_found (no justification about a user)", body = ErrorEnvelope),
-        (status = 422, description = "admin_reason_required", body = ErrorEnvelope),
+        (status = 422, description = "admin_reason_required / validation_failed (review_at)", body = ErrorEnvelope),
     )
 )]
 pub async fn restrict_justification(
@@ -773,11 +1064,44 @@ pub async fn restrict_justification(
     caller: AdminCaller,
     ctx: RequestContext,
     Path(event_id): Path<EventId>,
-    Json(body): Json<ReasonRequest>,
+    Json(body): Json<RestrictRequest>,
 ) -> Result<Response, AuthError> {
     let note = Justification::parse(body.reason.as_deref())?;
+    let review_at = parse_review_at(body.review_at.as_deref())?;
     Ok(ok(service
-        .restrict_justification(&caller, &ctx, event_id, &note)
+        .restrict_justification(&caller, &ctx, event_id, &note, review_at)
+        .await?))
+}
+
+/// Extends an active restriction to a later review date (K-62): mandatory
+/// justification, new date at most 180 days ahead; audited and hidden from
+/// the subject like the restriction.
+#[utoipa::path(
+    post,
+    path = "/v1/admin/audit-events/{event_id}/restrict/extend",
+    tag = "admin",
+    params(("event_id" = String, Path, description = "Audit event of the restricted admin action")),
+    request_body = RestrictRequest,
+    responses(
+        (status = 200, description = "Extended", body = ActionOutcome),
+        (status = 401, description = "unauthenticated / step_up_required", body = ErrorEnvelope),
+        (status = 403, description = "forbidden / admin_target_not_allowed", body = ErrorEnvelope),
+        (status = 404, description = "not_found", body = ErrorEnvelope),
+        (status = 409, description = "conflict (no active restriction)", body = ErrorEnvelope),
+        (status = 422, description = "admin_reason_required / validation_failed (review_at)", body = ErrorEnvelope),
+    )
+)]
+pub async fn extend_restriction(
+    State(service): State<AdminService>,
+    caller: AdminCaller,
+    ctx: RequestContext,
+    Path(event_id): Path<EventId>,
+    Json(body): Json<RestrictRequest>,
+) -> Result<Response, AuthError> {
+    let reason = Justification::parse(body.reason.as_deref())?;
+    let review_at = parse_review_at(body.review_at.as_deref())?;
+    Ok(ok(service
+        .extend_restriction(&caller, &ctx, event_id, &reason, review_at)
         .await?))
 }
 

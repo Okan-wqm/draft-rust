@@ -221,6 +221,24 @@ pub async fn find_identity(
         .await?)
 }
 
+/// The identity `id`, row-locked (`FOR UPDATE`) for the caller's
+/// transaction: concurrent sign-ins replacing its tokens are serialized
+/// (K-59: each replaced token is seen, and queued, exactly once).
+pub async fn lock_identity(
+    conn: &mut PgConnection,
+    id: IdentityId,
+) -> Result<Option<IdentityRow>, StoreError> {
+    let sql = concat!(
+        "SELECT ",
+        identity_columns!(),
+        " FROM identities WHERE id = $1 FOR UPDATE"
+    );
+    Ok(sqlx::query_as::<_, IdentityRow>(sql)
+        .bind(id)
+        .fetch_optional(conn)
+        .await?)
+}
+
 /// The user's identities, oldest first.
 pub async fn identities_of(
     executor: impl PgExecutor<'_>,

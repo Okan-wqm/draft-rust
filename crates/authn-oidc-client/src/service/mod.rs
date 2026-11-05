@@ -225,7 +225,8 @@ impl OidcClientService {
         let jwks = JwksCache::new(
             settings.config.jwks_cache_ttl,
             settings.jwks_refresh_min_interval,
-        );
+        )
+        .with_max_staleness(settings.config.jwks_max_staleness);
         let discovery = DiscoveryCache::new(settings.config.jwks_cache_ttl);
         Ok(Self {
             inner: Arc::new(Inner {

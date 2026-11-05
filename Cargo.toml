@@ -47,7 +47,7 @@ authn-audit = { path = "crates/authn-audit" }
 authn-notify = { path = "crates/authn-notify", default-features = false }
 authn-session = { path = "crates/authn-session", default-features = false }
 authn-oidc-client = { path = "crates/authn-oidc-client" }
-authn-admin = { path = "crates/authn-admin" }
+authn-admin = { path = "crates/authn-admin", default-features = false }
 
 # --- runtime, HTTP ---------------------------------------------------------
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "signal", "time", "sync", "net"] }

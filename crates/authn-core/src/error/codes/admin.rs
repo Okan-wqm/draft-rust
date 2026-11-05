@@ -47,10 +47,42 @@ pub const CONFIRMATION_REQUIRED: ErrorCode = ErrorCode::new(
     "Acil durum işlemini, adını onay alanına yazarak onaylayın.",
 );
 
+/// A critical operation (emergency operation or action on another
+/// platform admin) needs the approval of a second platform admin (K-66):
+/// request one (`POST /v1/admin/approvals`) and retry with its
+/// `approval_id` once approved.
+pub const APPROVAL_REQUIRED: ErrorCode = ErrorCode::new(
+    "admin_approval_required",
+    StatusCode::FORBIDDEN,
+    "This operation needs the approval of a second platform admin.",
+    "Bu işlem ikinci bir platform yöneticisinin onayını gerektirir.",
+);
+
+/// The given four-eyes approval cannot be used for this operation: unknown,
+/// requested by someone else, not approved, denied, expired, already used,
+/// or approved for other parameters (K-66). Deliberately generic.
+pub const APPROVAL_INVALID: ErrorCode = ErrorCode::new(
+    "admin_approval_invalid",
+    StatusCode::FORBIDDEN,
+    "The approval is not valid for this operation. Request a new approval.",
+    "Onay bu işlem için geçerli değil. Yeni bir onay isteyin.",
+);
+
+/// An admin tried to approve or deny their own four-eyes request (K-66).
+pub const SELF_APPROVAL_NOT_ALLOWED: ErrorCode = ErrorCode::new(
+    "admin_self_approval_not_allowed",
+    StatusCode::FORBIDDEN,
+    "A request must be approved by a different platform admin.",
+    "Bir istek farklı bir platform yöneticisi tarafından onaylanmalıdır.",
+);
+
 /// Every code declared in this file (registry, uniqueness test, catalogue).
 pub const ALL: &[ErrorCode] = &[
     PHISHING_RESISTANT_MFA_REQUIRED,
     REASON_REQUIRED,
     TARGET_NOT_ALLOWED,
     CONFIRMATION_REQUIRED,
+    APPROVAL_REQUIRED,
+    APPROVAL_INVALID,
+    SELF_APPROVAL_NOT_ALLOWED,
 ];

@@ -3,6 +3,8 @@
 //! outbound HTTP). No network (TST-08).
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+pub mod idp;
+
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -37,25 +39,34 @@ impl App {
     }
 
     pub async fn with(pool: PgPool, tweak: impl FnOnce(&mut AppConfig)) -> Self {
+        Self::with_ports(pool, tweak, |_| {}).await
+    }
+
+    /// [`App::with`], also replacing ports (real HTTP client and fake
+    /// identity providers for the social-login tests).
+    pub async fn with_ports(
+        pool: PgPool,
+        tweak: impl FnOnce(&mut AppConfig),
+        tweak_ports: impl FnOnce(&mut Ports),
+    ) -> Self {
         authn_core::tls::install_crypto_provider();
         authn_testkit::init_tracing();
         let mut config = authn_testkit::config::test_config();
         tweak(&mut config);
         let ports = TestPorts::new();
         let clock: Arc<dyn Clock> = ports.clock.clone();
-        let services = Services::build(
-            Arc::new(config),
-            pool.clone(),
-            Ports {
-                clock,
-                http: ports.http.clone(),
-                breach_checker: ports.breached_passwords.clone(),
-                dns: ports.dns.clone(),
-                notifier: Some(ports.notifier.clone()),
-            },
-        )
-        .await
-        .unwrap();
+        let mut service_ports = Ports {
+            clock,
+            http: ports.http.clone(),
+            breach_checker: ports.breached_passwords.clone(),
+            dns: ports.dns.clone(),
+            notifier: Some(ports.notifier.clone()),
+            oidc_registry: None,
+        };
+        tweak_ports(&mut service_ports);
+        let services = Services::build(Arc::new(config), pool.clone(), service_ports)
+            .await
+            .unwrap();
         authn_server::jobs::rotate_signing_keys(&services)
             .await
             .unwrap();

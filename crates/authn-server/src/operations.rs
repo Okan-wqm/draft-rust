@@ -1,19 +1,15 @@
 //! Operational commands behind the CLI (OPS-01): KEK rotation, signing
-//! key rotation, audit chain verification, legacy hash migration and the
-//! break-glass admin (ADM-05).
+//! key rotation, legacy hash migration and sealing the Apple key. The
+//! break-glass admin commands (ADM-05, K-07, K-11) call authn-admin
+//! directly (`crate::cli`).
 
-use std::sync::Arc;
-
-use authn_core::domain::{AccountStatus, EmailAddress};
 use authn_core::error::AuthError;
 use authn_core::id::UserId;
-use authn_core::ports::{Actor, AuditSink, Clock, SecurityEvent, SecurityEventKind};
-use authn_core::secret::SensitiveString;
+use authn_core::ports::Clock;
 use authn_crypto::CryptoServices;
 use authn_crypto::envelope::{EnvelopeCipher, EnvelopeContext};
 use authn_crypto::password::LegacyDigest;
-use authn_crypto::token::OpaqueToken;
-use authn_store::{NewPasswordHash, NewUser, SigningKeyRepository, UserRepository};
+use authn_store::{NewPasswordHash, SigningKeyRepository, UserRepository};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -30,24 +26,58 @@ struct SealedColumn {
 /// secrets (which have their own re-wrap functions).
 const SEALED_COLUMNS: &[SealedColumn] = &[
     SealedColumn {
-        select: "SELECT id, secret_ciphertext FROM mfa_factors WHERE secret_ciphertext IS NOT NULL",
+        select: "SELECT id, secret_ciphertext FROM mfa_factors WHERE secret_ciphertext IS NOT NULL AND id > $1 ORDER BY id LIMIT $2",
         update: "UPDATE mfa_factors SET secret_ciphertext = $2 WHERE id = $1 AND secret_ciphertext = $3",
         table: "mfa_factors",
         column: "secret_ciphertext",
     },
     SealedColumn {
-        select: "SELECT id, successor_ciphertext FROM refresh_tokens WHERE successor_ciphertext IS NOT NULL",
+        select: "SELECT id, successor_ciphertext FROM refresh_tokens WHERE successor_ciphertext IS NOT NULL AND id > $1 ORDER BY id LIMIT $2",
         update: "UPDATE refresh_tokens SET successor_ciphertext = $2 WHERE id = $1 AND successor_ciphertext = $3",
         table: "refresh_tokens",
         column: "successor_ciphertext",
     },
     SealedColumn {
-        select: "SELECT id, sealed_payload FROM outbox WHERE sealed_payload IS NOT NULL",
+        select: "SELECT id, sealed_payload FROM outbox WHERE sealed_payload IS NOT NULL AND id > $1 ORDER BY id LIMIT $2",
         update: "UPDATE outbox SET sealed_payload = $2 WHERE id = $1 AND sealed_payload = $3",
         table: "outbox",
         column: "sealed_payload",
     },
+    // authn-oidc-client (SOC-08, K-35): stored provider tokens, PKCE
+    // verifiers of pending flows, queued token revocations.
+    SealedColumn {
+        select: "SELECT id, access_token_ciphertext FROM identities WHERE access_token_ciphertext IS NOT NULL AND id > $1 ORDER BY id LIMIT $2",
+        update: "UPDATE identities SET access_token_ciphertext = $2 WHERE id = $1 AND access_token_ciphertext = $3",
+        table: "identities",
+        column: "access_token_ciphertext",
+    },
+    SealedColumn {
+        select: "SELECT id, refresh_token_ciphertext FROM identities WHERE refresh_token_ciphertext IS NOT NULL AND id > $1 ORDER BY id LIMIT $2",
+        update: "UPDATE identities SET refresh_token_ciphertext = $2 WHERE id = $1 AND refresh_token_ciphertext = $3",
+        table: "identities",
+        column: "refresh_token_ciphertext",
+    },
+    SealedColumn {
+        select: "SELECT id, pkce_verifier_ciphertext FROM oauth_states WHERE pkce_verifier_ciphertext IS NOT NULL AND id > $1 ORDER BY id LIMIT $2",
+        update: "UPDATE oauth_states SET pkce_verifier_ciphertext = $2 WHERE id = $1 AND pkce_verifier_ciphertext = $3",
+        table: "oauth_states",
+        column: "pkce_verifier_ciphertext",
+    },
+    SealedColumn {
+        select: "SELECT id, token_ciphertext FROM oauth_token_revocations WHERE id > $1 ORDER BY id LIMIT $2",
+        update: "UPDATE oauth_token_revocations SET token_ciphertext = $2 WHERE id = $1 AND token_ciphertext = $3",
+        table: "oauth_token_revocations",
+        column: "token_ciphertext",
+    },
 ];
+
+/// The `(table, column)` pairs [`rotate_kek`] re-wraps besides signing keys
+/// and webhook secrets (tests compare it with the schema: every
+/// `*_ciphertext` column must be covered).
+#[must_use]
+pub fn sealed_columns() -> Vec<(&'static str, &'static str)> {
+    SEALED_COLUMNS.iter().map(|c| (c.table, c.column)).collect()
+}
 
 /// Result of a KEK rotation.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -58,6 +88,66 @@ pub struct RewrapReport {
     pub webhook_secrets: u64,
     /// Other sealed values re-wrapped.
     pub other: u64,
+}
+
+/// `oidc_client.apple.private_key_ciphertext` after a KEK rotation: the
+/// value lives in the configuration, so the command can only print the
+/// re-wrapped envelope for the operator to store (it is ciphertext, not a
+/// secret).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AppleKeyRewrap {
+    /// No envelope-encrypted Apple key is configured.
+    NotConfigured,
+    /// Already sealed with the current KEK.
+    Current,
+    /// Sealed with an older KEK: replace the configured value with this.
+    Rewrapped(String),
+}
+
+/// Re-wraps the configured Apple key envelope (K-34) with the current KEK.
+pub async fn rewrap_apple_key(
+    config: &authn_core::config::AppConfig,
+    cipher: &EnvelopeCipher,
+) -> Result<AppleKeyRewrap, AuthError> {
+    use authn_core::secret::ExposeSecret;
+    use base64::Engine as _;
+    let Some(sealed) = config
+        .oidc_client
+        .apple
+        .as_ref()
+        .and_then(|apple| apple.private_key_ciphertext.as_ref())
+    else {
+        return Ok(AppleKeyRewrap::NotConfigured);
+    };
+    let engine = base64::engine::general_purpose::STANDARD;
+    let bytes = engine.decode(sealed.expose_secret().trim()).map_err(|_| {
+        AuthError::internal("oidc_client.apple.private_key_ciphertext is not base64")
+    })?;
+    let context = authn_oidc_client::apple::private_key_context()?;
+    Ok(
+        match cipher
+            .rewrap(&bytes, &context)
+            .await
+            .map_err(AuthError::from)?
+        {
+            Some(rewrapped) => AppleKeyRewrap::Rewrapped(engine.encode(rewrapped)),
+            None => AppleKeyRewrap::Current,
+        },
+    )
+}
+
+/// Error context of authn-oidc-client's `seal_private_key` for an input
+/// that is not a PKCS#8 P-256 key (the CLI reports it as an input error).
+pub const NOT_AN_APPLE_KEY: &str = "apple private key is not a PKCS#8 P-256 key";
+
+/// `seal-apple-key` (SOC-07, K-34): validates a PKCS#8 P-256 PEM and seals
+/// it for `oidc_client.apple.private_key_ciphertext` (base64). Errors never
+/// contain the key.
+pub async fn seal_apple_key(cipher: &EnvelopeCipher, pem: &str) -> Result<String, AuthError> {
+    use authn_core::secret::ExposeSecret;
+    let pem = authn_core::secret::SecretString::from(pem.trim().to_owned());
+    let sealed = authn_oidc_client::apple::seal_private_key(cipher, &pem).await?;
+    Ok(sealed.expose_secret().to_owned())
 }
 
 /// `rotate-kek` / `reencrypt` (CRY-08): re-wraps every envelope that does
@@ -72,27 +162,54 @@ pub async fn rotate_kek(pool: &PgPool, cipher: &EnvelopeCipher) -> Result<Rewrap
     drop(conn);
     report.webhook_secrets = authn_audit::webhooks::rewrap_webhook_secrets(pool, cipher).await?;
     for column in SEALED_COLUMNS {
-        let rows: Vec<(Uuid, Vec<u8>)> = sqlx::query_as(column.select).fetch_all(pool).await?;
-        for (id, sealed) in rows {
-            let context =
-                EnvelopeContext::new(column.table, column.column, id).map_err(AuthError::from)?;
-            if let Some(rewrapped) = cipher
-                .rewrap(&sealed, &context)
-                .await
-                .map_err(AuthError::from)?
-            {
-                let changed = sqlx::query(column.update)
-                    .bind(id)
-                    .bind(&rewrapped)
-                    .bind(&sealed)
-                    .execute(pool)
-                    .await?
-                    .rows_affected();
-                report.other += changed;
-            }
+        // Keyset pages: bounded memory on large tables (outbox), no
+        // long-running transaction; every row is compare-and-set, so an
+        // interrupted run is simply started again.
+        let mut after = Uuid::nil();
+        loop {
+            let rows: Vec<(Uuid, Vec<u8>)> = sqlx::query_as(column.select)
+                .bind(after)
+                .bind(REWRAP_PAGE)
+                .fetch_all(pool)
+                .await?;
+            let Some((last, _)) = rows.last() else {
+                break;
+            };
+            after = *last;
+            report.other += rewrap_rows(pool, cipher, column, rows).await?;
         }
     }
     Ok(report)
+}
+
+/// Rows read per page by [`rotate_kek`].
+const REWRAP_PAGE: i64 = 500;
+
+async fn rewrap_rows(
+    pool: &PgPool,
+    cipher: &EnvelopeCipher,
+    column: &SealedColumn,
+    rows: Vec<(Uuid, Vec<u8>)>,
+) -> Result<u64, AuthError> {
+    let mut changed = 0;
+    for (id, sealed) in rows {
+        let context =
+            EnvelopeContext::new(column.table, column.column, id).map_err(AuthError::from)?;
+        if let Some(rewrapped) = cipher
+            .rewrap(&sealed, &context)
+            .await
+            .map_err(AuthError::from)?
+        {
+            changed += sqlx::query(column.update)
+                .bind(id)
+                .bind(&rewrapped)
+                .bind(&sealed)
+                .execute(pool)
+                .await?
+                .rows_affected();
+        }
+    }
+    Ok(changed)
 }
 
 /// `rotate-signing-key` (CRY-10, ADM-06): a pending key (activated after
@@ -204,67 +321,6 @@ pub async fn migrate_legacy_hashes(
         updated += 1;
     }
     Ok(updated)
-}
-
-/// `create-admin` (ADM-05): an active, verified break-glass platform admin
-/// with a strong random password, shown exactly once. The creation is a
-/// high-priority audit event.
-pub async fn create_break_glass_admin(
-    pool: &PgPool,
-    crypto: &CryptoServices,
-    clock: &dyn Clock,
-    audit: &Arc<dyn AuditSink>,
-    email: &str,
-) -> Result<(UserId, SensitiveString), AuthError> {
-    let email = EmailAddress::parse(email).map_err(|_| {
-        AuthError::new(authn_core::error::codes::common::VALIDATION_FAILED).with_context("email")
-    })?;
-    // 256 bits of CSPRNG output, base64url (43 characters).
-    let password = OpaqueToken::generate().map_err(AuthError::from)?;
-    let secret = authn_core::secret::SecretString::from(password.expose().to_owned());
-    let record = crypto
-        .passwords
-        .hash(&secret)
-        .await
-        .map_err(AuthError::from)?;
-    let now = clock.now();
-    let id = UserId::generate();
-    let mut tx = authn_store::begin(pool).await?;
-    UserRepository::create(
-        &mut tx,
-        &NewUser {
-            id,
-            email: email.clone(),
-            status: AccountStatus::Active,
-            created_at: now,
-        },
-    )
-    .await?;
-    UserRepository::mark_email_verified(&mut tx, id, now).await?;
-    UserRepository::set_password(
-        &mut tx,
-        id,
-        &NewPasswordHash {
-            password_hash: &record.hash,
-            algorithm: record.algorithm.as_str(),
-            pepper_version: record.pepper_version,
-        },
-        false,
-        now,
-    )
-    .await?;
-    sqlx::query("UPDATE users SET is_platform_admin = true, is_break_glass = true WHERE id = $1")
-        .bind(id)
-        .execute(&mut *tx)
-        .await?;
-    let event = SecurityEvent::new(SecurityEventKind::AdminAction, now)
-        .with_actor(Actor::System)
-        .with_subject(id)
-        .with_meta("action", "break_glass_admin_created")
-        .with_meta("priority", "high");
-    audit.record_in_tx(&mut tx, event).await?;
-    authn_store::commit(tx).await?;
-    Ok((id, password.into_sensitive()))
 }
 
 #[cfg(test)]

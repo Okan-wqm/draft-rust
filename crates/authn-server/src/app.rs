@@ -8,10 +8,18 @@
 //! 4. timeout (PRT-11)
 //! 5. global concurrency limit (PRT-11)
 //! 6. body size limit (PRT-11)
-//! 7. host validation → security headers → CORS → per-IP rate limit (authn-protect)
+//! 7. host validation → security headers → admin-console CORS (K-67) →
+//!    CORS → per-IP rate limit (authn-protect)
 //! 8. authentication + CSRF (`authn_session::authenticate`; it replaces
 //!    `authn_org::api_key_middleware` — never install both)
 //! 9. handler
+//!
+//! The session-less break-glass enrollment endpoints (K-11,
+//! [`session_less_routes`]) are merged **outside** slot 8: they
+//! authenticate with the one-time link token in their body and must work
+//! from a browser that happens to hold a session cookie without a CSRF
+//! token (the CSRF check of slot 8 would refuse them). Every other route —
+//! including every other `/v1/admin` route — stays behind slot 8.
 //!
 //! axum applies `.layer()` calls inside-out, so the code lists them from
 //! innermost to outermost.
@@ -36,6 +44,7 @@ use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::{DefaultOnResponse, TraceLayer};
 use tracing::Level;
 
+use crate::cors::{AdminConsoleCors, admin_console_cors};
 use crate::routes::{example, health};
 use crate::state::AppState;
 
@@ -53,6 +62,18 @@ pub fn module_routes() -> Router<AppState> {
         .merge(authn_org::router::<AppState>())
         .merge(authn_protect::router::<AppState>())
         .merge(authn_audit::router::<AppState>())
+        .merge(authn_oidc_client::router::<AppState>())
+        .merge(authn_admin::router::<AppState>())
+}
+
+/// Routes that never see the authentication layer (no principal, no CSRF):
+/// the break-glass passkey enrollment link (K-11; IP allow-list and per-IP
+/// limit enforced by authn-admin, the link token is the credential).
+pub fn session_less_routes() -> Router<AppState> {
+    let router = Router::new();
+    #[cfg(feature = "passkey")]
+    let router = router.merge(authn_admin::enrollment_router::<AppState>());
+    router
 }
 
 /// Builds the complete application router. Fails when a web-protection
@@ -62,7 +83,11 @@ pub fn build_router(state: AppState) -> Result<Router, AuthError> {
     let limits = config.server.limits;
     let protect = &config.protect;
 
-    let mut router = module_routes();
+    let sessions = state.services.sessions.clone();
+    // (8) authentication + CSRF, for every module route.
+    let mut router = module_routes()
+        .layer(from_fn_with_state(sessions, authn_session::authenticate))
+        .merge(session_less_routes());
     if config.server.openapi_enabled {
         router = router.route(
             "/openapi.json",
@@ -73,20 +98,20 @@ pub fn build_router(state: AppState) -> Result<Router, AuthError> {
     let host = HostValidation::from_config(protect, &config.server.public_base_url)?;
     let headers = SecurityHeaders::from_config(&protect.security_headers)?;
     let cors_policy = CorsPolicy::from_config(&protect.cors)?;
+    let console_cors = AdminConsoleCors::from_config(&config)?;
     let rate_limit = HttpRateLimit::new(
         state.services.rate_limiter.clone(),
         protect.rate_limit.requests_per_ip,
     );
-    let sessions = state.services.sessions.clone();
 
     Ok(router
         .fallback(not_found_fallback)
         .with_state(state)
-        // (8) authentication + CSRF.
-        .layer(from_fn_with_state(sessions, authn_session::authenticate))
-        // (7) rate limit ← CORS ← security headers ← host validation.
+        // (7) rate limit ← CORS ← admin-console CORS ← security headers ←
+        // host validation.
         .layer(from_fn_with_state(rate_limit, http_rate_limit))
         .layer(from_fn_with_state(cors_policy, cors))
+        .layer(from_fn_with_state(console_cors, admin_console_cors))
         .layer(from_fn_with_state(headers, security_headers))
         .layer(from_fn_with_state(host, validate_host))
         .layer(DefaultBodyLimit::max(limits.body_limit_bytes))

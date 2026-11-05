@@ -26,3 +26,18 @@ pub(crate) fn denied(reason: &'static str) {
 pub(crate) fn break_glass_used() {
     metrics::counter!(BREAK_GLASS_USED_TOTAL).increment(1);
 }
+
+/// Critical operations run without four-eyes approval under a defined
+/// exception (K-66), labelled by `exception`. Alert on any increase.
+pub const FOUR_EYES_BYPASSED_TOTAL: &str = "authn_admin_four_eyes_bypassed_total";
+/// Critical operations or approval decisions refused by four-eyes (K-66),
+/// labelled by `reason`.
+pub const FOUR_EYES_REFUSED_TOTAL: &str = "authn_admin_four_eyes_refused_total";
+
+pub(crate) fn four_eyes_bypassed(exception: &'static str) {
+    metrics::counter!(FOUR_EYES_BYPASSED_TOTAL, "exception" => exception).increment(1);
+}
+
+pub(crate) fn four_eyes_refused(reason: &'static str) {
+    metrics::counter!(FOUR_EYES_REFUSED_TOTAL, "reason" => reason).increment(1);
+}

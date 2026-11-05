@@ -60,7 +60,7 @@ use time::OffsetDateTime;
 use crate::background::BackgroundJobs;
 use crate::disposable::DisposableDomains;
 use crate::export::AccountDataExporter;
-use crate::hooks::{AccountErasureHook, OrganizationOwnership};
+use crate::hooks::{AccountErasureHook, EmailChangeRevertHook, OrganizationOwnership};
 use crate::repo::ProfileRepository;
 use crate::tx::AccountTx;
 
@@ -184,6 +184,8 @@ struct Inner {
     /// Registered after construction (the hooks' modules depend on this
     /// service, so they cannot be passed in `AccountServiceDeps`).
     erasure_hooks: std::sync::RwLock<Vec<Arc<dyn AccountErasureHook>>>,
+    /// Registered after construction, like `erasure_hooks` (ACC-07, K-20).
+    revert_hooks: std::sync::RwLock<Vec<Arc<dyn EmailChangeRevertHook>>>,
 }
 
 impl std::fmt::Debug for AccountService {
@@ -220,6 +222,7 @@ impl AccountService {
                 jobs: BackgroundJobs::new(),
                 own_exporter,
                 erasure_hooks: std::sync::RwLock::new(Vec::new()),
+                revert_hooks: std::sync::RwLock::new(Vec::new()),
             }),
         })
     }
@@ -248,6 +251,27 @@ impl AccountService {
     fn erasure_hooks(&self) -> Vec<Arc<dyn AccountErasureHook>> {
         self.inner
             .erasure_hooks
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Registers work that must run in every e-mail change revert
+    /// transaction (ACC-07, K-20; see [`EmailChangeRevertHook`]).
+    /// `authn-server` registers the hooks of other modules once at start-up.
+    pub fn register_revert_hook(&self, hook: Arc<dyn EmailChangeRevertHook>) {
+        self.inner
+            .revert_hooks
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(hook);
+    }
+
+    /// Snapshot of the registered revert hooks (no lock held across
+    /// `.await`).
+    pub(crate) fn revert_hooks(&self) -> Vec<Arc<dyn EmailChangeRevertHook>> {
+        self.inner
+            .revert_hooks
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()

@@ -6,6 +6,7 @@
 //! * [`state`] — [`AppState`](state::AppState), the only application state
 //!   type of the workspace (ARC-03), and its `FromRef` projections.
 //! * [`app`] — router assembly and the middleware stack (OPS-02).
+//! * [`cors`] — the cross-origin admin console preflight (K-67).
 //! * [`routes`] — health probes (OPS-05) and the reference example module
 //!   showing the `router<S>()` + `FromRef` convention.
 //! * [`telemetry`] — structured JSON logging (OPS-03).
@@ -16,6 +17,7 @@
 
 pub mod app;
 pub mod cli;
+pub mod cors;
 pub mod error;
 pub mod hooks;
 pub mod jobs;

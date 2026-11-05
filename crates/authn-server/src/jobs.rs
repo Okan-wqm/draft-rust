@@ -173,6 +173,12 @@ pub async fn run_maintenance_once(services: &Services) -> MaintenanceTotals {
     );
     tally(
         &mut t,
+        "oauth_states",
+        s.oidc.purge_expired_states(BATCH).await,
+        |n| *n,
+    );
+    tally(
+        &mut t,
         "soft_locks",
         s.protection.purge_expired().await,
         |n| *n,
@@ -220,6 +226,29 @@ pub async fn run_maintenance_once(services: &Services) -> MaintenanceTotals {
     t
 }
 
+/// Queued provider tokens revoked per run (K-35).
+const REVOCATIONS_PER_RUN: u32 = 100;
+
+/// Calls the providers' revocation endpoints for due queued tokens (K-35,
+/// SOC-08). Safe on several instances: authn-oidc-client leases each row
+/// with `FOR UPDATE SKIP LOCKED` and holds no connection during the HTTP
+/// call.
+pub async fn process_token_revocations(services: &Services) -> Result<u64, AuthError> {
+    let report = services
+        .oidc
+        .process_token_revocations(REVOCATIONS_PER_RUN)
+        .await?;
+    if report.revoked + report.retried + report.abandoned > 0 {
+        tracing::info!(
+            revoked = report.revoked,
+            retried = report.retried,
+            abandoned = report.abandoned,
+            "provider token revocations processed"
+        );
+    }
+    Ok(report.revoked + report.abandoned)
+}
+
 /// Starts every background job; they stop when `shutdown` is cancelled.
 pub fn spawn(services: Services, shutdown: CancellationToken) -> Result<JoinSet<()>, AuthError> {
     let mut jobs = JoinSet::new();
@@ -237,6 +266,22 @@ pub fn spawn(services: Services, shutdown: CancellationToken) -> Result<JoinSet<
             async move {
                 let totals = run_maintenance_once(&s).await;
                 tracing::debug!(?totals, "maintenance run");
+            }
+        })
+        .await;
+    });
+
+    // Provider token revocations (K-35): network calls, own task so a slow
+    // provider never delays the cleanups.
+    let s = services.clone();
+    let stop = shutdown.clone();
+    jobs.spawn(async move {
+        every(FREQUENT, stop, || {
+            let s = s.clone();
+            async move {
+                if let Err(err) = process_token_revocations(&s).await {
+                    tracing::error!(error = %err, "provider token revocation run failed");
+                }
             }
         })
         .await;
@@ -263,7 +308,7 @@ pub fn spawn(services: Services, shutdown: CancellationToken) -> Result<JoinSet<
         every(DAILY, shutdown, || {
             let s = s.clone();
             async move {
-                if let Err(err) = s.audit.run_maintenance(&s.pool).await {
+                if let Err(err) = s.audit.run_maintenance(&s.maintenance_pool).await {
                     tracing::error!(error = %err, "audit maintenance failed");
                 }
             }

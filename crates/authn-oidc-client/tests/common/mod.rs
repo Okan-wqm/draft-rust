@@ -245,12 +245,15 @@ pub struct Harness {
 
 pub struct Options {
     pub inventory: Arc<dyn LoginMethodInventory>,
+    /// ACC-12 blocked domains of the account service (K-63 tests).
+    pub blocked_domains: Vec<&'static str>,
 }
 
 impl Default for Options {
     fn default() -> Self {
         Self {
             inventory: Arc::new(PasswordOnlyInventory),
+            blocked_domains: Vec::new(),
         }
     }
 }
@@ -356,7 +359,17 @@ impl Harness {
                 exporters: Vec::new(),
                 ownership: Arc::new(NoOrganizations),
             },
-            AccountServiceSettings::from_app_config(&config).unwrap(),
+            {
+                let mut account_settings =
+                    AccountServiceSettings::from_app_config(&config).unwrap();
+                if !options.blocked_domains.is_empty() {
+                    account_settings.disposable_domains =
+                        Some(Arc::new(authn_account::DisposableDomains::from_domains(
+                            options.blocked_domains.iter().copied(),
+                        )));
+                }
+                account_settings
+            },
         )
         .unwrap();
         let http =

@@ -41,9 +41,21 @@ pub async fn serve(config: AppConfig) -> Result<(), ServerError> {
 
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
     let ports = Ports::from_config(&config, clock).map_err(ServerError::Startup)?;
-    let services = Services::build(config.clone(), pool, ports)
-        .await
-        .map_err(ServerError::Startup)?;
+    // OPS-10: audit retention runs with the maintenance role when one is
+    // configured (the application role then needs no DELETE on audit_events).
+    let maintenance_pool = match config.database.maintenance() {
+        Some(maintenance) => authn_store::connect(&maintenance).await?,
+        None => {
+            tracing::warn!(
+                "database.maintenance_url is not set; audit maintenance uses the application role"
+            );
+            pool.clone()
+        }
+    };
+    let services =
+        Services::build_with_maintenance_pool(config.clone(), pool, maintenance_pool, ports)
+            .await
+            .map_err(ServerError::Startup)?;
     // CRY-10: a signing key must exist before the first token is issued.
     jobs::rotate_signing_keys(&services)
         .await

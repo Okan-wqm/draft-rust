@@ -242,14 +242,13 @@ async fn adm_07_k09_chain_verification_is_rate_limited_and_single_flight(pool: s
         .await
         .unwrap();
     assert_eq!(leases, 0);
-    // Another verification is running (lease held by another instance).
+    // Another verification is running (lease held by another instance;
+    // lease times are database time, K-65).
     sqlx::query(
         "INSERT INTO admin_operation_leases (name, holder, acquired_at, expires_at) \
-         VALUES ('audit_chain_verification', $1, $2, $3)",
+         VALUES ('audit_chain_verification', $1, now(), now() + interval '15 minutes')",
     )
     .bind(uuid::Uuid::now_v7())
-    .bind(h.now())
-    .bind(h.now() + Duration::from_secs(15 * 60))
     .execute(&h.pool)
     .await
     .unwrap();
@@ -258,6 +257,13 @@ async fn adm_07_k09_chain_verification_is_rate_limited_and_single_flight(pool: s
         .assert_error(StatusCode::TOO_MANY_REQUESTS, "rate_limited");
     assert_eq!(throttle_events(&h, "audit_verify_running").await.len(), 1);
     // The holder died: the lease expires and verification works again.
+    sqlx::query(
+        "UPDATE admin_operation_leases \
+         SET acquired_at = now() - interval '16 minutes', expires_at = now() - interval '1 minute'",
+    )
+    .execute(&h.pool)
+    .await
+    .unwrap();
     h.advance(Duration::from_secs(15 * 60 + 1));
     let admin = h.principal(admin_id, true); // fresh step-up
     h.send(&admin, verify()).await.assert_status(StatusCode::OK);
@@ -786,9 +792,16 @@ async fn adm_05_k07_replacement_link_removes_the_compromised_credentials(pool: s
 
 async fn export(h: &Harness, user: UserId) -> Value {
     let mut conn = h.pool.acquire().await.unwrap();
-    AdminActionsDataExporter
+    AdminActionsDataExporter::new(h.ports.clock.clone())
         .export(&mut conn, user)
         .await
+        .unwrap()
+}
+
+/// An RFC 3339 review date `days` after the test clock's now.
+fn review_in(h: &Harness, days: u64) -> String {
+    (h.now() + Duration::from_secs(days * 86_400))
+        .format(&time::format_description::well_known::Rfc3339)
         .unwrap()
 }
 
@@ -809,7 +822,10 @@ async fn acc_10_admin_justifications_are_exported_without_staff_identity(pool: s
         .await
         .assert_status(StatusCode::OK);
     }
-    assert_eq!(AdminActionsDataExporter.section(), "admin_actions");
+    assert_eq!(
+        AdminActionsDataExporter::default().section(),
+        "admin_actions"
+    );
     let section = export(&h, user).await;
     let entries = section["entries"].as_array().unwrap();
     assert_eq!(entries.len(), 1, "{section}");
@@ -817,18 +833,19 @@ async fn acc_10_admin_justifications_are_exported_without_staff_identity(pool: s
     assert_eq!(entries[0]["justification"], "Chargeback dispute CB-1");
     assert_eq!(entries[0]["actor"], "platform_staff");
     assert!(entries[0]["at"].as_str().unwrap().contains('T'));
-    assert_eq!(section["withheld_under_legal_restriction"], 0);
+    assert!(section.get("withheld_under_legal_restriction").is_none());
     let text = section.to_string();
     assert!(!text.contains(&admin_id.to_string()), "no staff id");
     assert!(!text.contains(common::ADMIN_IP), "no staff IP");
     assert!(!text.contains("admin@example.com"));
 }
 
-/// K-39: a restricted justification is withheld from the export, which only
-/// states how many entries are withheld; the restriction note is withheld
-/// as well and the restriction cannot be removed.
+/// K-39 / K-62: a restricted justification is withheld from the export
+/// **without any count** (no hint that something was withheld); the
+/// restriction note is withheld as well and the restriction cannot be
+/// removed.
 #[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
-async fn adm_08_restricted_justification_is_withheld_and_counted(pool: sqlx::PgPool) {
+async fn adm_08_k62_restricted_justification_is_withheld_without_a_count(pool: sqlx::PgPool) {
     let h = Harness::new(pool).await;
     let (_, admin) = h.admin("admin@example.com").await;
     let (_, other_admin) = h.admin("legal@example.com").await;
@@ -846,8 +863,10 @@ async fn adm_08_restricted_justification_is_withheld_and_counted(pool: sqlx::PgP
     let res = h
         .send(
             &other_admin,
-            TestRequest::post(&format!("/v1/admin/audit-events/{fraud}/restrict"))
-                .json(&json!({ "reason": "Ongoing police investigation, KVKK m.28" })),
+            TestRequest::post(&format!("/v1/admin/audit-events/{fraud}/restrict")).json(
+                &json!({ "reason": "Ongoing police investigation, KVKK m.28",
+                               "review_at": review_in(&h, 90) }),
+            ),
         )
         .await;
     res.assert_status(StatusCode::OK);
@@ -860,12 +879,22 @@ async fn adm_08_restricted_justification_is_withheld_and_counted(pool: sqlx::PgP
     );
     assert_eq!(section["entries"].as_array().unwrap().len(), 1);
     assert_eq!(section["entries"][0]["justification"], "Routine support");
-    assert_eq!(section["withheld_under_legal_restriction"], 2);
-    // Append-only: the restriction cannot be lifted or rewritten.
+    assert_eq!(
+        section.as_object().unwrap().keys().collect::<Vec<_>>(),
+        vec!["entries"],
+        "no count, no placeholder: {section}"
+    );
+    // Append-only: the restriction and its review date cannot be lifted,
+    // shortened or rewritten.
     for sql in [
         "DELETE FROM admin_reason_restrictions",
         "UPDATE admin_reason_restrictions SET created_at = now()",
         "TRUNCATE admin_reason_restrictions",
+        "DELETE FROM admin_reason_restriction_periods",
+        "UPDATE admin_reason_restriction_periods SET review_at = created_at + interval '1 second'",
+        "TRUNCATE admin_reason_restriction_periods",
+        "DELETE FROM audit_subject_view_holds",
+        "UPDATE audit_subject_view_holds SET hidden_until = created_at + interval '1 second'",
     ] {
         let mut tx = h.pool.begin().await.unwrap();
         assert!(sqlx::query(sql).execute(&mut *tx).await.is_err(), "{sql}");
@@ -911,14 +940,30 @@ async fn adm_08_restricting_requires_reason_and_is_audited(pool: sqlx::PgPool) {
     .assert_status(StatusCode::OK);
     let event = h.admin_events("revoke_user_sessions").await[0].id;
     let uri = format!("/v1/admin/audit-events/{event}/restrict");
+    let review = review_in(&h, 30);
     for body in [
-        json!({}),
-        json!({ "reason": "" }),
-        json!({ "reason": "a\u{202e}b" }),
+        json!({ "review_at": review }),
+        json!({ "reason": "", "review_at": review }),
+        json!({ "reason": "a\u{202e}b", "review_at": review }),
     ] {
         h.send(&admin, TestRequest::post(&uri).json(&body))
             .await
             .assert_error(StatusCode::UNPROCESSABLE_ENTITY, "admin_reason_required");
+    }
+    // K-62: a review date is mandatory, in the future, at most 180 days.
+    for review_at in [
+        None,
+        Some("not a date".to_owned()),
+        Some(review_in(&h, 0)),
+        Some(review_in(&h, 181)),
+    ] {
+        h.send(
+            &admin,
+            TestRequest::post(&uri)
+                .json(&json!({ "reason": "Legal hold", "review_at": review_at })),
+        )
+        .await
+        .assert_error(StatusCode::UNPROCESSABLE_ENTITY, "validation_failed");
     }
     h.send(
         &admin,
@@ -926,14 +971,15 @@ async fn adm_08_restricting_requires_reason_and_is_audited(pool: sqlx::PgPool) {
             "/v1/admin/audit-events/{}/restrict",
             uuid::Uuid::now_v7()
         ))
-        .json(&json!({ "reason": "Legal hold LH-1" })),
+        .json(&json!({ "reason": "Legal hold LH-1", "review_at": review })),
     )
     .await
     .assert_error(StatusCode::NOT_FOUND, "not_found");
     let res = h
         .send(
             &admin,
-            TestRequest::post(&uri).json(&json!({ "reason": "Legal hold LH-1" })),
+            TestRequest::post(&uri)
+                .json(&json!({ "reason": "Legal hold LH-1", "review_at": review })),
         )
         .await;
     res.assert_status(StatusCode::OK);
@@ -953,7 +999,8 @@ async fn adm_08_restricting_requires_reason_and_is_audited(pool: sqlx::PgPool) {
     let again: Value = h
         .send(
             &admin,
-            TestRequest::post(&uri).json(&json!({ "reason": "Legal hold LH-1" })),
+            TestRequest::post(&uri)
+                .json(&json!({ "reason": "Legal hold LH-1", "review_at": review })),
         )
         .await
         .json();
@@ -976,7 +1023,7 @@ async fn adm_08_restricting_requires_reason_and_is_audited(pool: sqlx::PgPool) {
     h.send(
         &admin,
         TestRequest::post(&format!("/v1/admin/audit-events/{about_admin}/restrict"))
-            .json(&json!({ "reason": "Hide it" })),
+            .json(&json!({ "reason": "Hide it", "review_at": review })),
     )
     .await
     .assert_error(StatusCode::FORBIDDEN, "admin_target_not_allowed");
@@ -1040,4 +1087,398 @@ async fn adm_03_mfa_reset_sends_one_notice_not_one_per_passkey(pool: sqlx::PgPoo
         1
     );
     let _ = PASSWORD;
+}
+
+// --- K-64 ------------------------------------------------------------------
+
+/// Waits until some backend waits for a row lock.
+async fn wait_for_lock_waiter(pool: &sqlx::PgPool) {
+    for _ in 0..500 {
+        let waiting: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pg_stat_activity \
+             WHERE wait_event_type = 'Lock' AND datname = current_database()",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        if waiting > 0 {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("no backend ever waited for the row lock");
+}
+
+/// K-64 (K-08, ADM-03): the admin-target budget follows the row the action
+/// actually locks. A target promoted to platform admin after the unlocked
+/// pre-check (while the action waits for its row lock) is still charged to
+/// the admin-targeting budget — an exhausted budget refuses the action.
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn adm_03_k64_admin_target_budget_uses_the_locked_row(pool: sqlx::PgPool) {
+    let h = Harness::with(pool, |s| {
+        s.admin_target_per_admin =
+            authn_core::ports::RateLimitPolicy::new(1, Duration::from_secs(3600));
+    })
+    .await;
+    let (_, attacker) = h.admin("attacker@example.com").await;
+    let caller = h.caller(&attacker).await;
+    // The budget (1) is spent on another admin.
+    let (other_admin, _) = h.admin("other-admin@example.com").await;
+    h.service
+        .revoke_user_sessions(&caller, &h.ctx(), other_admin, &reason("Incident"))
+        .await
+        .unwrap();
+
+    // A regular user … whose row is held by a concurrent promotion.
+    let target = h.user("soon-admin@example.com").await;
+    let mut promotion = h.pool.begin().await.unwrap();
+    sqlx::query("SELECT id FROM users WHERE id = $1 FOR UPDATE")
+        .bind(target)
+        .execute(&mut *promotion)
+        .await
+        .unwrap();
+    let action = {
+        let service = h.service.clone();
+        let ctx = h.ctx();
+        let caller = caller.clone();
+        tokio::spawn(async move {
+            service
+                .suspend_user(&caller, &ctx, target, &reason("Suspicious activity"))
+                .await
+        })
+    };
+    // The pre-check saw a regular user; the action now waits for the lock.
+    wait_for_lock_waiter(&h.pool).await;
+    sqlx::query("UPDATE users SET is_platform_admin = true WHERE id = $1")
+        .bind(target)
+        .execute(&mut *promotion)
+        .await
+        .unwrap();
+    promotion.commit().await.unwrap();
+
+    let err = action.await.unwrap().unwrap_err();
+    assert_eq!(err.code().code(), "rate_limited", "{err:?}");
+    assert_eq!(h.record(target).await.status, AccountStatus::Active);
+    assert_eq!(throttle_events(&h, "admin_target_per_admin").await.len(), 1);
+}
+
+// --- K-65 ------------------------------------------------------------------
+
+/// K-65 (K-09, ADM-07): a verification that runs much longer than the lease
+/// keeps it (database-clock lease renewed by a heartbeat): a second
+/// verification is refused the whole time — even when the application
+/// clock jumps past the lease — and the lease is released at the end.
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn adm_07_k65_slow_verification_keeps_its_lease(pool: sqlx::PgPool) {
+    let h = Harness::with(pool, |s| {
+        s.audit_verify_lease = Duration::from_millis(300);
+    })
+    .await;
+    let (_, admin) = h.admin("admin@example.com").await;
+    let caller = h.caller(&admin).await;
+    // Hold the table the verification reads first: it blocks until released.
+    let mut blocker = h.pool.begin().await.unwrap();
+    sqlx::query("LOCK TABLE audit_chain_checkpoints IN ACCESS EXCLUSIVE MODE")
+        .execute(&mut *blocker)
+        .await
+        .unwrap();
+    let slow = {
+        let service = h.service.clone();
+        let ctx = h.ctx();
+        let caller = caller.clone();
+        tokio::spawn(async move { service.verify_audit_chain(&caller, &ctx, None).await })
+    };
+    wait_for_lock_waiter(&h.pool).await;
+    // Several lease lifetimes pass (real time), and the application clock
+    // jumps far ahead.
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    h.advance(Duration::from_secs(3600));
+    let second = tokio::time::timeout(
+        Duration::from_secs(5),
+        h.service.verify_audit_chain(&caller, &h.ctx(), None),
+    )
+    .await
+    .expect("refused at once, not blocked behind the first one")
+    .unwrap_err();
+    assert_eq!(second.code().code(), "rate_limited");
+    assert_eq!(throttle_events(&h, "audit_verify_running").await.len(), 1);
+
+    blocker.rollback().await.unwrap();
+    let report = slow.await.unwrap().unwrap();
+    assert!(report.intact);
+    let leases: i64 = sqlx::query_scalar("SELECT count(*) FROM admin_operation_leases")
+        .fetch_one(&h.pool)
+        .await
+        .unwrap();
+    assert_eq!(leases, 0, "released");
+}
+
+/// K-65: a holder that lost its lease (taken over after it expired)
+/// aborts with `409 conflict` instead of running alongside the new holder.
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn adm_07_k65_lost_lease_aborts_the_verification(pool: sqlx::PgPool) {
+    let h = Harness::with(pool, |s| {
+        s.audit_verify_lease = Duration::from_millis(300);
+    })
+    .await;
+    let (_, admin) = h.admin("admin@example.com").await;
+    let caller = h.caller(&admin).await;
+    let mut blocker = h.pool.begin().await.unwrap();
+    sqlx::query("LOCK TABLE audit_chain_checkpoints IN ACCESS EXCLUSIVE MODE")
+        .execute(&mut *blocker)
+        .await
+        .unwrap();
+    let slow = {
+        let service = h.service.clone();
+        let ctx = h.ctx();
+        let caller = caller.clone();
+        tokio::spawn(async move { service.verify_audit_chain(&caller, &ctx, None).await })
+    };
+    wait_for_lock_waiter(&h.pool).await;
+    // Another instance took the lease over (e.g. after a network split).
+    sqlx::query("UPDATE admin_operation_leases SET holder = $1")
+        .bind(uuid::Uuid::now_v7())
+        .execute(&h.pool)
+        .await
+        .unwrap();
+    let err = tokio::time::timeout(Duration::from_secs(5), slow)
+        .await
+        .expect("aborted at the next heartbeat")
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(err.code().code(), "conflict");
+    blocker.rollback().await.unwrap();
+    // The other holder's lease is untouched.
+    let leases: i64 = sqlx::query_scalar("SELECT count(*) FROM admin_operation_leases")
+        .fetch_one(&h.pool)
+        .await
+        .unwrap();
+    assert_eq!(leases, 1);
+}
+
+// --- K-62 ------------------------------------------------------------------
+
+/// The kinds/actions in the subject's own security-event list (AUD-04).
+async fn own_view(h: &Harness, user: UserId) -> Vec<String> {
+    let page = authn_audit::query::list_user_security_events(
+        &h.pool,
+        user,
+        h.now(),
+        Duration::from_secs(365 * 86_400),
+        &authn_core::domain::PageRequest {
+            limit: Some(100),
+            cursor: None,
+        },
+    )
+    .await
+    .unwrap();
+    page.items
+        .into_iter()
+        .map(|e| {
+            e.metadata
+                .get("action")
+                .and_then(Value::as_str)
+                .map_or(e.kind.clone(), str::to_owned)
+        })
+        .collect()
+}
+
+/// Revokes the sessions of `user` with `why` and returns the event.
+async fn act_on(
+    h: &Harness,
+    admin: &authn_core::domain::Principal,
+    user: UserId,
+    why: &str,
+) -> uuid::Uuid {
+    let res = h
+        .send(
+            admin,
+            TestRequest::post(&format!("/v1/admin/users/{user}/revoke-sessions"))
+                .json(&json!({ "reason": why })),
+        )
+        .await;
+    res.assert_status(StatusCode::OK);
+    res.json::<Value>()["event_id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap()
+}
+
+/// K-62 (ACC-10, ADM-08, AUD-04): while a restriction is active the
+/// restricting action is hidden from the subject's own event list and the
+/// export neither shows nor counts the entries; at the review date the
+/// restriction lapses — the justification, the restriction note and the
+/// restricting action become visible to the subject.
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn acc_10_k62_restriction_lapses_at_its_review_date(pool: sqlx::PgPool) {
+    let h = Harness::new(pool).await;
+    let (_, admin) = h.admin("admin@example.com").await;
+    let (_, legal) = h.admin("legal@example.com").await;
+    let user = h.user("alice@example.com").await;
+    let fraud = act_on(&h, &admin, user, "Fraud ring investigation FR-9").await;
+    assert!(
+        own_view(&h, user)
+            .await
+            .contains(&"revoke_user_sessions".to_owned())
+    );
+    h.send(
+        &legal,
+        TestRequest::post(&format!("/v1/admin/audit-events/{fraud}/restrict"))
+            .json(&json!({ "reason": "Police request PR-1", "review_at": review_in(&h, 30) })),
+    )
+    .await
+    .assert_status(StatusCode::OK);
+
+    let view = own_view(&h, user).await;
+    assert!(
+        !view.contains(&"restrict_justification".to_owned()),
+        "{view:?}"
+    );
+    assert!(
+        view.contains(&"revoke_user_sessions".to_owned()),
+        "the action itself stays visible"
+    );
+    let section = export(&h, user).await;
+    assert_eq!(
+        section,
+        json!({ "entries": [] }),
+        "nothing, not even a count"
+    );
+
+    // A day before the review date: still restricted.
+    h.advance(Duration::from_secs(29 * 86_400));
+    assert_eq!(export(&h, user).await, json!({ "entries": [] }));
+    assert!(
+        !own_view(&h, user)
+            .await
+            .contains(&"restrict_justification".to_owned())
+    );
+
+    // Review date passed without extension: everything is visible again.
+    h.advance(Duration::from_secs(86_400 + 1));
+    let text = export(&h, user).await.to_string();
+    assert!(text.contains("Fraud ring investigation FR-9"), "{text}");
+    assert!(text.contains("Police request PR-1"), "{text}");
+    assert!(
+        own_view(&h, user)
+            .await
+            .contains(&"restrict_justification".to_owned())
+    );
+}
+
+/// K-62: an active restriction can be extended to a later date (at most
+/// 180 days ahead) with a mandatory justification; the extension is
+/// audited, its note restricted, and it is hidden from the subject as long
+/// as the restriction. A lapsed restriction cannot be extended (409); it
+/// can be restricted again.
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn adm_08_k62_extension_needs_reason_is_audited_and_hidden(pool: sqlx::PgPool) {
+    let h = Harness::new(pool).await;
+    let (_, admin) = h.admin("admin@example.com").await;
+    let (legal_id, legal) = h.admin("legal@example.com").await;
+    let user = h.user("alice@example.com").await;
+    let fraud = act_on(&h, &admin, user, "Fraud FR-10").await;
+    let restrict = format!("/v1/admin/audit-events/{fraud}/restrict");
+    let extend = format!("/v1/admin/audit-events/{fraud}/restrict/extend");
+    // Nothing to extend yet.
+    h.send(
+        &legal,
+        TestRequest::post(&extend)
+            .json(&json!({ "reason": "More time", "review_at": review_in(&h, 60) })),
+    )
+    .await
+    .assert_error(StatusCode::CONFLICT, "conflict");
+    h.send(
+        &legal,
+        TestRequest::post(&restrict)
+            .json(&json!({ "reason": "Court order CO-1", "review_at": review_in(&h, 30) })),
+    )
+    .await
+    .assert_status(StatusCode::OK);
+    // Extension: justification required, later date required, <= 180 days.
+    h.send(
+        &legal,
+        TestRequest::post(&extend).json(&json!({ "review_at": review_in(&h, 60) })),
+    )
+    .await
+    .assert_error(StatusCode::UNPROCESSABLE_ENTITY, "admin_reason_required");
+    for review_at in [review_in(&h, 20), review_in(&h, 181)] {
+        h.send(
+            &legal,
+            TestRequest::post(&extend)
+                .json(&json!({ "reason": "More time", "review_at": review_at })),
+        )
+        .await
+        .assert_error(StatusCode::UNPROCESSABLE_ENTITY, "validation_failed");
+    }
+    // Restricting again while active changes nothing (date stays).
+    let again: Value = h
+        .send(
+            &legal,
+            TestRequest::post(&restrict).json(
+                &json!({ "reason": "Court order CO-1 again", "review_at": review_in(&h, 170) }),
+            ),
+        )
+        .await
+        .json();
+    assert_eq!(again["changed"], false);
+    let res = h
+        .send(
+            &legal,
+            TestRequest::post(&extend).json(
+                &json!({ "reason": "Investigation extended CO-2", "review_at": review_in(&h, 90) }),
+            ),
+        )
+        .await;
+    res.assert_status(StatusCode::OK);
+    let extension = h.admin_events("extend_restriction").await;
+    assert_eq!(extension.len(), 1);
+    assert_eq!(
+        extension[0].metadata["restricted_event_id"],
+        fraud.to_string()
+    );
+    assert_eq!(
+        h.justification(extension[0].id).await.as_deref(),
+        Some("Investigation extended CO-2")
+    );
+    // Past the original date: still restricted, notes and actions hidden.
+    h.advance(Duration::from_secs(45 * 86_400));
+    assert_eq!(export(&h, user).await, json!({ "entries": [] }));
+    let view = own_view(&h, user).await;
+    for hidden in ["restrict_justification", "extend_restriction"] {
+        assert!(!view.contains(&hidden.to_owned()), "{hidden}: {view:?}");
+    }
+    // After the extended date everything returns, extension included.
+    h.advance(Duration::from_secs(46 * 86_400));
+    let text = export(&h, user).await.to_string();
+    for visible in [
+        "Fraud FR-10",
+        "Court order CO-1",
+        "Court order CO-1 again",
+        "Investigation extended CO-2",
+    ] {
+        assert!(text.contains(visible), "{visible}: {text}");
+    }
+    let view = own_view(&h, user).await;
+    assert!(view.contains(&"extend_restriction".to_owned()), "{view:?}");
+    // Lapsed: no extension, but a new restriction works.
+    let legal = h.principal(legal_id, true); // fresh step-up
+    h.send(
+        &legal,
+        TestRequest::post(&extend)
+            .json(&json!({ "reason": "Too late", "review_at": review_in(&h, 10) })),
+    )
+    .await
+    .assert_error(StatusCode::CONFLICT, "conflict");
+    let renewed: Value = h
+        .send(
+            &legal,
+            TestRequest::post(&restrict)
+                .json(&json!({ "reason": "New case NC-1", "review_at": review_in(&h, 10) })),
+        )
+        .await
+        .json();
+    assert_eq!(renewed["changed"], true);
+    assert!(!export(&h, user).await.to_string().contains("Fraud FR-10"));
 }

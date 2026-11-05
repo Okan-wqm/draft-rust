@@ -771,6 +771,7 @@ async fn soc_06_custom_inventory_counts_other_methods(pool: PgPool) {
         |_| {},
         Options {
             inventory: Arc::new(PasskeyUser),
+            ..Options::default()
         },
     )
     .await;
@@ -1131,4 +1132,107 @@ async fn soc_05_concurrent_first_sign_in_of_the_same_identity_signs_in(pool: PgP
         "signed in to the linked identity"
     );
     assert_eq!(h.identity_count().await, 1);
+}
+
+/// K-63 (ACC-12, SOC-05): a new identity whose verified address is on a
+/// blocked domain is refused with `email_domain_not_allowed` whether or
+/// not an account (or an ACC-07 reservation) exists for the address — the
+/// domain is decided before any account lookup: same status, same body,
+/// same time.
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn acc_12_k63_blocked_domain_answer_does_not_depend_on_accounts(pool: PgPool) {
+    let h = Harness::with_options(
+        pool,
+        |s| {
+            s.native_per_ip =
+                authn_core::ports::RateLimitPolicy::new(10_000, Duration::from_secs(600));
+        },
+        Options {
+            blocked_domains: vec!["blocked.example"],
+            ..Options::default()
+        },
+    )
+    .await;
+    // An account created before the domain was blocked …
+    h.user("exists@blocked.example", AccountStatus::Active, true)
+        .await;
+    // … and an address held for its previous owner (ACC-07).
+    let mover = h
+        .user("held@blocked.example", AccountStatus::Active, true)
+        .await;
+    h.change_email(mover, "moved@example.com").await;
+
+    let mut answers = Vec::new();
+    for (sub, email) in [
+        ("k63-a", "exists@blocked.example"),
+        ("k63-b", "missing@blocked.example"),
+        ("k63-c", "held@blocked.example"),
+    ] {
+        let res = google_login(&h, sub, email, true).await;
+        assert_eq!(
+            res.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{email}: {}",
+            res.text()
+        );
+        answers.push(res.json::<Value>());
+    }
+    assert_eq!(answers[0]["error"]["code"], "email_domain_not_allowed");
+    for other in &answers[1..] {
+        assert_eq!(answers[0]["error"]["code"], other["error"]["code"]);
+        assert_eq!(answers[0]["error"]["message"], other["error"]["message"]);
+    }
+    assert_eq!(h.identity_count().await, 0);
+
+    // Timing: no account lookup before the decision.
+    let token = |email: &'static str, n: usize| {
+        let h = &h;
+        async move {
+            let nonce = h
+                .service
+                .issue_native_nonce(&h.ctx(), "google")
+                .await
+                .unwrap()
+                .nonce;
+            let claims = h.claims(
+                &h.idp.issuer("/google"),
+                GOOGLE_NATIVE,
+                &format!("k63-t-{n}-{email}"),
+                &nonce,
+                email,
+            );
+            sign_rs256(KEY_A, "key-a", &claims)
+        }
+    };
+    let mut tokens_a = Vec::new();
+    let mut tokens_b = Vec::new();
+    for n in 0..30 {
+        tokens_a.push(token("exists@blocked.example", n).await);
+        tokens_b.push(token("missing@blocked.example", n).await);
+    }
+    let tokens_a = std::sync::Mutex::new(tokens_a);
+    let tokens_b = std::sync::Mutex::new(tokens_b);
+    let req = |id_token: String| authn_oidc_client::NativeLoginRequest {
+        id_token,
+        remember_me: false,
+        shared_device: false,
+        given_name: None,
+        family_name: None,
+        authorization_code: None,
+    };
+    let report = compare_timings(
+        25,
+        || async {
+            let t = tokens_a.lock().unwrap().pop().unwrap();
+            let err = h.service.native_login(&h.ctx(), "google", &req(t)).await;
+            assert!(err.is_err());
+        },
+        || async {
+            let t = tokens_b.lock().unwrap().pop().unwrap();
+            let err = h.service.native_login(&h.ctx(), "google", &req(t)).await;
+            assert!(err.is_err());
+        },
+    )
+    .await;
+    report.assert_indistinguishable(0.5);
 }

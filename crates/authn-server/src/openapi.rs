@@ -34,6 +34,10 @@ pub fn openapi() -> utoipa::openapi::OpenApi {
     doc.merge(authn_org::OrgApi::openapi());
     doc.merge(authn_protect::ProtectApi::openapi());
     doc.merge(authn_audit::AuditApi::openapi());
+    doc.merge(authn_oidc_client::OidcClientApi::openapi());
+    doc.merge(authn_admin::AdminApi::openapi());
+    #[cfg(feature = "passkey")]
+    doc.merge(authn_admin::AdminEnrollmentApi::openapi());
     doc
 }
 

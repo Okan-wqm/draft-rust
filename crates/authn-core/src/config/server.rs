@@ -117,6 +117,27 @@ pub struct ServerConfig {
     /// Request limits (PRT-11).
     #[serde(default)]
     pub limits: RequestLimitsConfig,
+    /// Origins of an admin console served from another origin (ADM-04,
+    /// K-12, K-67). Only these origins may send the
+    /// `x-impersonation-session` header cross-origin; each must also be in
+    /// `protect.cors.allowed_origins`. Default: none (the header is never
+    /// allowed cross-origin; a same-origin console needs no entry).
+    #[serde(default)]
+    pub admin_console_origins: Vec<String>,
+}
+
+/// Whether `value` is exactly an http(s) origin (`scheme://host[:port]`,
+/// optionally with a trailing `/`).
+fn is_origin(value: &str) -> bool {
+    Url::parse(value).is_ok_and(|url| {
+        matches!(url.scheme(), "http" | "https")
+            && url.host_str().is_some()
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.path() == "/"
+            && url.query().is_none()
+            && url.fragment().is_none()
+    })
 }
 
 impl ServerConfig {
@@ -136,6 +157,7 @@ impl ServerConfig {
             log_format: LogFormat::default(),
             log_filter: defaults::log_filter(),
             limits: RequestLimitsConfig::default(),
+            admin_console_origins: Vec::new(),
         }
     }
 
@@ -171,6 +193,13 @@ impl ServerConfig {
             "server.log_filter",
             "must not be empty",
         );
+        for origin in &self.admin_console_origins {
+            p.require(
+                is_origin(origin),
+                "server.admin_console_origins",
+                "must be http(s) origins (scheme://host[:port], no path)",
+            );
+        }
         let l = &self.limits;
         p.require(
             (1024..=10 * 1024 * 1024).contains(&l.body_limit_bytes),

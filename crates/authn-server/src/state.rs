@@ -8,10 +8,12 @@
 use std::sync::Arc;
 
 use authn_account::AccountService;
+use authn_admin::AdminService;
 use authn_audit::AuditService;
 use authn_core::config::AppConfig;
 use authn_core::ports::Clock;
 use authn_mfa::MfaService;
+use authn_oidc_client::OidcClientService;
 use authn_org::OrgService;
 use authn_password::PasswordService;
 use authn_protect::CaptchaService;
@@ -100,6 +102,8 @@ project!(WebauthnService, webauthn);
 project!(OrgService, orgs);
 project!(CaptchaService, captcha);
 project!(AuditService, audit);
+project!(OidcClientService, oidc);
+project!(AdminService, admin);
 
 impl FromRef<AppState> for WellKnownDocuments {
     fn from_ref(state: &AppState) -> Self {

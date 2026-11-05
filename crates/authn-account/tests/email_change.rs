@@ -666,3 +666,112 @@ async fn acc_07_revert_notifies_the_restored_address(pool: PgPool) {
         "the abandoned address learns nothing"
     );
 }
+
+/// K-20 test hook: writes a marker row through the revert transaction and
+/// optionally fails afterwards.
+struct MarkerHook {
+    fail: bool,
+    seen: std::sync::Mutex<Vec<UserId>>,
+}
+
+#[async_trait::async_trait]
+impl authn_account::EmailChangeRevertHook for MarkerHook {
+    async fn after_revert_in_tx(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        _ctx: &authn_core::http::RequestContext,
+        user: UserId,
+    ) -> Result<(), authn_core::error::AuthError> {
+        // The caller holds the user row lock: reading it here proves the hook
+        // runs on the revert transaction (a second connection would block).
+        let status: String = sqlx::query_scalar("SELECT status FROM users WHERE id = $1")
+            .bind(user)
+            .fetch_one(&mut *conn)
+            .await
+            .map_err(|e| authn_core::error::AuthError::internal(e.to_string()))?;
+        assert_eq!(status, "active");
+        sqlx::query("CREATE TABLE IF NOT EXISTS k20_marker (user_id uuid)")
+            .execute(&mut *conn)
+            .await
+            .map_err(|e| authn_core::error::AuthError::internal(e.to_string()))?;
+        sqlx::query("INSERT INTO k20_marker VALUES ($1)")
+            .bind(user)
+            .execute(&mut *conn)
+            .await
+            .map_err(|e| authn_core::error::AuthError::internal(e.to_string()))?;
+        self.seen.lock().unwrap().push(user);
+        if self.fail {
+            return Err(authn_core::error::AuthError::internal("hook failed"));
+        }
+        Ok(())
+    }
+}
+
+async fn changed_and_revert_token(h: &Harness, old: &str, new: &str) -> (UserId, String) {
+    let user = h.active_user(old).await;
+    request(h, user, new).await;
+    let (token, _) = change_secrets(h, new);
+    h.service
+        .confirm_email_change_link(Some(&h.fresh(user)), &h.ctx(), &secret(&token))
+        .await
+        .unwrap();
+    (user, revert_token(h, old))
+}
+
+async fn marker_rows(pool: &PgPool) -> i64 {
+    sqlx::query_scalar(
+        "SELECT CASE WHEN to_regclass('k20_marker') IS NULL THEN 0 \
+         ELSE (SELECT count(*) FROM k20_marker) END",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap_or(0)
+}
+
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn acc_07_k20_revert_hooks_run_in_the_revert_transaction(pool: PgPool) {
+    let h = Harness::new(pool).await;
+    let hook = std::sync::Arc::new(MarkerHook {
+        fail: false,
+        seen: std::sync::Mutex::new(Vec::new()),
+    });
+    h.service.register_revert_hook(hook.clone());
+    let (user, revert) =
+        changed_and_revert_token(&h, "hook-owner@example.com", "hook-new@example.com").await;
+    h.service
+        .revert_email_change(&h.ctx(), &secret(&revert))
+        .await
+        .unwrap();
+    assert_eq!(*hook.seen.lock().unwrap(), vec![user]);
+    assert_eq!(marker_rows(&h.pool).await, 1, "hook write committed");
+}
+
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn acc_07_k20_revert_hook_error_rolls_the_revert_back(pool: PgPool) {
+    let h = Harness::new(pool).await;
+    h.service
+        .register_revert_hook(std::sync::Arc::new(MarkerHook {
+            fail: true,
+            seen: std::sync::Mutex::new(Vec::new()),
+        }));
+    let (user, revert) =
+        changed_and_revert_token(&h, "roll-owner@example.com", "roll-new@example.com").await;
+    assert!(
+        h.service
+            .revert_email_change(&h.ctx(), &secret(&revert))
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        h.user_by_id(user).await.unwrap().email.as_deref(),
+        Some("roll-new@example.com"),
+        "nothing of the revert committed"
+    );
+    assert_eq!(marker_rows(&h.pool).await, 0, "hook write rolled back");
+    assert!(
+        h.audit
+            .events
+            .of_kind(SecurityEventKind::EmailChangeReverted)
+            .is_empty()
+    );
+}

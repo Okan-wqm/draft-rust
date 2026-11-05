@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use authn_core::config::AppConfig;
 use authn_core::config::admin::AdminConfig;
+use authn_core::config::common::Environment;
 use authn_core::ports::RateLimitPolicy;
 use ipnet::IpNet;
 
@@ -50,6 +51,11 @@ pub struct AdminSettings {
     /// Enrollment-link requests (options / verify) per client IP (K-11;
     /// default 20 per 15 minutes).
     pub enrollment_per_ip: RateLimitPolicy,
+    /// Four-eyes approval of critical operations (K-66; default on in
+    /// production and staging).
+    pub four_eyes: bool,
+    /// Lifetime of an approval request (K-66; default 30 minutes).
+    pub four_eyes_approval_ttl: Duration,
 }
 
 /// Longest lifetime of a break-glass passkey enrollment link (K-11).
@@ -82,13 +88,24 @@ impl AdminSettings {
             audit_verify_lease: Duration::from_secs(15 * 60),
             enrollment_link_ttl: Duration::from_secs(30 * 60),
             enrollment_per_ip: RateLimitPolicy::new(20, Duration::from_secs(15 * 60)),
+            // Without the environment (see `from_app_config`): on unless
+            // explicitly switched off.
+            four_eyes: config.four_eyes.unwrap_or(true),
+            four_eyes_approval_ttl: config.four_eyes_approval_ttl,
         }
     }
 
-    /// Settings from the whole application configuration.
+    /// Settings from the whole application configuration. An unset
+    /// `admin.four_eyes` is on in `production` and `staging` and off in
+    /// `development` and `test` (K-66).
     #[must_use]
     pub fn from_app_config(config: &AppConfig) -> Self {
-        Self::from_config(&config.admin)
+        let mut settings = Self::from_config(&config.admin);
+        settings.four_eyes = config.admin.four_eyes.unwrap_or(matches!(
+            config.server.environment,
+            Environment::Production | Environment::Staging
+        ));
+        settings
     }
 }
 
@@ -115,5 +132,24 @@ mod tests {
         let defaults = AdminSettings::default();
         assert_eq!(defaults.impersonation_default_ttl, Duration::from_secs(900));
         assert_eq!(defaults.step_up_max_age, Duration::from_secs(600));
+    }
+
+    #[test]
+    fn adm_06_k66_four_eyes_defaults_on_in_production_and_staging() {
+        let mut config = authn_testkit::config::test_config();
+        for (environment, on) in [
+            (Environment::Production, true),
+            (Environment::Staging, true),
+            (Environment::Development, false),
+            (Environment::Test, false),
+        ] {
+            config.server.environment = environment;
+            config.admin.four_eyes = None;
+            let settings = AdminSettings::from_app_config(&config);
+            assert_eq!(settings.four_eyes, on, "{environment:?}");
+            assert_eq!(settings.four_eyes_approval_ttl, Duration::from_secs(1800));
+            config.admin.four_eyes = Some(!on);
+            assert_eq!(AdminSettings::from_app_config(&config).four_eyes, !on);
+        }
     }
 }

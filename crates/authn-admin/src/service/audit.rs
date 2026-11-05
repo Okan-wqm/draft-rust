@@ -289,6 +289,14 @@ impl AdminService {
     /// lease in `admin_operation_leases`, taken and released with single
     /// statements — no connection is held while the chain is read). A
     /// second concurrent request answers `429 rate_limited`.
+    ///
+    /// K-65: the lease uses the database clock and is renewed by a
+    /// heartbeat every third of `audit_verify_lease` while the chain is
+    /// read, so a verification longer than the lease never lets a second
+    /// one start; `audit_verify_lease` only bounds how long a **dead**
+    /// holder blocks others. If the lease is lost anyway (renewals failed
+    /// until it expired and another instance took it), the verification is
+    /// aborted (`409 conflict`) instead of overlapping.
     pub async fn verify_audit_chain(
         &self,
         caller: &AdminCaller,
@@ -299,24 +307,27 @@ impl AdminService {
         let anchor = anchor.map(VerifiedAnchor::into_anchor).transpose()?;
         self.check_audit_verify(caller, ctx).await?;
         let holder = Uuid::now_v7();
-        let now = self.now();
-        let expires = now + self.settings().audit_verify_lease;
-        if !store::acquire_lease(self.pool(), LEASE, holder, now, expires).await? {
+        let ttl = self.settings().audit_verify_lease;
+        if !store::acquire_lease(self.pool(), LEASE, holder, ttl).await? {
             return Err(self
                 .throttled(
                     caller,
                     ctx,
                     "audit_chain_verified",
                     Limit::AuditVerifyRunning,
-                    self.settings()
-                        .audit_verify_lease
-                        .min(std::time::Duration::from_secs(60)),
+                    ttl.min(std::time::Duration::from_secs(60)),
                 )
                 .await);
         }
-        let verified = match anchor {
-            Some(a) => authn_audit::verify_chain_from(self.pool(), a).await,
-            None => authn_audit::verify_chain(self.pool()).await,
+        let verification = async {
+            match anchor {
+                Some(a) => authn_audit::verify_chain_from(self.pool(), a).await,
+                None => authn_audit::verify_chain(self.pool()).await,
+            }
+        };
+        let verified = tokio::select! {
+            verified = verification => verified,
+            lost = self.lease_heartbeat(LEASE, holder, ttl) => Err(lost),
         };
         if let Err(err) = store::release_lease(self.pool(), LEASE, holder).await {
             // The lease expires on its own.
@@ -341,6 +352,41 @@ impl AdminService {
         .await?;
         authn_store::commit(tx).await?;
         Ok(verification)
+    }
+}
+
+impl AdminService {
+    /// K-65: renews the lease `name` of `holder` every `ttl / 3` until it is
+    /// lost; returns the error to abort with. A failed renewal is retried
+    /// at the next beat; two failures in a row (the lease may expire before
+    /// the next one) count as lost.
+    async fn lease_heartbeat(
+        &self,
+        name: &'static str,
+        holder: Uuid,
+        ttl: std::time::Duration,
+    ) -> AuthError {
+        let beat = (ttl / 3).max(std::time::Duration::from_millis(50));
+        let mut failures = 0_u32;
+        loop {
+            tokio::time::sleep(beat).await;
+            match store::renew_lease(self.pool(), name, holder, ttl).await {
+                Ok(true) => failures = 0,
+                Ok(false) => {
+                    tracing::error!(lease = name, "operation lease lost; aborting");
+                    break;
+                }
+                Err(err) => {
+                    failures += 1;
+                    tracing::warn!(lease = name, error = %err, "operation lease renewal failed");
+                    if failures >= 2 {
+                        break;
+                    }
+                }
+            }
+        }
+        AuthError::new(codes::common::CONFLICT)
+            .with_context("the operation lease was lost; another instance may be running it")
     }
 }
 

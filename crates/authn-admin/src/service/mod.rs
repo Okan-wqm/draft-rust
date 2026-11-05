@@ -9,6 +9,7 @@
 //! justification commit or roll back together.
 
 mod actions;
+mod approvals;
 mod audit;
 mod emergency;
 #[cfg(feature = "passkey")]
@@ -40,11 +41,12 @@ use sqlx::{PgConnection, PgPool};
 use time::OffsetDateTime;
 
 pub use self::actions::{ActionOutcome, ForcedReset};
+pub use self::approvals::{ApprovalView, CriticalOperation};
 pub use self::audit::{
     AdminAuditEvent, AdminAuditFilter, AuditExport, ChainVerification, VerifiedAnchor,
 };
 pub use self::emergency::{BulkResetOutcome, EmergencyOutcome, KeyRotationOutcome};
-pub use self::export::{AdminActionsDataExporter, STAFF_ACTOR};
+pub use self::export::{AdminActionsDataExporter, RESTRICTION_MAX_PERIOD, STAFF_ACTOR};
 pub use self::impersonation::ImpersonationOptions;
 pub use self::users::{
     AdminUserDetail, AdminUserSummary, PasswordState, UserSearch, UserStatusFilter,
@@ -262,23 +264,52 @@ impl AdminService {
         Ok(record)
     }
 
-    /// K-08: before an action on `target` (no transaction open yet), the
-    /// admin-targeting budgets apply when `target` is a platform admin.
-    /// Returns whether it is one (the action is then high priority).
-    pub(crate) async fn guard_admin_target(
+    /// K-08 / K-64: opens the action's transaction with the target row
+    /// locked and the admin-targeting budget applied **according to the
+    /// locked row**. Returns the transaction, the locked target and
+    /// whether the target is another platform admin (the action is then
+    /// high priority).
+    ///
+    /// The budget is consumed before the transaction (the rate limiter uses
+    /// its own connection: never wait for a second pooled connection while
+    /// holding one) from an unlocked read. If the locked row shows that the
+    /// target became an admin in between (a concurrent promotion), the
+    /// transaction is rolled back, the budget is consumed and the
+    /// transaction is opened again — an action on an admin never runs
+    /// without its budget (K-64). At most two rounds: a target that stops
+    /// being an admin only over-counts.
+    pub(crate) async fn begin_on_target(
         &self,
         caller: &AdminCaller,
         ctx: &RequestContext,
         target: UserId,
+        policy: TargetPolicy,
         action: &'static str,
-    ) -> Result<bool, AuthError> {
-        let is_admin = UserRepository::find_by_id(self.pool(), target)
+    ) -> Result<(authn_store::PgTx, UserRecord, bool), AuthError> {
+        let mut budgeted = UserRepository::find_by_id(self.pool(), target)
             .await?
             .is_some_and(|u| u.is_platform_admin && u.id != caller.user_id());
-        if is_admin {
+        if budgeted {
             self.check_admin_target(caller, ctx, action).await?;
         }
-        Ok(is_admin)
+        loop {
+            let mut tx = self.begin().await?;
+            let record = self.lock_target(&mut tx, caller, target, policy).await?;
+            let is_admin = record.is_platform_admin && record.id != caller.user_id();
+            if !is_admin || budgeted {
+                return Ok((tx, record, is_admin));
+            }
+            // Promoted since the unlocked read: release the lock and the
+            // connection, then pay the budget and start over.
+            tx.rollback().await?;
+            tracing::warn!(
+                admin = %caller.user_id(),
+                action,
+                "target became a platform admin during the request; admin-target budget applied"
+            );
+            self.check_admin_target(caller, ctx, action).await?;
+            budgeted = true;
+        }
     }
 
     /// Records the audit event of an admin action in the caller's

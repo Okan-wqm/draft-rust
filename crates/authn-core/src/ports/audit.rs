@@ -161,6 +161,13 @@ text_enum! {
         IdentityLinked => "identity.linked",
         /// External identity unlinked.
         IdentityUnlinked => "identity.unlinked",
+        /// A provider token of a removed or re-authorized external identity
+        /// was revoked at the provider (K-35, K-59, K-60); `Actor::System`.
+        /// Failure reasons: `provider_token_revocation_failed` (given up
+        /// after retries), `provider_token_unreadable` (the stored token
+        /// could not be decrypted, nothing could be sent). Never means the
+        /// unlink itself failed.
+        IdentityProviderTokenRevoked => "identity.provider_token_revoked",
         /// Organization created.
         OrgCreated => "org.created",
         /// Organization updated.
@@ -242,6 +249,16 @@ text_enum! {
         BreakGlassUsed => "admin.break_glass_used",
         /// Emergency operation (ADM-06).
         EmergencyAction => "admin.emergency_action",
+        /// A four-eyes approval of a critical admin operation was requested
+        /// (K-66); metadata names the approval and the operation.
+        AdminApprovalRequested => "admin.approval_requested",
+        /// A second platform admin approved or denied a four-eyes request
+        /// (K-66); metadata `decision` = `approved` / `denied`.
+        AdminApprovalDecided => "admin.approval_decided",
+        /// A critical admin operation ran without a second admin's approval
+        /// under a defined exception (K-66: `break_glass`, `no_second_admin`)
+        /// — high priority, alert on it.
+        AdminFourEyesBypassed => "admin.four_eyes_bypassed",
         /// JWT signing key rotated (CRY-10).
         SigningKeyRotated => "keys.signing_key_rotated",
         /// JWT signing key revoked.

@@ -136,9 +136,16 @@ erDiagram
     users ||--o{ email_reservations : "ayrılmış eski adres (ACC-07)"
     organizations ||--o{ org_auto_join_exclusions : ""
     users ||--o{ org_auto_join_exclusions : "otomatik katılım dışı (ORG-06)"
+    users ||--o{ pending_registrations : "bekleyen kayıt (ADR 0002, 1201)"
+    users ||--o{ admin_passkey_enrollments : "break-glass kayıt bağlantısı (K-11, 2201)"
+    audit_events ||--o| admin_action_reasons : "gerekçe (ADM-08, 2200)"
+    users ||--o{ admin_action_reasons : "hedef / admin"
+    admin_action_reasons ||--o| admin_reason_restrictions : "yasal kısıtlama (K-39, 2201)"
+    audit_events ||--o{ admin_reason_restrictions : "kısıtlama işlemi"
+    users ||--o{ oauth_states : "bağlama akışı (session_id FK'sız, K-03, 2101)"
 ```
 
-Bağımsız tablolar: `outbox` (transactional outbox), `audit_chain_head` / `audit_chain_checkpoints` (hash zinciri), `signing_keys` (JWT anahtar yaşam döngüsü), `data_encryption_keys` (**ayrılmış, kullanılmıyor**: CRY-08 zarfı kendi sarılmış DEK'ini taşır; ileride KMS önbelleği için, bkz. `0014`), `rate_limit_buckets` (UNLOGGED), `captcha_pow_challenges`, `oauth_states`, `webauthn_ceremonies`, `account_deletions`, `known_devices` / `known_networks`, `login_soft_locks`.
+Bağımsız tablolar: `outbox` (transactional outbox), `audit_chain_head` / `audit_chain_checkpoints` (hash zinciri), `signing_keys` (JWT anahtar yaşam döngüsü), `data_encryption_keys` (**ayrılmış, kullanılmıyor**: CRY-08 zarfı kendi sarılmış DEK'ini taşır; ileride KMS önbelleği için, bkz. `0014`), `rate_limit_buckets` (UNLOGGED), `captcha_pow_challenges`, `webauthn_ceremonies` (oturuma **veya** break-glass bağlantı hash'ine bağlı, 1401), `account_deletions`, `known_devices` / `known_networks`, `login_soft_locks`, `oauth_token_revocations` (silinmiş/ayrılmış kimliklerin sağlayıcı token iptal kuyruğu; kullanıcı kimliği **yok**, 2102), `admin_operation_leases` (küme genelinde tek eşzamanlı pahalı admin işlemi, 2201). Wave 3B'nin eklediği admin/audit tabloları (`admin_approvals`, `admin_reason_restriction_periods`, `audit_subject_view_holds`; migration `2202`, `1701`) authn-admin / authn-audit README'lerinde.
 
 Öne çıkan tasarım kararları:
 
@@ -157,7 +164,8 @@ Bağımsız tablolar: `outbox` (transactional outbox), `audit_chain_head` / `aud
 ## Konfigürasyon ve çalışma
 
 - Konfigürasyon: TOML + `AUTHN__` ortam değişkenleri, tipli ve doğrulanmış (fail-fast); örnek: [`config/example.toml`](../../config/example.toml).
-- Binary alt komutları: `serve`, `migrate`, `check-config`, `create-admin`, `rotate-signing-key`, `rotate-kek` (`reencrypt`), `verify-audit-chain`, `migrate-legacy-hashes`.
+- Binary alt komutları: `serve`, `migrate`, `check-config`, `create-admin` (`--passkey-link [--ttl]`), `admin-enrollment-link`, `suspend-admin`, `unsuspend-admin`, `revoke-admin-sessions`, `seal-apple-key`, `rotate-signing-key`, `rotate-kek` (`reencrypt`), `verify-audit-chain`, `migrate-legacy-hashes`.
+- Veritabanı rolleri (OPS-10): uygulama rolü (`database.url`), bakım rolü (`database.maintenance_url`; audit saklama temizliği), şema sahibi (yalnızca `migrate`). Yetkiler: `SELECT authn_apply_least_privilege('<uygulama>', '<bakım>')` (migration `2900`); runbook [`docs/operations/least-privilege.md`](../operations/least-privilege.md).
 - Yerel bağımlılıklar: `docker compose up -d` (PostgreSQL 16, Redis 7, Mailpit). Mailpit, depodaki sabit ve **herkese açık** geliştirme sertifikasıyla STARTTLS sunar (`config/dev-certs/`); örnek konfigürasyondaki yorumlu `notify.email.smtp.extra_ca_file` satırı açılınca sunucu ona güvenir. Bu ayar `development`/`test` dışında reddedilir.
 - Sağlık: `GET /health/live`, `GET /health/ready` (veritabanı + migration durumu). Metrikler ayrı dinleyicide (`server.metrics_bind_addr`).
 

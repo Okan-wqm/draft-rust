@@ -189,6 +189,12 @@ pub struct OidcClientConfig {
     /// the provider. Default `60s`, 10 s – 1 h.
     #[serde(with = "super::duration")]
     pub jwks_refresh_min_interval: Duration,
+    /// Longest time cached provider keys are still used while the
+    /// provider's JWKS endpoint fails (K-61); beyond it ID-token
+    /// verification fails closed (`service_unavailable`). Default `24h`,
+    /// at least `jwks_cache_ttl`, at most `7d`.
+    #[serde(with = "super::duration")]
+    pub jwks_max_staleness: Duration,
     /// Web flow starts per client IP (PRT-02). Default 60 / 10 min.
     pub start_per_ip: RateLimitPolicy,
     /// Native nonces and native logins per client IP (PRT-02). Default
@@ -223,6 +229,7 @@ impl Default for OidcClientConfig {
             store_provider_tokens: false,
             jwks_cache_ttl: hours(1),
             jwks_refresh_min_interval: secs(60),
+            jwks_max_staleness: hours(24),
             start_per_ip: RateLimitPolicy::new(60, mins(10)),
             native_per_ip: RateLimitPolicy::new(60, mins(10)),
             callback_per_ip: RateLimitPolicy::new(60, mins(10)),
@@ -297,6 +304,12 @@ impl OidcClientConfig {
             hours(1),
             "oidc_client.jwks_refresh_min_interval",
         );
+        p.require_range(
+            self.jwks_max_staleness,
+            self.jwks_cache_ttl.max(mins(1)),
+            hours(24 * 7),
+            "oidc_client.jwks_max_staleness",
+        );
         validate_policy(p, &self.start_per_ip, "oidc_client.start_per_ip");
         validate_policy(p, &self.native_per_ip, "oidc_client.native_per_ip");
         validate_policy(p, &self.callback_per_ip, "oidc_client.callback_per_ip");
@@ -361,6 +374,29 @@ mod tests {
         let mut p = ConfigProblems::default();
         config.validate(&mut p);
         p.problems().to_vec()
+    }
+
+    #[test]
+    fn soc_03_k61_jwks_max_staleness_default_and_bounds() {
+        let c = OidcClientConfig::default();
+        assert_eq!(c.jwks_max_staleness, hours(24));
+        assert!(problems(&c).is_empty());
+        let c = parse("jwks_max_staleness = \"2h\"");
+        assert_eq!(c.jwks_max_staleness, hours(2));
+        assert!(problems(&c).is_empty());
+        // Shorter than the cache lifetime, or longer than a week: refused.
+        let c = parse("jwks_cache_ttl = \"2h\"\njwks_max_staleness = \"1h\"");
+        assert!(
+            problems(&c)
+                .iter()
+                .any(|p| p.starts_with("oidc_client.jwks_max_staleness"))
+        );
+        let c = parse("jwks_max_staleness = \"8d\"");
+        assert!(
+            problems(&c)
+                .iter()
+                .any(|p| p.starts_with("oidc_client.jwks_max_staleness"))
+        );
     }
 
     #[test]

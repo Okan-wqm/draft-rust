@@ -8,7 +8,13 @@
 //! * Concurrent refreshes of one URL are coalesced (per-URL async lock);
 //!   providers do not block each other.
 //! * When a download fails, a stale cache that has the key is still used
-//!   (the provider's key did not change by being unreachable).
+//!   (the provider's key did not change by being unreachable) — but only
+//!   for a bounded time (K-61): keys downloaded longer than
+//!   `oidc_client.jwks_max_staleness` ago (default 24 h) are never used.
+//!   Beyond that bound verification fails closed with the stable
+//!   `service_unavailable` code: a key the provider withdrew (e.g. after a
+//!   compromise) during an outage of its JWKS endpoint, or that an attacker
+//!   keeps "current" by blocking the endpoint, stops verifying.
 //! * Failed downloads back off per URL (K-16): after the n-th consecutive
 //!   failure no download is attempted for
 //!   `min(JWKS_BACKOFF_BASE · 2^(n-1), JWKS_BACKOFF_MAX)`; meanwhile
@@ -82,13 +88,19 @@ pub struct JwksCache {
     slots: Arc<Mutex<HashMap<String, Slot>>>,
     ttl: Duration,
     min_refresh: Duration,
+    max_staleness: Duration,
 }
+
+/// Default bound on the age of cached keys used while the provider's JWKS
+/// endpoint fails (K-61).
+pub const DEFAULT_JWKS_MAX_STALENESS: Duration = Duration::from_secs(24 * 3600);
 
 impl std::fmt::Debug for JwksCache {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("JwksCache")
             .field("ttl", &self.ttl)
             .field("min_refresh", &self.min_refresh)
+            .field("max_staleness", &self.max_staleness)
             .finish_non_exhaustive()
     }
 }
@@ -131,14 +143,46 @@ fn age(now: OffsetDateTime, then: OffsetDateTime) -> Duration {
 
 impl JwksCache {
     /// A cache keeping keys for `ttl`, forcing a refresh on an unknown `kid`
-    /// at most every `min_refresh`.
+    /// at most every `min_refresh`; stale keys are usable during an outage
+    /// for [`DEFAULT_JWKS_MAX_STALENESS`] (see [`Self::with_max_staleness`]).
     #[must_use]
     pub fn new(ttl: Duration, min_refresh: Duration) -> Self {
         Self {
             slots: Arc::new(Mutex::new(HashMap::new())),
             ttl,
             min_refresh,
+            max_staleness: DEFAULT_JWKS_MAX_STALENESS,
         }
+    }
+
+    /// Bounds the age of cached keys that may still be used while the
+    /// provider's JWKS endpoint fails (K-61). Never below `ttl`.
+    #[must_use]
+    pub fn with_max_staleness(mut self, max_staleness: Duration) -> Self {
+        self.max_staleness = max_staleness.max(self.ttl);
+        self
+    }
+
+    /// A cached key usable while downloads fail: only when it was fetched
+    /// at most `max_staleness` ago (K-61); otherwise fail closed.
+    fn stale_key(
+        &self,
+        state: &SlotState,
+        kid: &str,
+        now: OffsetDateTime,
+    ) -> Result<CoreJsonWebKey, AuthError> {
+        let Some(entry) = state.entry.as_ref() else {
+            return Err(unavailable());
+        };
+        if age(now, entry.fetched_at) > self.max_staleness {
+            crate::metrics::jwks_failure("stale_expired");
+            tracing::warn!(
+                age_secs = age(now, entry.fetched_at).as_secs(),
+                "cached JWKS older than jwks_max_staleness; refusing to verify"
+            );
+            return Err(unavailable());
+        }
+        entry.find(kid).ok_or_else(unavailable)
     }
 
     fn slot(&self, url: &Url) -> Slot {
@@ -183,10 +227,7 @@ impl JwksCache {
             // Backing off after failed downloads: no request to the
             // provider; a stale key still verifies (K-16).
             crate::metrics::jwks_failure("backoff");
-            return match guard.entry.as_ref().and_then(|e| e.find(kid)) {
-                Some(stale) => Ok(Some(stale)),
-                None => Err(unavailable()),
-            };
+            return self.stale_key(&guard, kid, now).map(Some);
         }
         let fetched = outbound::get(http, url.clone(), target, None, None)
             .await
@@ -224,10 +265,7 @@ impl JwksCache {
                     backoff_secs = wait.as_secs(),
                     "JWKS download failed"
                 );
-                match guard.entry.as_ref().and_then(|e| e.find(kid)) {
-                    Some(stale) => Ok(Some(stale)),
-                    None => Err(unavailable()),
-                }
+                self.stale_key(&guard, kid, now).map(Some)
             }
         }
     }

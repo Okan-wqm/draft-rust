@@ -2,7 +2,7 @@
 
 > **Kaynak:** Bu dosya, modülleri yazan uzman agent'ların ve onları denetleyen bağımsız güvenlik denetçilerinin raporlarından derlendi. İçerik **İngilizce** bırakıldı (agent çıktısıdır, imzalar ve kod adlarıyla birebir uyumlu kalsın diye). Bir imza ile kod arasında fark görürsen **kod doğrudur**; ilgili crate'in `README.md` dosyasına ve `cargo doc` çıktısına bak.
 >
-> Bölümler: (1) `authn-session` çekirdeği, (2) `authn-account` kayıt yeniden tasarımı (pre-hijacking), (3) mimarın sözleşme değişikliği işlemesi, (4) Dalga A modülleri (protect, audit, notify, password, account, mfa, webauthn, org).
+> Bölümler: (1) `authn-session` çekirdeği, (2) `authn-account` kayıt yeniden tasarımı (pre-hijacking), (3) mimarın sözleşme değişikliği işlemesi, (4) Dalga A modülleri (protect, audit, notify, password, account, mfa, webauthn, org), (5) wave 3A sunucu bağlaması (authn-oidc-client, authn-admin, K-20, OPS-10, K-67).
 > Genel sunucu bağlama tablosu için: [`docs/architecture/contracts.md`](../architecture/contracts.md) §15.
 
 
@@ -175,6 +175,9 @@ Migrations: 0013 (password_credentials_wrapped_pepper_check), 0014 (data_encrypt
 Dev certificate: config/dev-certs/mailpit.{pem,key}
 
 ### Hâlâ açık olanlar
+
+> **Güncelleme (wave 3A, 2026-11-04):** aşağıdaki maddelerin hepsi kapandı (account yeniden yazımı ve `pending_registrations` belgeleri, yeniden kullanım refaktörleri — K-41, notify/crypto talepleri — wave 1, §15 bağlaması — wave 3A). Mailpit hâlâ gerçek Docker ile çalıştırılmadı (K-55). Tarihsel kayıt olarak bırakıldı.
+
 - authn-account is being rewritten by another agent: its clippy fails (redundant closure in routes.rs) and its tests do not compile. Re-run the workspace gates once that agent commits.
 - The account agent is adding a new table, pending_registrations (migration 1201), and an ADR 0002. contracts.md §5 and overview.md need that table added once their work lands.
 - authn-account can switch its SharedReads and RevertLinkRepository SQL to the new UserRepository::claim_next, active_for_user and revoke_for_user_since (same behaviour). authn-org can switch to find_many and RevocationReason::MembershipChanged. authn-mfa can drop its own TestNotifier.
@@ -434,3 +437,44 @@ authn_org (crate root re-exports): OrgService::new(OrgServiceDeps { pool, clock,
 - [low/accepted_risk] A pending ownership transfer is not revoked when its initiator is demoted; it can complete only if the initiator is an active owner again within the TTL
 - [low/accepted_risk] Org names chosen by the creator appear in genuine invitation and transfer e-mails (content is sanitized and rate-limited, not moderated)
 - [info/accepted_risk] Verified domains are never re-verified; org_domain_claimed reveals to a DNS controller that another org verified the domain; toggling auto_join needs no step-up
+
+
+## 5. Wave 3A — sunucu bağlaması (2026-11-04)
+
+Wiring lives in `crates/authn-server/src/{services.rs,hooks.rs,state.rs,app.rs,cors.rs,openapi.rs,jobs.rs,serve.rs,cli.rs,operations.rs}`. Source of truth for the tables: `docs/architecture/contracts.md` §15.
+
+### Construction order (`Services::build_with_maintenance_pool`)
+1. crypto, rate limiter, SSRF-safe HTTP client, notifications; audit sink + outbox event publisher.
+2. `MfaService` → `PgSessionRevoker` → `AccountService` (plain revoker; exporters: session, mfa, passkeys, org, `IdentityDataExporter`, `AdminActionsDataExporter::new(clock)`) → `AccountAwareSessionRevoker` (given to every other module).
+3. password, webauthn, org, audit service; late hooks bound; login protection, risk, `SessionService` (= `SessionIssuer`).
+4. `OidcClientService::build(OidcClientServiceDeps { …, sessions: issuer, login_methods: ServerOidcLoginMethods, session_liveness: ServerSessionLiveness, notifier }, settings).await` (test override: `Ports::oidc_registry`).
+5. `accounts.register_erasure_hook(oidc.erasure_hook())` (K-35) and `accounts.register_revert_hook(ServerRevertHook { webauthn, mfa, oidc })` (K-20).
+6. `AdminService::new(AdminServiceDeps { pool, clock, audit, sessions: account-aware revoker, issuer, accounts, mfa, webauthn, passwords, protection, hasher, envelopes, signing_keys: ServerSigningKeyCache(sessions), rate_limiter }, AdminSettings::from_app_config(&config))`.
+
+### Server hook implementations (`hooks.rs`)
+- `ServerLoginMethods` (password PWD-11) and `ServerAccountMethods` (webauthn PKY-04): `Social` when `OidcClientService::linked_identity_count_in(conn, user) > 0`.
+- `ServerOidcLoginMethods` (oidc SOC-06): `Password`, `Passkey`; never `Social`. Passwordless e-mail login is not counted by any of the three adapters (it exists for every account with an address; PWD-11 asks for a *strong* method) — deliberate, the rules can only refuse, never strand.
+- `ServerSessionLiveness` → `authn_session::is_session_active_in` (K-03).
+- `ServerSigningKeyCache` → `SessionService::invalidate_signing_keys` (ADM-06).
+- `ServerRevertHook` (K-20) → `remove_all_passkeys_in_tx`, `reset_user_mfa_in_tx`, `remove_all_identities_in_tx` in the revert transaction.
+
+### Routing
+- `module_routes()` (every module incl. `authn_oidc_client::router`, `authn_admin::router`) behind `authn_session::authenticate` (+ CSRF).
+- `session_less_routes()` = `authn_admin::enrollment_router` (feature `passkey`), merged **outside** the authentication layer: the link token is the credential; a browser holding an unrelated session cookie without CSRF token must not be refused.
+- K-67: `server.admin_console_origins` (each also in `protect.cors.allowed_origins`); `cors::admin_console_cors` answers only preflights from those origins asking for `x-impersonation-session`. Default: none.
+- OpenAPI: `OidcClientApi`, `AdminApi`, `AdminEnrollmentApi` (passkey).
+
+### Jobs
+- `run_maintenance_once` adds `OidcClientService::purge_expired_states`.
+- `jobs::process_token_revocations` (own task, every minute, 100 per run; K-35).
+- Audit maintenance runs on `Services::maintenance_pool` (`database.maintenance_url`, OPS-10).
+
+### CLI
+`create-admin --email E [--passkey-link [--ttl D]]`, `admin-enrollment-link`, `suspend-admin`, `unsuspend-admin`, `revoke-admin-sessions` (all: `--target`, `--reason`, `--operator` required), `seal-apple-key --pem-file PATH|-`, `rotate-kek` (now also identities / oauth_states / oauth_token_revocations ciphertexts; prints the re-wrapped `apple.private_key_ciphertext`). One-time secrets (password, enrollment link) are printed once to stdout and never logged; the link token is in the URL fragment.
+
+### Database roles (K-42)
+Migration `2900`: `authn_apply_least_privilege(app_role, maintenance_role)`; runbook `docs/operations/least-privilege.md`.
+
+### Tests (crates/authn-server/tests)
+`social_e2e.rs`, `admin_e2e.rs` (passkey feature), `console_cors.rs`, `least_privilege.rs`, `operations.rs`, plus additions to `http_stack.rs` (SSRF, OpenAPI). See remaining-work.md §10 K-50 … K-54 rows for names.
+
