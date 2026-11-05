@@ -55,8 +55,8 @@ pub use routes::{WebauthnApi, router};
 #[cfg(feature = "passkey")]
 pub use service::{
     AuthenticatedPasskey, AuthenticationFinish, AuthenticationStart, AuthenticationTarget,
-    RegistrationIntent, RegistrationOptionsRequest, RegistrationStart, RegistrationVerifyRequest,
-    VerifiedEnrollment,
+    ChallengeRegistrationStart, RegistrationIntent, RegistrationOptionsRequest, RegistrationStart,
+    RegistrationVerifyRequest, VerifiedEnrollment,
 };
 pub use service::{
     AuthenticationPurpose, PasskeyRemovalReason, PasskeySummary, PasskeyUsage, WebauthnService,

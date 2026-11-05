@@ -13,6 +13,8 @@
 //! | `POST /v1/login/challenge/verify` | SES-02 |
 //! | `POST /v1/login/challenge/send-code` | SES-02, RSK-03 |
 //! | `POST /v1/login/challenge/passkey/options` | SES-02 |
+//! | `POST /v1/login/challenge/passkey/register/options` | SES-22, MFA-07 (K-112) |
+//! | `POST /v1/login/challenge/passkey/register/verify` | SES-22, MFA-07 (K-112) |
 //! | `POST /v1/login/challenge/step` | SES-22 |
 //! | `POST /v1/login/not-me` | RSK-04 |
 //!
@@ -45,8 +47,8 @@ use super::password::PasswordLogin;
 use super::passwordless::{EmailCodeVerify, MagicLinkRequest, MagicLinkVerify};
 use super::pipeline::PipelineOutcome;
 use super::{
-    ChallengeStep, FactorSubmission, MAGIC_LINK_BINDING_COOKIE, SendCodeChannel, single_cookie,
-    trusted_device_token,
+    ChallengeStep, FactorSubmission, MAGIC_LINK_BINDING_COOKIE, PasskeyEnrollmentVerify,
+    SendCodeChannel, single_cookie, trusted_device_token,
 };
 use crate::cookies::{self, CHALLENGE_COOKIE, PASSKEY_BINDING_COOKIE};
 use crate::model::CurrentSession;
@@ -78,6 +80,14 @@ where
             "/v1/login/challenge/passkey/options",
             post(challenge_passkey_options),
         )
+        .route(
+            "/v1/login/challenge/passkey/register/options",
+            post(challenge_passkey_register_options),
+        )
+        .route(
+            "/v1/login/challenge/passkey/register/verify",
+            post(challenge_passkey_register_verify),
+        )
         .route("/v1/login/challenge/step", post(challenge_step))
         .route("/v1/login/not-me", post(not_me))
 }
@@ -96,6 +106,8 @@ where
         challenge_verify,
         challenge_send_code,
         challenge_passkey_options,
+        challenge_passkey_register_options,
+        challenge_passkey_register_verify,
         challenge_step,
         not_me
     ),
@@ -111,6 +123,8 @@ where
         FactorSubmission,
         SendCodeChannel,
         ChallengeStep,
+        PasskeyEnrollmentVerify,
+        LoginPasskeyRegistrationOptionsResponse,
         ChallengeStatusBody,
         ChallengeCompletedBody,
         LoginResponse,
@@ -764,6 +778,118 @@ pub async fn challenge_passkey_options(
         .start_challenge_passkey(&ctx, token.expose(), client)
         .await?;
     Ok(passkey_options_response(&service, start, client))
+}
+
+/// `POST /v1/login/challenge/passkey/register/options` response.
+#[derive(Clone, Serialize, ToSchema)]
+pub struct LoginPasskeyRegistrationOptionsResponse {
+    /// Ceremony id.
+    pub ceremony_id: authn_core::id::CeremonyId,
+    /// `CredentialCreationOptions` for `navigator.credentials.create()` /
+    /// the platform passkey APIs: `{"publicKey": {...}}`.
+    #[schema(value_type = Object)]
+    pub options: serde_json::Value,
+    /// Native clients: the binding token (web clients get a cookie).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>)]
+    pub binding_token: Option<SensitiveString>,
+    /// Ceremony expiry.
+    #[serde(with = "time::serde::rfc3339")]
+    #[schema(value_type = String, format = DateTime)]
+    pub expires_at: time::OffsetDateTime,
+}
+
+impl std::fmt::Debug for LoginPasskeyRegistrationOptionsResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LoginPasskeyRegistrationOptionsResponse")
+            .field("ceremony_id", &self.ceremony_id)
+            .finish_non_exhaustive()
+    }
+}
+
+/// SES-22, MFA-07 (K-112): starts registering a passkey for the
+/// `enroll_mfa` step of a pending login (`allowed_factors` contains
+/// `webauthn`; no `verify_mfa` step outstanding).
+#[utoipa::path(
+    post,
+    path = "/v1/login/challenge/passkey/register/options",
+    tag = "login",
+    responses(
+        (status = 200, description = "Ceremony started (web: binding cookie)", body = LoginPasskeyRegistrationOptionsResponse),
+        (status = 401, description = "challenge_invalid", body = authn_core::error::ErrorEnvelope),
+        (status = 403, description = "challenge_step_not_allowed / csrf_failed / passkey_not_allowed (organization AAGUID policy) / passkey_not_available", body = authn_core::error::ErrorEnvelope),
+        (status = 409, description = "passkey_limit_reached", body = authn_core::error::ErrorEnvelope),
+        (status = 429, description = "rate_limited", body = authn_core::error::ErrorEnvelope),
+    )
+)]
+pub async fn challenge_passkey_register_options(
+    State(service): State<SessionService>,
+    ctx: RequestContext,
+    headers: HeaderMap,
+    current: Option<CurrentSession>,
+) -> Result<Response, AuthError> {
+    let client = channel(&service, &headers, current.as_ref())?.kind();
+    let token = challenge_token(&headers, client)?;
+    let start = service
+        .start_challenge_passkey_enrollment(&ctx, token.expose(), client)
+        .await?;
+    let web = client == ClientKind::Web;
+    let max_age = remaining(service.now(), start.expires_at);
+    let cookie =
+        web.then(|| cookies::passkey_binding_cookie(start.binding_token.expose(), max_age));
+    let body = LoginPasskeyRegistrationOptionsResponse {
+        ceremony_id: start.ceremony_id,
+        options: start.options,
+        binding_token: (!web).then_some(start.binding_token),
+        expires_at: start.expires_at,
+    };
+    let mut response = (StatusCode::OK, axum::Json(body)).into_response();
+    if let Some(cookie) = cookie {
+        response.headers_mut().append(SET_COOKIE, cookie);
+    }
+    Ok(no_store(response))
+}
+
+/// SES-22, MFA-07 (K-112): finishes the passkey registration of the
+/// `enroll_mfa` step; the passkey becomes the second factor of this login.
+#[utoipa::path(
+    post,
+    path = "/v1/login/challenge/passkey/register/verify",
+    tag = "login",
+    request_body = PasskeyEnrollmentVerify,
+    responses(
+        (status = 200, description = "Signed in (`authenticated`), or the next step (`challenge_required`); `data.passkey` is the new passkey", body = ChallengeStepResponse),
+        (status = 400, description = "passkey_ceremony_invalid / passkey_registration_failed / validation_failed (name)", body = authn_core::error::ErrorEnvelope),
+        (status = 401, description = "challenge_invalid", body = authn_core::error::ErrorEnvelope),
+        (status = 403, description = "challenge_step_not_allowed / csrf_failed / passkey_not_allowed (organization AAGUID policy)", body = authn_core::error::ErrorEnvelope),
+        (status = 409, description = "passkey_already_registered / passkey_limit_reached", body = authn_core::error::ErrorEnvelope),
+    )
+)]
+pub async fn challenge_passkey_register_verify(
+    State(service): State<SessionService>,
+    ctx: RequestContext,
+    headers: HeaderMap,
+    current: Option<CurrentSession>,
+    SecretJson(body): SecretJson<PasskeyEnrollmentVerify>,
+) -> Result<Response, AuthError> {
+    let client = channel(&service, &headers, current.as_ref())?;
+    let token = challenge_token(&headers, client.kind())?;
+    let web = client.kind() == ClientKind::Web;
+    let binding = if web {
+        single_cookie(&headers, PASSKEY_BINDING_COOKIE)
+    } else {
+        None
+    };
+    let outcome = service
+        .complete_challenge_passkey_enrollment(&ctx, token.expose(), body, client, binding)
+        .await?;
+    let mut response = challenge_outcome_response(&service, outcome);
+    if web {
+        response
+            .headers_mut()
+            .append(SET_COOKIE, cookies::clear_passkey_binding_cookie());
+    }
+    Ok(response)
 }
 
 /// SES-22: performs a required action of a pending login.

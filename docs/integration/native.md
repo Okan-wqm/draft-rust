@@ -18,7 +18,7 @@ Native istemciler CSRF başlığı göndermez ve çerez kullanmaz.
 ## 2. Giriş yanıtları
 
 - `200 {"status":"authenticated", "access_token", "token_type":"Bearer", "expires_in", "refresh_token", "refresh_token_expires_at", "session_id", "user_id", "amr", "auth_time", "expires_at", "active_org_id"}`.
-- `200 {"status":"challenge_required", "challenge_id", "challenge_token", "allowed_factors", "required_actions", "expires_at"}` → `POST /v1/login/challenge/verify` / `send-code` / `step` (`X-Authn-Challenge` ile). Challenge süresi `session.mfa_challenge_ttl` (5 dk), deneme hakkı `session.challenge_max_attempts` (5); geçersiz/süresi dolmuş/başka cihaz → tek tip `401 challenge_invalid`.
+- `200 {"status":"challenge_required", "challenge_id", "challenge_token", "allowed_factors", "required_actions", "expires_at"}` → `POST /v1/login/challenge/verify` / `send-code` / `step` (`X-Authn-Challenge` ile). `enroll_mfa` + `allowed_factors: ["webauthn"]` ise passkey platform API'siyle kaydedilir (K-112): `POST /v1/login/challenge/passkey/register/options` → yanıttaki `options` + `binding_token` → `POST /v1/login/challenge/passkey/register/verify {ceremony_id, binding_token, credential}`. Challenge süresi `session.mfa_challenge_ttl` (5 dk), deneme hakkı `session.challenge_max_attempts` (5); geçersiz/süresi dolmuş/başka cihaz → tek tip `401 challenge_invalid`.
 - MFA'yı `trust_device: true` ile geçerseniz başarı yanıtında ek alan `trusted_device_token` gelir; sonraki girişlerde `x-trusted-device` ile gönderin (yalnızca politika kaynaklı MFA'yı atlatır, risk kaynaklı doğrulamayı asla).
 
 ## 3. Refresh token rotasyonu

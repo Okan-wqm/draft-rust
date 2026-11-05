@@ -86,6 +86,27 @@ sequenceDiagram
     end
 ```
 
+**Zorunlu passkey kaydı (K-112).** Politika passkey kaydı istiyorsa (platform admini; yalnızca `webauthn`'a izin veren kuruluş politikası) ve hesapta passkey yoksa challenge `required_actions: ["enroll_mfa", …]`, `allowed_factors: ["webauthn"]` döner (önce gereken `verify_mfa` — e-posta kodu, mevcut faktör — bittikten sonra; platform admini için e-posta kodu, giriş posta kutusu kanıtı değilse, her zaman önce gelir):
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant T as Tarayıcı
+    participant S as authn-session
+    participant W as authn-webauthn
+    participant DB as PostgreSQL
+    T->>S: POST /v1/login/challenge/passkey/register/options<br/>(challenge çerezi + CSRF)
+    S->>S: verify_mfa bitti mi, enroll_mfa + webauthn izinli mi? (yoksa 403 challenge_step_not_allowed)
+    S->>W: start_challenge_registration(user, challenge)
+    W->>DB: webauthn_ceremonies (kullanıcı + challenge + SHA-256(bağlama token'ı)), en katı AAGUID politikası
+    S-->>T: 200 {ceremony_id, options}<br/>Set-Cookie: __Host-authn_passkey (Strict)
+    T->>T: navigator.credentials.create(options)
+    T->>S: POST /v1/login/challenge/passkey/register/verify {ceremony_id, credential}
+    S->>W: verify_challenge_registration (seremoni tüketilir + commit, sonra webauthn-rs doğrular)
+    S->>DB: challenge yeniden kilitlenir; passkey + audit (enrollment: login_challenge)<br/>+ challenge ilerlemesi / oturum aynı transaction'da
+    S-->>T: 200 challenge_required {required_actions: kalanlar} ya da authenticated<br/>(mfa_factors = [webauthn], amr += swk/hwk, user, mfa)
+```
+
 Native istemcide aynı akış `X-Authn-Client: native` ile çalışır: CSRF adımları yoktur, challenge token'ı gövdede döner ve `X-Authn-Challenge` başlığıyla gönderilir, başarıda gövdede `access_token` + `refresh_token` gelir.
 
 ## 3. Refresh token rotasyonu ve yeniden kullanım tespiti (SES-05)

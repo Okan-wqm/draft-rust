@@ -13,7 +13,7 @@ use authn_core::id::{ChallengeId, FactorId, UserId};
 use authn_core::ports::{NotificationKind, SecurityEventKind};
 use authn_core::secret::{ExposeSecret, SecretString};
 use authn_crypto::otp::OtpCode;
-use authn_store::{CodeVerification, OneTimeTokenRepository, TokenPurpose};
+use authn_store::{CodeVerification, OneTimeTokenRepository, TokenPurpose, UserRecord};
 use sqlx::PgConnection;
 use time::OffsetDateTime;
 
@@ -309,6 +309,27 @@ impl MfaService {
             .await
     }
 
+    /// [`MfaService::policy_input`] for an account row the caller already
+    /// read (K-128: the login pipeline reads it once per request and
+    /// re-checks it under the row lock before it acts on the decision).
+    /// Only `is_platform_admin` is taken from the row.
+    pub async fn policy_input_for_account(
+        &self,
+        account: &UserRecord,
+        org_policy: Option<OrgMfaPolicy>,
+        phishing_resistant_required: bool,
+    ) -> Result<MfaPolicyInput, AuthError> {
+        let mut conn = self.pool().acquire().await?;
+        self.policy_input_of(
+            &mut conn,
+            account,
+            org_policy,
+            phishing_resistant_required,
+            None,
+        )
+        .await
+    }
+
     /// [`evaluate`] over [`MfaService::policy_input`] (MFA-08).
     pub async fn evaluate_for_user(
         &self,
@@ -333,6 +354,25 @@ impl MfaService {
         without: Option<FactorId>,
     ) -> Result<MfaPolicyInput, AuthError> {
         let account = self.user_record(conn, user).await?;
+        self.policy_input_of(
+            conn,
+            &account,
+            org_policy,
+            phishing_resistant_required,
+            without,
+        )
+        .await
+    }
+
+    async fn policy_input_of(
+        &self,
+        conn: &mut PgConnection,
+        account: &UserRecord,
+        org_policy: Option<OrgMfaPolicy>,
+        phishing_resistant_required: bool,
+        without: Option<FactorId>,
+    ) -> Result<MfaPolicyInput, AuthError> {
+        let user = account.id;
         let mut enrolled: Vec<FactorKind> = factors::list(&mut *conn, user)
             .await?
             .into_iter()

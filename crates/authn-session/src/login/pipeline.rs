@@ -123,14 +123,15 @@ pub(crate) async fn recipient_of(
     else {
         return Ok(None);
     };
-    let profile = service.deps().accounts.profile_of(user.id).await?;
+    // The row is at hand: only the profile is read (K-128).
+    let profile = service.deps().accounts.profile_of_record(user).await?;
     Ok(Some((
         Recipient {
             email,
             user_id: Some(user.id),
-            display_name: profile.as_ref().and_then(|p| p.display_name.clone()),
+            display_name: profile.display_name,
         },
-        profile.map(|p| p.locale).unwrap_or_default(),
+        profile.locale,
     )))
 }
 
@@ -159,7 +160,27 @@ impl SessionService {
         client: ClientChannel,
         signals: &LoginSignals,
     ) -> Result<PipelineOutcome, AuthError> {
-        let plan = self.plan_login(ctx, &auth, client, signals, false).await?;
+        self.run_login_pipeline_for(ctx, auth, client, signals, None)
+            .await
+    }
+
+    /// [`Self::run_login_pipeline`] with the account row the primary
+    /// method already read in this request (K-128: the pipeline does not
+    /// read it again). Safe because the decision is applied only while the
+    /// row is locked and still in the state the decision was made for
+    /// (`LoginPlan::still_matches`: status, lock, verification, admin flag
+    /// — every field the decision depends on).
+    pub(crate) async fn run_login_pipeline_for(
+        &self,
+        ctx: &RequestContext,
+        auth: PrimaryAuthentication,
+        client: ClientChannel,
+        signals: &LoginSignals,
+        account: Option<UserRecord>,
+    ) -> Result<PipelineOutcome, AuthError> {
+        let plan = self
+            .plan_login_with(ctx, &auth, client, signals, false, account)
+            .await?;
         self.warm_credentials(client.kind()).await?;
         let tx = self.begin().await?;
         self.finish_login_in(tx, ctx, auth, client, plan).await
@@ -189,15 +210,33 @@ impl SessionService {
         signals: &LoginSignals,
         mailbox_proven: bool,
     ) -> Result<LoginPlan, AuthError> {
+        self.plan_login_with(ctx, auth, client, signals, mailbox_proven, None)
+            .await
+    }
+
+    /// [`Self::plan_login`] starting from an account row read earlier in
+    /// this request (`None`: read it now).
+    async fn plan_login_with(
+        &self,
+        ctx: &RequestContext,
+        auth: &PrimaryAuthentication,
+        client: ClientChannel,
+        signals: &LoginSignals,
+        mailbox_proven: bool,
+        account: Option<UserRecord>,
+    ) -> Result<LoginPlan, AuthError> {
         if client.kind() != auth.client {
             return Err(AuthError::internal(
                 "client channel does not match the login",
             ));
         }
         let now = self.now();
-        let mut user = UserRepository::find_by_id(self.pool(), auth.user_id)
-            .await?
-            .ok_or_else(|| AuthError::new(codes::session::INVALID_CREDENTIALS))?;
+        let mut user = match account {
+            Some(user) if user.id == auth.user_id => user,
+            _ => UserRepository::find_by_id(self.pool(), auth.user_id)
+                .await?
+                .ok_or_else(|| AuthError::new(codes::session::INVALID_CREDENTIALS))?,
+        };
         if mailbox_proven && user.email_verified_at.is_none() {
             // As the account will be once the proof commits (ADR 0002).
             user.email_verified_at = Some(now);
@@ -238,11 +277,15 @@ impl SessionService {
             amr.contains(&AuthMethodRef::Mfa) && (!phishing_resistant || has_passkey(&amr));
         let provider_mfa =
             auth.provider_asserted_mfa && self.settings().trust_provider_mfa && !phishing_resistant;
-        let requirement = self
+        // One read of the MFA facts serves the requirement and, for an
+        // enrollment, the factors already present (K-128); the platform-
+        // admin flag comes from the row read above.
+        let mfa_input = self
             .deps()
             .mfa
-            .evaluate_for_user(user.id, mfa_policy.clone(), false)
+            .policy_input_for_account(&user, mfa_policy.clone(), false)
             .await?;
+        let requirement = authn_mfa::evaluate(&mfa_input);
 
         // Factors the user already has although the policy does not
         // permit them: an enrollment demanded by the policy must first be
@@ -250,7 +293,7 @@ impl SessionService {
         // factor to an account protected by another one (SES-22).
         let existing_factors = match &requirement {
             MfaRequirement::EnrollmentRequired { .. } => {
-                let input = self.deps().mfa.policy_input(user.id, None, false).await?;
+                let input = &mfa_input;
                 let usable: Vec<FactorKind> = input
                     .enrolled_factors
                     .iter()
@@ -325,10 +368,17 @@ impl SessionService {
                         .with_context("no permitted factor can be enrolled"));
                 }
                 required_actions.insert(0, RequiredAction::EnrollMfa);
+                // K-112 (audit): a platform admin without a passkey (e.g. an
+                // existing account after `grant-admin`) never turns a known
+                // password alone into an admin passkey: the mailbox owner
+                // confirms first, unless the login itself was a mailbox
+                // proof (magic link, e-mail code).
+                let admin_needs_mailbox = user.is_platform_admin
+                    && !matches!(auth.method, LoginMethod::MagicLink | LoginMethod::EmailCode);
                 // RSK-03 / existing factors: a proof before the enrollment.
                 let proof_first = if !existing_factors.is_empty() {
                     Some(existing_factors)
-                } else if needs_mailbox {
+                } else if needs_mailbox || admin_needs_mailbox {
                     metadata.insert(EMAIL_CONFIRMATION.into(), serde_json::Value::Bool(true));
                     Some(vec![FactorKind::Email])
                 } else {
@@ -546,7 +596,14 @@ impl SessionService {
     ) {
         crate::metrics::login("succeeded");
         // contracts §15.7: verified-domain auto-join after every login.
-        if let Err(err) = self.deps().orgs.auto_join_verified_domains(user.id).await {
+        // The row was read under the login's lock; an address verified by
+        // this login after that read is re-read (K-128: only then).
+        let joined = if user.is_email_verified() {
+            self.deps().orgs.auto_join_verified_domains_of(user).await
+        } else {
+            self.deps().orgs.auto_join_verified_domains(user.id).await
+        };
+        if let Err(err) = joined {
             tracing::warn!(error = %err, "domain auto-join after login failed");
         }
         if !self.settings().risk.enabled {

@@ -39,6 +39,7 @@ Aynı test dosyası belgenin istemci üretimine uygunluğunu da denetler (ARC-09
 
 - her `operationId` benzersizdir;
 - işlemlerin `security` gereksinimleri yalnızca `components.securitySchemes`'te tanımlı şemalara başvurur;
+- **her** işlem `security` bildirir ve bildirim, birleşik router'ın gerçekte uyguladığı korumanın aynısıdır (K-129, aşağıda);
 - her `$ref` çözülür;
 - her enum şemasının değerleri, serde'nin o tür için gerçekte yazdığı ve kabul ettiği değerlerin aynısıdır. Belgeye yeni bir enum şeması girerse test, tür listeye eklenene kadar kırmızıdır.
 
@@ -55,10 +56,18 @@ Aynı test dosyası belgenin istemci üretimine uygunluğunu da denetler (ARC-09
 | `api_key` | `apiKey`, başlık `X-API-Key` | Organizasyon API anahtarı (`ak_…`) |
 | `api_key_bearer` | `http` bearer, `ak_…` | Aynı API anahtarı, `Authorization: Bearer ak_…` olarak |
 
-Şu an işlem düzeyinde `security` yalnızca `POST /v1/token/introspect`'te yazılıdır (`api_key` veya `api_key_bearer`). Diğer uçların hangi kimliği istediği [endpoints.md](endpoints.md)'deki "Kimlik" sütunundadır.
+Her işlem kabul ettiği kimliği `security` ile bildirir (K-129). Her gereksinim nesnesi tek bir şema içerir; birden fazla nesne **alternatiftir** (biri yeterli):
+
+| Bildirim | Hangi işlemler | "Kimlik" sütunu ([endpoints.md](endpoints.md)) |
+|----------|----------------|-----------------------------------------------|
+| `[]` | Kimlik doğrulaması istemeyenler: giriş/kayıt/şifre sıfırlama, sağlık, well-known, sosyal giriş başlat/geri dönüş, `token/refresh`, kayıt bağlantısı (`/v1/admin/enrollment/*`, gövdedeki token), bekleyen giriş adımları (`/v1/login/challenge/*`, challenge token'ı çerezde/başlıkta) | `—`, `challenge token'ı`, `kayıt bağlantısı` |
+| `session_cookie` \| `bearer_jwt` | `/v1/me/**`, oturum uçları (`/v1/logout*`, `/v1/reauth*`, `/v1/session/org`), `/v1/orgs` (liste/oluşturma), davet/sahiplik kabulü, `/v1/admin/**` (ek olarak passkey + step-up; [admin](../operations/admin-recovery.md)) | `oturum`, `admin` |
+| `session_cookie` \| `bearer_jwt` \| `api_key` \| `api_key_bearer` | `/v1/orgs/{org_id}/**` (API anahtarı kendi organizasyonunda, kapsamlarıyla) | `oturum / API anahtarı` |
+| `api_key` \| `api_key_bearer` | `POST /v1/token/introspect` | `API anahtarı` |
+
+Bildirimler kaynakta, her uç `#[utoipa::path(security(...))]` ile yazılır; bildirimsiz işlem birleşik belgede açıkça `security: []` (kimlik gerekmez) olur. Bu yüzden bir bildirimi unutmak korumalı bir ucu açık gösterebilirdi; `arc_09_k129_declared_security_matches_the_router` testi bunu yakalar: birleşik router'daki **her** işlemi kimliksiz, oturum çereziyle (+ CSRF), native access token'la ve organizasyon API anahtarıyla (iki başlık biçimiyle) çağırır, istek gövdesini işlemin şemasından üretir ve kimlik katmanının `401 unauthenticated` reddine göre bulunan kümeyi bildirimle karşılaştırır. "Kimlik" sütunu da bu bildirimden üretilir.
 
 ## OpenAPI belgesi hakkında notlar
 
-- **İşlem düzeyinde güvenlik gereksinimi eksik.** Yukarıdaki şemalar tanımlıdır ama `introspect` dışındaki işlemler `security` taşımaz; üretilen istemcilerde kimliği elle ekleyin ("Kimlik" sütunu, [endpoints.md](endpoints.md)).
 - **Giriş yanıtları `oneOf`'tur.** Girişi başlatan uçların (`/v1/login/password`, `/passkey`, `/magic-link/verify`, `/email-code/verify`) `200` gövdesi `LoginResponse` (`CredentialsBody` veya `ChallengeBody`), challenge adımlarının (`/v1/login/challenge/verify`, `/step`) gövdesi `ChallengeStepResponse`'tur (`ChallengeCompletedBody` veya `ChallengeStatusBody`). İkisini `status` alanı ayırır (`authenticated` / `challenge_required`). `ChallengeCompletedBody`, native istemcide "bu cihaza güven" seçildiyse `trusted_device_token`'ı (web'de `__Host-authn_trusted_device` çerezi) ve son adımın bir kez gösterilen `data`'sını (ör. kurtarma kodları) taşır.
 - `GET /v1/time` ARC-03 deseninin örnek ucudur (`crates/authn-server/src/routes/example.rs`) ve kimlik doğrulaması istemez.

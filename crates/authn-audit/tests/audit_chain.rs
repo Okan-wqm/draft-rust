@@ -1183,3 +1183,147 @@ async fn aud_02_least_privilege_helper_revokes_previous_broad_grants(pool: PgPoo
             .unwrap();
     }
 }
+
+/// K-128: one append is three statements — pseudonym lookup, head lock
+/// with the duplicate check, and one write of event, personal data and
+/// head — whether or not the event names a user (CRY-05: an unknown
+/// account's login failure has no subject and must cost the round trips of
+/// an existing account's). The head is locked for the last two only.
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn aud_02_k_128_append_is_three_statements_with_or_without_a_subject(pool: PgPool) {
+    let h = Harness::new(pool.clone());
+    let sink = h.service.sink();
+    let user = create_user(&pool).await;
+    // First use creates the user's pseudonym mapping (outside the head
+    // lock); measure the steady state.
+    sink.record(login(&h, user)).await.unwrap();
+
+    let failed = |subject: Option<UserId>| {
+        let mut event = SecurityEvent::new(SecurityEventKind::LoginFailed, h.now())
+            .with_context(&ctx("203.0.113.9", "Mozilla/5.0 (X11)"))
+            .with_actor(Actor::Anonymous)
+            .failed("invalid_credentials");
+        if let Some(user) = subject {
+            event = event.with_subject(user);
+        }
+        event
+    };
+    let mut statements = Vec::new();
+    for subject in [Some(user), None] {
+        let mut tx = pool.begin().await.unwrap();
+        let (result, log) =
+            authn_testkit::bench::count_queries(sink.record_in_tx(&mut tx, failed(subject))).await;
+        result.unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(log.count(), 3, "{log}");
+        statements.push(log.statements);
+    }
+    assert_eq!(statements[0], statements[1]);
+
+    // The own-transaction path: BEGIN carries the lock timeout, then the
+    // same three statements and COMMIT.
+    let (result, log) = authn_testkit::bench::count_queries(sink.record(failed(None))).await;
+    result.unwrap();
+    assert_eq!(log.data_statements(), 3, "{log}");
+
+    // Personal data was written with each event (one statement) and the
+    // chain is intact.
+    let pii: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_event_pii")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(pii, 4);
+    let report = verify_chain(&pool, h.keys()).await.unwrap();
+    assert!(report.is_intact(), "{report:?}");
+    assert_eq!(report.events_verified, 4);
+    let head: (i64, Vec<u8>) = sqlx::query_as("SELECT last_seq, last_hash FROM audit_chain_head")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let last: (i64, Vec<u8>) =
+        sqlx::query_as("SELECT seq, hash FROM audit_events ORDER BY seq DESC LIMIT 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(head, last, "the head names the newest event");
+}
+
+/// AUD-02 / K-128 (audit): the duplicate check sees an append of the same
+/// event id that committed while this writer waited for the head lock. The
+/// combined head-lock statement reads the joined event row from its
+/// snapshot (READ COMMITTED re-checks only the locked head row), so the
+/// concurrent duplicate must not fail on the unique id but be idempotent.
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn aud_02_k_128_concurrent_duplicate_event_id_is_idempotent(pool: PgPool) {
+    let h = Harness::new(pool.clone());
+    let user = create_user(&pool).await;
+    let sink = h.service.sink();
+    // The user's pseudonym exists already: the second writer waits on the
+    // head lock, not on the first writer's new pseudonym mapping.
+    sink.record(login(&h, user)).await.unwrap();
+    let event = login(&h, user);
+
+    // First writer: appended, head still locked.
+    let mut first_tx = pool.begin().await.unwrap();
+    let first = sink.append(&mut first_tx, event.clone()).await.unwrap();
+
+    // Second writer: the same id, blocked on the head lock.
+    let second = tokio::spawn({
+        let pool = pool.clone();
+        let sink = sink.clone();
+        let event = event.clone();
+        async move {
+            let mut tx = pool.begin().await.unwrap();
+            let appended = sink.append(&mut tx, event).await;
+            tx.commit().await.unwrap();
+            appended
+        }
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    first_tx.commit().await.unwrap();
+
+    let again = second
+        .await
+        .unwrap()
+        .expect("idempotent, not a unique violation");
+    assert!(!first.duplicate);
+    assert!(again.duplicate);
+    assert_eq!((first.seq, first.hash), (again.seq, again.hash));
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_events WHERE id = $1")
+        .bind(event.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 1);
+}
+
+/// K-128: an event id appended twice (a retried request) is recorded once;
+/// the duplicate check shares the head-lock statement.
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn aud_02_k_128_duplicate_event_id_is_appended_once(pool: PgPool) {
+    let h = Harness::new(pool.clone());
+    let user = create_user(&pool).await;
+    let event = login(&h, user);
+    let mut tx = pool.begin().await.unwrap();
+    let first = h
+        .service
+        .sink()
+        .append(&mut tx, event.clone())
+        .await
+        .unwrap();
+    let again = h
+        .service
+        .sink()
+        .append(&mut tx, event.clone())
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert!(!first.duplicate);
+    assert!(again.duplicate);
+    assert_eq!((first.seq, first.hash), (again.seq, again.hash));
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_events")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 1);
+}

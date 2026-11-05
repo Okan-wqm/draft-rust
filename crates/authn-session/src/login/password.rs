@@ -106,11 +106,11 @@ impl SessionService {
             return Err(AuthError::new(codes::session::INVALID_CREDENTIALS));
         }
         let (email, identifier) = identifier_key(&login.email);
-        let user = match &email {
+        let account = match &email {
             Some(email) => UserRepository::find_by_email(self.pool(), email).await?,
             None => None,
         };
-        let user_id = user.as_ref().map(|u| u.id);
+        let user_id = account.as_ref().map(|u| u.id);
         let trusted_device = match (user_id, &trusted_device_token) {
             (Some(user), Some(token)) => {
                 self.deps()
@@ -178,7 +178,9 @@ impl SessionService {
             require_mailbox_proof: must_change,
         };
         let client_kind = client.kind();
-        self.run_login_pipeline(
+        // The row read above is passed on (K-128): the pipeline re-checks it
+        // under the row lock before acting on it.
+        self.run_login_pipeline_for(
             ctx,
             PrimaryAuthentication {
                 user_id: user,
@@ -192,6 +194,7 @@ impl SessionService {
             },
             client,
             &signals,
+            account,
         )
         .await
     }

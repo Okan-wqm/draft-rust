@@ -27,7 +27,7 @@ use authn_core::http::RequestContext;
 use authn_core::id::{OrgDomainId, OrgId, UserId};
 use authn_core::ports::{Actor, DomainEventKind, RateLimitKey, SecurityEvent, SecurityEventKind};
 use authn_crypto::token::OpaqueToken;
-use authn_store::UserRepository;
+use authn_store::{UserRecord, UserRepository};
 use serde::Deserialize;
 use sqlx::PgConnection;
 use time::OffsetDateTime;
@@ -376,6 +376,17 @@ impl OrgService {
         let Some(record) = UserRepository::find_by_id(self.pool(), user).await? else {
             return Ok(Vec::new());
         };
+        self.auto_join_verified_domains_of(&record).await
+    }
+
+    /// [`Self::auto_join_verified_domains`] for an account row the caller
+    /// read in this request (K-128: the login reads it under its row lock
+    /// just before; the address and its verification are taken from it).
+    pub async fn auto_join_verified_domains_of(
+        &self,
+        record: &UserRecord,
+    ) -> Result<Vec<OrgId>, AuthError> {
+        let user = record.id;
         if !record.is_email_verified() {
             return Ok(Vec::new());
         }

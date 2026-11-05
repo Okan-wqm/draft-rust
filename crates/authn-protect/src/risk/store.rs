@@ -27,25 +27,68 @@ const LAST_FIX_SQL: &str = "\
 SELECT last_latitude, last_longitude, last_seen_at FROM known_devices
 WHERE user_id = $1 AND last_latitude IS NOT NULL AND last_longitude IS NOT NULL
 ORDER BY last_seen_at DESC LIMIT 1";
-const UPSERT_DEVICE_SQL: &str = "\
-INSERT INTO known_devices AS d
-    (id, user_id, device_hash, device_name, first_seen_at, last_seen_at, last_ip,
-     last_country, last_latitude, last_longitude)
-VALUES ($1, $2, $3, $4, $5, $5, $6, $7, $8, $9)
-ON CONFLICT (user_id, device_hash) DO UPDATE SET
-    device_name = EXCLUDED.device_name,
-    last_seen_at = GREATEST(d.last_seen_at, EXCLUDED.last_seen_at),
-    last_ip = EXCLUDED.last_ip,
-    last_country = COALESCE(EXCLUDED.last_country, d.last_country),
-    last_latitude = COALESCE(EXCLUDED.last_latitude, d.last_latitude),
-    last_longitude = COALESCE(EXCLUDED.last_longitude, d.last_longitude)
-RETURNING (xmax = 0) AS inserted";
-const UPSERT_NETWORK_SQL: &str = "\
-INSERT INTO known_networks AS n (user_id, network, first_seen_at, last_seen_at)
-VALUES ($1, $2, $3, $3)
-ON CONFLICT (user_id, network) DO UPDATE SET
-    last_seen_at = GREATEST(n.last_seen_at, EXCLUDED.last_seen_at)
-RETURNING (xmax = 0) AS inserted";
+/// The three familiarity facts of [`RiskStore::familiarity`] in one
+/// statement (K-128): `$1` user, `$2` device hash (`NULL`: no device id),
+/// `$3` network.
+const FAMILIARITY_SQL: &str = "\
+SELECT EXISTS (SELECT 1 FROM known_devices WHERE user_id = $1)
+           OR EXISTS (SELECT 1 FROM known_networks WHERE user_id = $1) AS history,
+       $2::bytea IS NOT NULL
+           AND EXISTS (SELECT 1 FROM known_devices WHERE user_id = $1 AND device_hash = $2)
+           AS known_device,
+       EXISTS (SELECT 1 FROM known_networks WHERE user_id = $1 AND network = $3) AS known_network";
+/// [`RiskStore::record`] in one statement (K-128): the history read sees
+/// the state before the statement (as the separate read before the upserts
+/// did), the network and — with a device id (`$4` not `NULL`) — device
+/// upserts report whether they inserted. `$1` user, `$2` network, `$3`
+/// time, `$4` device hash, `$5` row id, `$6` name, `$7` IP, `$8` country,
+/// `$9` / `$10` coordinates.
+const RECORD_SQL: &str = "\
+WITH history AS (
+    SELECT EXISTS (SELECT 1 FROM known_devices WHERE user_id = $1)
+        OR EXISTS (SELECT 1 FROM known_networks WHERE user_id = $1) AS seen
+), network AS (
+    INSERT INTO known_networks AS n (user_id, network, first_seen_at, last_seen_at)
+    VALUES ($1, $2, $3, $3)
+    ON CONFLICT (user_id, network) DO UPDATE SET
+        last_seen_at = GREATEST(n.last_seen_at, EXCLUDED.last_seen_at)
+    RETURNING (xmax = 0) AS inserted
+), device AS (
+    INSERT INTO known_devices AS d
+        (id, user_id, device_hash, device_name, first_seen_at, last_seen_at, last_ip,
+         last_country, last_latitude, last_longitude)
+    SELECT $5, $1, $4::bytea, $6, $3, $3, $7, $8, $9, $10
+    WHERE $4::bytea IS NOT NULL
+    ON CONFLICT (user_id, device_hash) DO UPDATE SET
+        device_name = EXCLUDED.device_name,
+        last_seen_at = GREATEST(d.last_seen_at, EXCLUDED.last_seen_at),
+        last_ip = EXCLUDED.last_ip,
+        last_country = COALESCE(EXCLUDED.last_country, d.last_country),
+        last_latitude = COALESCE(EXCLUDED.last_latitude, d.last_latitude),
+        last_longitude = COALESCE(EXCLUDED.last_longitude, d.last_longitude)
+    RETURNING (xmax = 0) AS inserted
+)
+SELECT (SELECT seen FROM history) AS history,
+       (SELECT inserted FROM network) AS new_network,
+       (SELECT inserted FROM device) AS new_device";
+
+/// What [`RiskStore::familiarity`] reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, sqlx::FromRow)]
+pub struct Familiarity {
+    /// The user has any device or network history.
+    pub history: bool,
+    /// The device is known (`false` without a device id).
+    pub known_device: bool,
+    /// The `/24` / `/48` of the IP is known.
+    pub known_network: bool,
+}
+
+#[derive(sqlx::FromRow)]
+struct RecordRow {
+    history: Option<bool>,
+    new_network: Option<bool>,
+    new_device: Option<bool>,
+}
 
 /// What is stored about a successful login's device. `Debug` redacts the
 /// device id (a bearer-like identifier: knowing it bypasses the soft lock
@@ -161,6 +204,24 @@ impl RiskStore {
             .await?)
     }
 
+    /// [`RiskStore::has_history`], [`RiskStore::is_known_device`] (with a
+    /// device id) and [`RiskStore::is_known_network`] in one statement
+    /// (K-128; the risk score needs all three).
+    pub async fn familiarity(
+        &self,
+        user: UserId,
+        device_id: Option<&str>,
+        ip: IpAddr,
+    ) -> Result<Familiarity, AuthError> {
+        let hash = device_id.map(|device| self.hasher.device(user, device).to_vec());
+        Ok(sqlx::query_as(FAMILIARITY_SQL)
+            .bind(user)
+            .bind(hash.as_deref())
+            .bind(network_of(ip))
+            .fetch_one(&self.pool)
+            .await?)
+    }
+
     /// The most recent located login of the user.
     pub async fn last_fix(&self, user: UserId) -> Result<Option<Fix>, AuthError> {
         let row: Option<(Option<f64>, Option<f64>, OffsetDateTime)> = sqlx::query_as(LAST_FIX_SQL)
@@ -187,43 +248,45 @@ impl RiskStore {
         user: UserId,
         observation: &DeviceObservation,
     ) -> Result<Novelty, AuthError> {
-        let first_login = !sqlx::query_scalar::<_, bool>(HISTORY_SQL)
-            .bind(user)
-            .fetch_one(&mut *conn)
-            .await?;
         let network: IpNet = network_of(observation.ip);
-        let new_network: bool = sqlx::query_scalar(UPSERT_NETWORK_SQL)
+        let (lat, lon) = match (observation.latitude, observation.longitude) {
+            (Some(lat), Some(lon)) if super::geo::valid_coordinates(lat, lon) => {
+                (Some(lat), Some(lon))
+            }
+            _ => (None, None),
+        };
+        let name: String = observation
+            .device_name
+            .chars()
+            .take(super::useragent::MAX_DEVICE_NAME_CHARS)
+            .collect();
+        let device_hash = observation
+            .device_id
+            .as_deref()
+            .map(|device_id| self.hasher.device(user, device_id).to_vec());
+        let row: RecordRow = sqlx::query_as(RECORD_SQL)
             .bind(user)
             .bind(network)
             .bind(observation.at)
+            .bind(device_hash.as_deref())
+            .bind(Uuid::now_v7())
+            .bind(name)
+            .bind(ipnet::IpNet::from(observation.ip.to_canonical()))
+            .bind(sanitize_country(observation.country.as_deref()))
+            .bind(lat)
+            .bind(lon)
             .fetch_one(&mut *conn)
             .await?;
-        let new_device = match observation.device_id.as_deref() {
-            Some(device_id) => {
-                let (lat, lon) = match (observation.latitude, observation.longitude) {
-                    (Some(lat), Some(lon)) if super::geo::valid_coordinates(lat, lon) => {
-                        (Some(lat), Some(lon))
-                    }
-                    _ => (None, None),
-                };
-                let name: String = observation
-                    .device_name
-                    .chars()
-                    .take(super::useragent::MAX_DEVICE_NAME_CHARS)
-                    .collect();
-                sqlx::query_scalar(UPSERT_DEVICE_SQL)
-                    .bind(Uuid::now_v7())
-                    .bind(user)
-                    .bind(self.hasher.device(user, device_id).as_slice())
-                    .bind(name)
-                    .bind(observation.at)
-                    .bind(ipnet::IpNet::from(observation.ip.to_canonical()))
-                    .bind(sanitize_country(observation.country.as_deref()))
-                    .bind(lat)
-                    .bind(lon)
-                    .fetch_one(&mut *conn)
-                    .await?
-            }
+        let first_login = !row
+            .history
+            .ok_or_else(|| AuthError::internal("risk history without a result"))?;
+        let new_network = row
+            .new_network
+            .ok_or_else(|| AuthError::internal("network upsert without a result"))?;
+        let new_device = match device_hash {
+            Some(_) => row
+                .new_device
+                .ok_or_else(|| AuthError::internal("device upsert without a result"))?,
             None => new_network,
         };
         Ok(Novelty {

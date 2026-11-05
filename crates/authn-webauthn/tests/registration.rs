@@ -797,3 +797,260 @@ async fn pky_01_enrollment_ceremony_is_bound_to_the_link_hash(pool: PgPool) {
     ) && n.recipient.user_id
         == Some(alice.user)));
 }
+
+// --- K-112: registration inside a login challenge -----------------------------
+
+fn challenge_request(
+    start: &authn_webauthn::ChallengeRegistrationStart,
+    credential: &webauthn_rs::prelude::RegisterPublicKeyCredential,
+) -> authn_webauthn::RegistrationVerifyRequest {
+    authn_webauthn::RegistrationVerifyRequest {
+        ceremony_id: start.ceremony_id,
+        credential: serde_json::to_value(credential).unwrap(),
+        name: None,
+    }
+}
+
+/// PKY-01 / K-112: a registration ceremony started inside a login
+/// challenge is bound to the user, **that** challenge and the binding
+/// token. Another challenge (even of the same user), another user, a wrong
+/// token, a K-11 enrollment finish or a session finish never consume it;
+/// the right binding verifies once (replay refused), user verification is
+/// required and the result proves `hwk`/`swk` + `user` + `mfa`. The audit
+/// event names the login challenge.
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn pky_01_k112_challenge_registration_is_bound_to_its_challenge(pool: PgPool) {
+    let h = Harness::new(pool).await;
+    let alice = h.account("alice@example.com").await;
+    let mallory = h.account("mallory@example.com").await;
+    let challenge = h.challenge(alice.user).await;
+    let other_challenge = h.challenge(alice.user).await;
+    let mut authenticator = SoftPasskey::new(true);
+
+    let start = h
+        .service
+        .start_challenge_registration(&h.ctx(), alice.user, challenge)
+        .await
+        .unwrap();
+    assert_eq!(
+        start.options["publicKey"]["authenticatorSelection"]["userVerification"],
+        "required"
+    );
+    let credential = create(&mut authenticator, &start.options, ORIGIN);
+    let token = start.binding_token.clone();
+    let wrong_token = authn_core::secret::SensitiveString::new("not-a-token".to_owned());
+    let other = authn_crypto::token::OpaqueToken::generate()
+        .unwrap()
+        .into_sensitive();
+    let refused = [
+        // Same user, another challenge.
+        h.service
+            .verify_challenge_registration(
+                &h.ctx(),
+                alice.user,
+                other_challenge,
+                &token,
+                challenge_request(&start, &credential),
+            )
+            .await
+            .unwrap_err(),
+        // Another user.
+        h.service
+            .verify_challenge_registration(
+                &h.ctx(),
+                mallory.user,
+                challenge,
+                &token,
+                challenge_request(&start, &credential),
+            )
+            .await
+            .unwrap_err(),
+        // Malformed / another binding token.
+        h.service
+            .verify_challenge_registration(
+                &h.ctx(),
+                alice.user,
+                challenge,
+                &wrong_token,
+                challenge_request(&start, &credential),
+            )
+            .await
+            .unwrap_err(),
+        h.service
+            .verify_challenge_registration(
+                &h.ctx(),
+                alice.user,
+                challenge,
+                &other,
+                challenge_request(&start, &credential),
+            )
+            .await
+            .unwrap_err(),
+        // The K-11 enrollment-link finish with the token's hash.
+        h.service
+            .verify_enrollment_registration(
+                &h.ctx(),
+                alice.user,
+                *authn_crypto::token::OpaqueToken::parse(token.expose())
+                    .unwrap()
+                    .hash()
+                    .as_bytes(),
+                challenge_request(&start, &credential),
+            )
+            .await
+            .unwrap_err(),
+        // The session-bound finish.
+        h.service
+            .finish_registration(
+                &h.ctx(),
+                &h.fresh(alice),
+                challenge_request(&start, &credential),
+            )
+            .await
+            .unwrap_err(),
+    ];
+    for err in refused {
+        assert_eq!(err.code(), codes::webauthn::PASSKEY_CEREMONY_INVALID);
+    }
+
+    // The refused attempts did not burn it; the bound finish verifies.
+    let verified = h
+        .service
+        .verify_challenge_registration(
+            &h.ctx(),
+            alice.user,
+            challenge,
+            &token,
+            challenge_request(&start, &credential),
+        )
+        .await
+        .unwrap();
+    assert_eq!(verified.user_id(), alice.user);
+    assert!(verified.user_verified());
+    let amr = verified.amr();
+    assert!(amr.contains(&authn_core::domain::AuthMethodRef::User));
+    assert!(amr.contains(&authn_core::domain::AuthMethodRef::Mfa));
+    // Replay: single use.
+    let err = h
+        .service
+        .verify_challenge_registration(
+            &h.ctx(),
+            alice.user,
+            challenge,
+            &token,
+            challenge_request(&start, &credential),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), codes::webauthn::PASSKEY_CEREMONY_INVALID);
+    // Nothing exists until the caller's transaction commits.
+    assert!(
+        h.service
+            .list_passkeys(&h.fresh(alice))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let mut tx = h.pool.begin().await.unwrap();
+    h.service
+        .store_enrollment_in_tx(&mut tx, &h.ctx(), verified)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(
+        h.service
+            .list_passkeys(&h.fresh(alice))
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    let registered = h.ports.audit.of_kind(SecurityEventKind::PasskeyRegistered);
+    let last = registered.last().unwrap();
+    assert_eq!(last.outcome, EventOutcome::Success);
+    assert_eq!(last.metadata["enrollment"], "login_challenge");
+    assert_eq!(last.metadata["login_challenge_id"], challenge.to_string());
+    assert_eq!(last.actor, authn_core::ports::Actor::User(alice.user));
+}
+
+/// PKY-08 / K-112: the organization AAGUID policy (the strictest one of the
+/// user's organizations) applies to a registration inside a login
+/// challenge: a self-attested software passkey is refused, an attested
+/// allowed model is stored with its AAGUID, and a model no trusted root
+/// vouches for cannot even start.
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn pky_08_k112_challenge_registration_applies_the_aaguid_policy(pool: PgPool) {
+    let (mut token, ca_root) = SoftToken::new(true).unwrap();
+    let mut builder = AttestationCaListBuilder::new();
+    builder
+        .insert_device_x509(
+            ca_root,
+            SOFTTOKEN_AAGUID,
+            "softtoken".to_owned(),
+            Default::default(),
+        )
+        .unwrap();
+    let roots = builder.build();
+    let h = Harness::with(pool, move |s| s.attestation_roots = roots).await;
+    *h.policy.policy.lock().unwrap() = PasskeyPolicy::allow_only([SOFTTOKEN_AAGUID]);
+    let alice = h.account("alice@example.com").await;
+    let challenge = h.challenge(alice.user).await;
+
+    // Self-attested: the model cannot be proven.
+    let start = h
+        .service
+        .start_challenge_registration(&h.ctx(), alice.user, challenge)
+        .await
+        .unwrap();
+    assert_eq!(start.options["publicKey"]["attestation"], "direct");
+    let mut soft = SoftPasskey::new(true);
+    let credential = create(&mut soft, &start.options, ORIGIN);
+    let err = h
+        .service
+        .verify_challenge_registration(
+            &h.ctx(),
+            alice.user,
+            challenge,
+            &start.binding_token,
+            challenge_request(&start, &credential),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), codes::webauthn::PASSKEY_NOT_ALLOWED);
+
+    // Attested, allowed model.
+    let start = h
+        .service
+        .start_challenge_registration(&h.ctx(), alice.user, challenge)
+        .await
+        .unwrap();
+    let credential = create(&mut token, &start.options, ORIGIN);
+    let verified = h
+        .service
+        .verify_challenge_registration(
+            &h.ctx(),
+            alice.user,
+            challenge,
+            &start.binding_token,
+            challenge_request(&start, &credential),
+        )
+        .await
+        .unwrap();
+    let mut tx = h.pool.begin().await.unwrap();
+    let summary = h
+        .service
+        .store_enrollment_in_tx(&mut tx, &h.ctx(), verified)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(summary.aaguid, Some(SOFTTOKEN_AAGUID));
+
+    // A model no trusted root covers: refused before any ceremony.
+    *h.policy.policy.lock().unwrap() = PasskeyPolicy::allow_only([Uuid::from_u128(0x1234_5678)]);
+    let err = h
+        .service
+        .start_challenge_registration(&h.ctx(), alice.user, challenge)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), codes::webauthn::PASSKEY_NOT_ALLOWED);
+}

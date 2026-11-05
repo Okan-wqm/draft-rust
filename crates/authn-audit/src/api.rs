@@ -200,7 +200,8 @@ async fn authorize_write(
         (status = 403, description = "Not a user principal", body = ErrorEnvelope),
         (status = 422, description = "Invalid cursor", body = ErrorEnvelope),
         (status = 429, description = "Rate limited", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn list_my_security_events(
     State(service): State<AuditService>,
@@ -238,7 +239,8 @@ pub async fn list_my_security_events(
         (status = 404, description = "Unknown organization or no access", body = ErrorEnvelope),
         (status = 422, description = "Invalid filter", body = ErrorEnvelope),
         (status = 429, description = "Rate limited", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []), ("api_key" = []), ("api_key_bearer" = []))
 )]
 pub async fn list_org_audit_events(
     State(service): State<AuditService>,
@@ -262,7 +264,8 @@ pub async fn list_org_audit_events(
     responses(
         (status = 200, description = "Endpoints", body = WebhookEndpointList),
         (status = 404, description = "Unknown organization or no access", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []), ("api_key" = []), ("api_key_bearer" = []))
 )]
 pub async fn list_webhooks(
     State(service): State<AuditService>,
@@ -298,7 +301,8 @@ pub async fn list_webhooks(
         (status = 409, description = "Endpoint limit reached", body = ErrorEnvelope),
         (status = 422, description = "Invalid URL or event types", body = ErrorEnvelope),
         (status = 429, description = "Rate limited", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []), ("api_key" = []), ("api_key_bearer" = []))
 )]
 pub async fn create_webhook(
     State(service): State<AuditService>,
@@ -327,7 +331,8 @@ pub async fn create_webhook(
     responses(
         (status = 200, description = "The endpoint", body = WebhookEndpointView),
         (status = 404, description = "Unknown endpoint or no access", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []), ("api_key" = []), ("api_key_bearer" = []))
 )]
 pub async fn get_webhook(
     State(service): State<AuditService>,
@@ -362,7 +367,8 @@ pub async fn get_webhook(
         (status = 403, description = "Read-only impersonation", body = ErrorEnvelope),
         (status = 404, description = "Unknown endpoint or no access", body = ErrorEnvelope),
         (status = 422, description = "Invalid values", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []), ("api_key" = []), ("api_key_bearer" = []))
 )]
 pub async fn update_webhook(
     State(service): State<AuditService>,
@@ -393,7 +399,8 @@ pub async fn update_webhook(
         (status = 204, description = "Deleted"),
         (status = 401, description = "Step-up required", body = ErrorEnvelope),
         (status = 404, description = "Unknown endpoint or no access", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []), ("api_key" = []), ("api_key_bearer" = []))
 )]
 pub async fn delete_webhook(
     State(service): State<AuditService>,
@@ -423,7 +430,8 @@ pub async fn delete_webhook(
         (status = 200, description = "Rotated; store the secret now", body = WebhookEndpointWithSecret),
         (status = 401, description = "Step-up required", body = ErrorEnvelope),
         (status = 404, description = "Unknown endpoint or no access", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []), ("api_key" = []), ("api_key_bearer" = []))
 )]
 pub async fn rotate_webhook_secret(
     State(service): State<AuditService>,
@@ -453,7 +461,8 @@ pub async fn rotate_webhook_secret(
     responses(
         (status = 200, description = "Deliveries, newest first", body = WebhookDeliveryPage),
         (status = 404, description = "Unknown endpoint or no access", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []), ("api_key" = []), ("api_key_bearer" = []))
 )]
 pub async fn list_webhook_deliveries(
     State(service): State<AuditService>,
@@ -489,7 +498,8 @@ pub async fn list_webhook_deliveries(
         (status = 404, description = "Unknown delivery or no access", body = ErrorEnvelope),
         (status = 409, description = "Still scheduled or endpoint disabled", body = ErrorEnvelope),
         (status = 429, description = "Rate limited", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []), ("api_key" = []), ("api_key_bearer" = []))
 )]
 pub async fn redeliver_webhook(
     State(service): State<AuditService>,

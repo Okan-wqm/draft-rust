@@ -7,7 +7,8 @@
 //!    §15.7), or — when risk demanded it (RSK-03) — an e-mailed
 //!    confirmation code;
 //! 2. `enroll_mfa` — enrolling a permitted factor (the confirmation proves
-//!    it);
+//!    it; a passkey is registered with its own ceremony,
+//!    `passkey_enrollment`, K-112);
 //! 3. `change_password`, `accept_terms`, `verify_email` — only after the
 //!    factor steps, so a stolen password alone can never change the
 //!    password, accept terms or prove the mailbox.
@@ -39,6 +40,9 @@ use secrecy::ExposeSecret;
 use serde::Deserialize;
 use utoipa::ToSchema;
 
+mod passkey_enrollment;
+
+pub use self::passkey_enrollment::PasskeyEnrollmentVerify;
 use super::pipeline::{EMAIL_CONFIRMATION, ENROLL_FACTORS, recipient_of};
 use crate::model::{DeviceInfo, EstablishedSession};
 use crate::service::{

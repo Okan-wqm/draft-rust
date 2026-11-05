@@ -215,7 +215,8 @@ fn no_store<T: Serialize>(status: StatusCode, body: T) -> Response {
     responses(
         (status = 200, description = "MFA state", body = MfaStatus),
         (status = 401, description = "unauthenticated", body = authn_core::error::ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn get_status(
     State(service): State<MfaService>,
@@ -238,7 +239,8 @@ pub async fn get_status(
         (status = 401, description = "unauthenticated / step_up_required", body = authn_core::error::ErrorEnvelope),
         (status = 409, description = "mfa_factor_limit_reached", body = authn_core::error::ErrorEnvelope),
         (status = 422, description = "validation_failed (label)", body = authn_core::error::ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn begin_totp(
     State(service): State<MfaService>,
@@ -273,7 +275,8 @@ pub async fn begin_totp(
         (status = 403, description = "mfa_factor_not_available", body = authn_core::error::ErrorEnvelope),
         (status = 409, description = "mfa_factor_already_enrolled / mfa_factor_limit_reached", body = authn_core::error::ErrorEnvelope),
         (status = 429, description = "Resend cooldown / budget (Retry-After)", body = authn_core::error::ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn begin_email(
     State(service): State<MfaService>,
@@ -299,7 +302,8 @@ pub async fn begin_email(
         (status = 409, description = "mfa_factor_already_enrolled / mfa_factor_limit_reached", body = authn_core::error::ErrorEnvelope),
         (status = 422, description = "mfa_invalid_phone_number / mfa_phone_country_not_allowed", body = authn_core::error::ErrorEnvelope),
         (status = 429, description = "Cooldown / pumping protection (Retry-After)", body = authn_core::error::ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn begin_sms(
     State(service): State<MfaService>,
@@ -328,7 +332,8 @@ pub async fn begin_sms(
         (status = 404, description = "not_found", body = authn_core::error::ErrorEnvelope),
         (status = 409, description = "mfa_enrollment_not_pending", body = authn_core::error::ErrorEnvelope),
         (status = 429, description = "too_many_attempts (Retry-After)", body = authn_core::error::ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn confirm_factor(
     State(service): State<MfaService>,
@@ -356,7 +361,8 @@ pub async fn confirm_factor(
         (status = 404, description = "not_found", body = authn_core::error::ErrorEnvelope),
         (status = 409, description = "mfa_enrollment_not_pending", body = authn_core::error::ErrorEnvelope),
         (status = 429, description = "Cooldown / pumping protection (Retry-After)", body = authn_core::error::ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn resend_code(
     State(service): State<MfaService>,
@@ -383,7 +389,8 @@ pub async fn resend_code(
         (status = 401, description = "unauthenticated / step_up_required", body = authn_core::error::ErrorEnvelope),
         (status = 404, description = "not_found", body = authn_core::error::ErrorEnvelope),
         (status = 409, description = "mfa_last_factor_required", body = authn_core::error::ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn remove_factor(
     State(service): State<MfaService>,
@@ -403,7 +410,8 @@ pub async fn remove_factor(
     responses(
         (status = 200, description = "Counters", body = RecoveryCodesStatus),
         (status = 401, description = "unauthenticated", body = authn_core::error::ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn recovery_codes_status(
     State(service): State<MfaService>,
@@ -423,7 +431,8 @@ pub async fn recovery_codes_status(
         (status = 201, description = "New codes (shown once)", body = GeneratedRecoveryCodes),
         (status = 401, description = "unauthenticated / step_up_required", body = authn_core::error::ErrorEnvelope),
         (status = 403, description = "mfa_factor_not_available (no active factor)", body = authn_core::error::ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn regenerate_recovery_codes(
     State(service): State<MfaService>,
@@ -442,7 +451,8 @@ pub async fn regenerate_recovery_codes(
     responses(
         (status = 200, description = "Active trusted devices", body = TrustedDeviceList),
         (status = 401, description = "unauthenticated", body = authn_core::error::ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn list_trusted_devices(
     State(service): State<MfaService>,
@@ -460,7 +470,8 @@ pub async fn list_trusted_devices(
     responses(
         (status = 200, description = "Devices revoked", body = RevokedCount),
         (status = 401, description = "unauthenticated", body = authn_core::error::ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn revoke_all_trusted_devices(
     State(service): State<MfaService>,
@@ -481,7 +492,8 @@ pub async fn revoke_all_trusted_devices(
         (status = 204, description = "Device revoked"),
         (status = 401, description = "unauthenticated", body = authn_core::error::ErrorEnvelope),
         (status = 404, description = "not_found", body = authn_core::error::ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn revoke_trusted_device(
     State(service): State<MfaService>,

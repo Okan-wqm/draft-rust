@@ -59,9 +59,19 @@ mod budget {
     /// Per-IP limit, key lookup (owner status joined, last-use write
     /// throttled), per-client limit, session lookup.
     pub const INTROSPECT: usize = 4;
-    /// Native password login of a returning user (rate limits, risk,
-    /// policy, session, audit chain). Argon2id dominates its latency.
-    pub const LOGIN: usize = 42;
+    /// Native password login of a returning user (K-128): per-IP limit,
+    /// account, known device, one limiter chain (login limit, soft lock,
+    /// CAPTCHA and soft-lock budgets), password, budget refund; terms,
+    /// membership policy, MFA facts (4), risk (familiarity, failure
+    /// counters); one transaction (user lock, session, refresh token, last
+    /// login, audit: pseudonym, head lock, append; commit); domain auto-
+    /// join, profile, device/network record (+ commit). Argon2id dominates
+    /// its latency.
+    pub const LOGIN: usize = 26;
+    /// A failed password login (wrong password, or an address matching no
+    /// account: the same statements, see
+    /// `ses_01_k_128_unknown_account_runs_the_statements_of_a_wrong_password`).
+    pub const LOGIN_FAILED: usize = 10;
 }
 
 #[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
@@ -123,6 +133,61 @@ async fn k_70_query_budget_of_hot_endpoints(pool: PgPool) {
     check("POST /v1/token/introspect", &log, budget::INTROSPECT);
 }
 
+/// SES-01 / CRY-05 (K-128): the unknown-account path issues exactly the
+/// statements of the wrong-password path (same kinds, same order). The
+/// wall-clock timing tests (`ses_01_unknown_account_takes_as_long_as_a_
+/// wrong_password`) can only see gross differences such as a skipped
+/// Argon2id; a single missing round trip (~0.3–1 ms against ~25 ms of
+/// Argon2id) is far inside their tolerance. This structural check catches
+/// it without noise.
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn ses_01_k_128_unknown_account_runs_the_statements_of_a_wrong_password(pool: PgPool) {
+    let app = App::with(pool, |c| production_shape(c, false)).await;
+    perf::users(&app, 1).await;
+    let _ = perf::native_login(&app, 0).await;
+    let request = |email: &str, n: usize| {
+        authn_testkit::http::TestRequest::post("/v1/login/password")
+            .json(&serde_json::json!({"email": email, "password": "wrong password 1234"}))
+            .header("x-authn-client", "native")
+            .header("x-device-id", &format!("attacker-device-{n:04}"))
+            .peer_ip(client_ip(100 + n))
+    };
+    let known = perf::email(0);
+    // Warm-up of both paths (first failure of each identifier creates its
+    // limiter rows).
+    for (n, email) in [(0, known.as_str()), (1, "ghost@example.com")] {
+        app.send(request(email, n))
+            .await
+            .assert_status(StatusCode::UNAUTHORIZED);
+    }
+    let (wrong, wrong_log) = measured(&app, request(&known, 2)).await;
+    let (unknown, unknown_log) = measured(&app, request("ghost@example.com", 3)).await;
+    wrong.assert_status(StatusCode::UNAUTHORIZED);
+    unknown.assert_status(StatusCode::UNAUTHORIZED);
+    let strip = |r: &TestResponse| {
+        let mut body: serde_json::Value = r.json();
+        if let Some(o) = body["error"].as_object_mut() {
+            o.remove("request_id");
+        }
+        body
+    };
+    assert_eq!(strip(&wrong), strip(&unknown));
+    check(
+        "POST /v1/login/password (wrong password)",
+        &wrong_log,
+        budget::LOGIN_FAILED,
+    );
+    check(
+        "POST /v1/login/password (unknown account)",
+        &unknown_log,
+        budget::LOGIN_FAILED,
+    );
+    assert_eq!(
+        wrong_log.statements, unknown_log.statements,
+        "the unknown-account path must issue the wrong-password statements:\nwrong password:\n{wrong_log}\nunknown account:\n{unknown_log}"
+    );
+}
+
 /// The budget table of `docs/operations/performance.md` states the same
 /// numbers as [`budget`] (the documentation is the operators' reference).
 #[test]
@@ -142,6 +207,10 @@ fn k_70_documented_budgets_match_the_test() {
         ("| `POST /v1/token/refresh` |", budget::REFRESH),
         ("| `POST /v1/token/introspect` |", budget::INTROSPECT),
         ("| `POST /v1/login/password` |", budget::LOGIN),
+        (
+            "| `POST /v1/login/password` (başarısız) |",
+            budget::LOGIN_FAILED,
+        ),
     ] {
         let expected = format!("{row} {value} |");
         assert!(

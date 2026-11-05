@@ -185,7 +185,8 @@ pub async fn csrf_token(
     responses(
         (status = 200, description = "The caller", body = MeResponse),
         (status = 401, description = "unauthenticated", body = authn_core::error::ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn me(
     State(service): State<SessionService>,
@@ -212,7 +213,8 @@ pub struct SessionList {
     responses(
         (status = 200, description = "Sessions", body = SessionList),
         (status = 401, description = "unauthenticated", body = authn_core::error::ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn list_sessions(
     State(service): State<SessionService>,
@@ -253,7 +255,8 @@ fn is_web(current: Option<&CurrentSession>) -> bool {
         (status = 401, description = "unauthenticated", body = authn_core::error::ErrorEnvelope),
         (status = 403, description = "csrf_failed / forbidden", body = authn_core::error::ErrorEnvelope),
         (status = 404, description = "not_found", body = authn_core::error::ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn revoke_session(
     State(service): State<SessionService>,
@@ -285,7 +288,8 @@ pub struct RevokedCount {
         (status = 200, description = "Revoked", body = RevokedCount),
         (status = 401, description = "unauthenticated", body = authn_core::error::ErrorEnvelope),
         (status = 403, description = "csrf_failed / forbidden", body = authn_core::error::ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn revoke_other_sessions(
     State(service): State<SessionService>,
@@ -308,7 +312,8 @@ pub async fn revoke_other_sessions(
         (status = 204, description = "Signed out"),
         (status = 401, description = "unauthenticated", body = authn_core::error::ErrorEnvelope),
         (status = 403, description = "csrf_failed", body = authn_core::error::ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn logout(
     State(service): State<SessionService>,
@@ -330,7 +335,8 @@ pub async fn logout(
         (status = 204, description = "Signed out everywhere"),
         (status = 401, description = "unauthenticated", body = authn_core::error::ErrorEnvelope),
         (status = 403, description = "csrf_failed / forbidden", body = authn_core::error::ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn logout_all(
     State(service): State<SessionService>,
@@ -353,7 +359,8 @@ pub async fn logout_all(
         (status = 401, description = "unauthenticated / step_up_required", body = authn_core::error::ErrorEnvelope),
         (status = 403, description = "csrf_failed / org_policy_mfa_required / org_policy_ip_denied / login_method_not_allowed", body = authn_core::error::ErrorEnvelope),
         (status = 404, description = "not_found (no membership)", body = authn_core::error::ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn switch_org(
     State(service): State<SessionService>,
@@ -388,7 +395,8 @@ pub async fn switch_org(
         (status = 401, description = "unauthenticated / reauthentication_failed", body = authn_core::error::ErrorEnvelope),
         (status = 403, description = "csrf_failed / step_up_method_not_allowed / forbidden", body = authn_core::error::ErrorEnvelope),
         (status = 429, description = "rate_limited / too_many_attempts", body = authn_core::error::ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn reauth(
     State(service): State<SessionService>,
@@ -452,7 +460,8 @@ impl std::fmt::Debug for PasskeyOptionsResponse {
         (status = 400, description = "passkey_not_available", body = authn_core::error::ErrorEnvelope),
         (status = 401, description = "unauthenticated", body = authn_core::error::ErrorEnvelope),
         (status = 403, description = "csrf_failed / forbidden", body = authn_core::error::ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn passkey_options(
     State(service): State<SessionService>,

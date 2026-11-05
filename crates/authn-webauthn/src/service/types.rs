@@ -187,6 +187,26 @@ pub struct RegistrationVerifyRequest {
     pub name: Option<String>,
 }
 
+/// A started registration ceremony bound to a pending login challenge
+/// (K-112: passkey enrollment inside the login, SES-22).
+#[cfg(feature = "passkey")]
+#[derive(Debug, Clone)]
+pub struct ChallengeRegistrationStart {
+    /// Ceremony id.
+    pub ceremony_id: CeremonyId,
+    /// 256-bit client binding secret (PKY-01). authn-session hands it to
+    /// the client in an `HttpOnly` cookie (web) or the response body
+    /// (native) and passes it back to
+    /// [`super::WebauthnService::verify_challenge_registration`]. Only its
+    /// SHA-256 is stored.
+    pub binding_token: SensitiveString,
+    /// `CredentialCreationOptions` for `navigator.credentials.create()`:
+    /// `{"publicKey": {...}}` (binary fields base64url).
+    pub options: serde_json::Value,
+    /// The ceremony must be finished before this time.
+    pub expires_at: OffsetDateTime,
+}
+
 /// Who / what an authentication ceremony is for, and what it is bound to
 /// (PKY-01: the same value must be presented when finishing).
 #[cfg(feature = "passkey")]

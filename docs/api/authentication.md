@@ -45,7 +45,7 @@ Tüm çerezler `__Host-` önekli, `Path=/`, `Secure`, `HttpOnly`'dir ve `Domain`
 | `__Host-authn_session` | `Lax` | tarayıcı oturumu; "beni hatırla"da `Max-Age` = kalan mutlak ömür | Web oturum token'ı (256 bit, DB'de yalnızca SHA-256) | authn-session `cookies.rs` |
 | `__Host-authn_csrf` | `Strict` | tarayıcı oturumu | Login CSRF pre-session sırrı | authn-session `cookies.rs` |
 | `__Host-authn_challenge` | `Strict` | challenge ömrü (`session.mfa_challenge_ttl`) | Bekleyen girişin (MFA / zorunlu adım) token'ı | authn-session `cookies.rs` |
-| `__Host-authn_passkey` | `Strict` | seremoni ömrü | Passkey girişi / step-up seremonisi bağlama token'ı | authn-session `cookies.rs` |
+| `__Host-authn_passkey` | `Strict` | seremoni ömrü | Passkey girişi / step-up seremonisi ve giriş challenge'ı içindeki passkey kaydı (K-112) bağlama token'ı | authn-session `cookies.rs` |
 | `__Host-authn_trusted_device` | `Strict` | `mfa.trusted_device.ttl` | "Bu cihazda tekrar sorma" (MFA-09) token'ı | authn-session `cookies.rs`, authn-mfa |
 | `__Host-authn_device` | `Lax` | 365 gün | Cihaz kimliği (risk değerlendirmesi, bilinen cihaz); `[A-Za-z0-9_-]{16,128}` | authn-core `http/context.rs` |
 | `__Host-authn_magic` | `Lax` | magic link ömrü | Magic link isteğini yapan tarayıcıya bağlar (SES-18) | authn-session `login/mod.rs` |

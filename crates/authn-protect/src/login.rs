@@ -44,8 +44,8 @@ use authn_core::error::{AuthError, codes};
 use authn_core::http::RequestContext;
 use authn_core::id::UserId;
 use authn_core::ports::{
-    Actor, AuditSink, Clock, RateLimitKey, RateLimitPolicy, RateLimiter, SecurityEvent,
-    SecurityEventKind,
+    Actor, AuditSink, Clock, RateLimitDecision, RateLimitKey, RateLimitPolicy, RateLimitStep,
+    RateLimiter, SecurityEvent, SecurityEventKind,
 };
 use sqlx::PgPool;
 use time::OffsetDateTime;
@@ -222,11 +222,53 @@ impl LoginProtection {
         attempt: &LoginAttempt<'_>,
         ctx: &RequestContext,
     ) -> Result<(), AuthError> {
+        let password = attempt.method == LoginMethod::Password;
+        // Known-device query first (same work for unknown accounts): the
+        // soft-lock step of the chain below depends on it.
+        let trusted = if password {
+            self.device_is_trusted(attempt, ctx).await?
+        } else {
+            false
+        };
         let ip_key = RateLimitKey::ip(LOGIN_ACTION, ctx.client_ip);
-        let decision = self
-            .limiter
-            .check(&ip_key, self.limits.login_per_ip, 1)
-            .await?;
+        let lock_key = Self::lock_key(attempt.identifier);
+        let captcha_key = RateLimitKey::account(CAPTCHA_FAILURES_ACTION, attempt.identifier);
+        let lock_failures_key = RateLimitKey::account(LOCK_FAILURES_ACTION, attempt.identifier);
+        // K-128: the limiter steps of one attempt in one chain (one
+        // statement on PostgreSQL), in the order of the single calls they
+        // replace; a denial that ends the attempt stops the chain, so a
+        // later budget is never consumed for it:
+        // 1. per-IP limit (all methods);
+        // 2. soft lock (peek; ends the attempt unless the device is
+        //    trusted);
+        // 3. CAPTCHA budget (reserve one unit);
+        // 4. soft-lock budget — only when an admitted CAPTCHA budget
+        //    certainly passes the CAPTCHA gate (policy does not demand a
+        //    CAPTCHA anyway); otherwise it is reserved after the gate, so
+        //    wrong or missing CAPTCHA answers never count.
+        let mut steps = vec![RateLimitStep::check(&ip_key, self.limits.login_per_ip)];
+        let lock_in_chain = !self.captcha.is_required(self.captcha_policy, false);
+        if password {
+            steps.push(
+                RateLimitStep::peek(&lock_key, lock_policy(self.limits.soft_lock_duration))
+                    .stop_if_denied(!trusted),
+            );
+            steps.push(RateLimitStep::check(
+                &captcha_key,
+                self.limits.login_per_account_captcha,
+            ));
+            if lock_in_chain {
+                steps.push(RateLimitStep::check(
+                    &lock_failures_key,
+                    self.limits.login_per_account_soft_lock,
+                ));
+            }
+        }
+        let decisions = self.limiter.check_chain(&steps).await?;
+        let decision = decisions
+            .first()
+            .copied()
+            .ok_or_else(|| AuthError::internal("rate-limit chain without a decision"))?;
         if !decision.allowed {
             metrics::counter!("authn_rate_limit_triggered_total", "action" => LOGIN_ACTION)
                 .increment(1);
@@ -244,31 +286,23 @@ impl LoginProtection {
             .await;
             decision.into_result()?;
         }
-        if attempt.method != LoginMethod::Password {
+        if !password {
             // Passkeys, magic links and codes are never soft-locked or
             // CAPTCHA-escalated here (PRT-03).
             return Ok(());
         }
 
-        let trusted = self.device_is_trusted(attempt, ctx).await?;
-        if let Some(remaining) = self.soft_lock_remaining(attempt.identifier).await?
-            && !trusted
-        {
-            return Err(Self::blocked(remaining));
+        let soft_lock = Self::step(&decisions, 1)?;
+        if !soft_lock.allowed && !trusted {
+            return Err(Self::blocked(
+                soft_lock.retry_after.unwrap_or(Duration::from_secs(1)),
+            ));
         }
 
-        // Reserve one unit of the CAPTCHA budget *now* (atomic check-and-
+        // The CAPTCHA budget was reserved by the chain (atomic check-and-
         // consume). Once it is exhausted the attempt needs a CAPTCHA; a
-        // denied check consumes nothing, so wrong or missing CAPTCHA answers
-        // never count.
-        let captcha_budget = self
-            .limiter
-            .check(
-                &RateLimitKey::account(CAPTCHA_FAILURES_ACTION, attempt.identifier),
-                self.limits.login_per_account_captcha,
-                1,
-            )
-            .await?;
+        // denied check consumes nothing.
+        let captcha_budget = Self::step(&decisions, 2)?;
         let risky = !captcha_budget.allowed && !trusted;
         self.captcha
             .enforce(
@@ -283,14 +317,18 @@ impl LoginProtection {
         // Only attempts that cleared the CAPTCHA gate reserve a unit of the
         // soft-lock budget, so engaging the lock costs the attacker the
         // CAPTCHAs on the way.
-        let lock_budget = self
-            .limiter
-            .check(
-                &RateLimitKey::account(LOCK_FAILURES_ACTION, attempt.identifier),
-                self.limits.login_per_account_soft_lock,
-                1,
-            )
-            .await?;
+        let lock_budget = match decisions.get(3) {
+            Some(decision) => *decision,
+            None => {
+                self.limiter
+                    .check(
+                        &lock_failures_key,
+                        self.limits.login_per_account_soft_lock,
+                        1,
+                    )
+                    .await?
+            }
+        };
         if !lock_budget.allowed {
             let remaining = self.engage_soft_lock(attempt, ctx).await?;
             if !trusted {
@@ -298,6 +336,13 @@ impl LoginProtection {
             }
         }
         Ok(())
+    }
+
+    fn step(decisions: &[RateLimitDecision], index: usize) -> Result<RateLimitDecision, AuthError> {
+        decisions
+            .get(index)
+            .copied()
+            .ok_or_else(|| AuthError::internal("rate-limit chain ended early"))
     }
 
     fn blocked(remaining: Duration) -> AuthError {
@@ -318,19 +363,15 @@ impl LoginProtection {
         ctx: &RequestContext,
     ) -> Result<(), AuthError> {
         let user = attempt.user_id.unwrap_or_else(UserId::generate);
+        let user_key = RateLimitKey::user(FAILURE_ACTION, user);
+        let ip_key = RateLimitKey::ip(FAILURE_ACTION, ctx.client_ip);
+        // Both counters always count (no step ends the chain): one
+        // statement on PostgreSQL (K-128).
         self.limiter
-            .check(
-                &RateLimitKey::user(FAILURE_ACTION, user),
-                self.failure_policy,
-                1,
-            )
-            .await?;
-        self.limiter
-            .check(
-                &RateLimitKey::ip(FAILURE_ACTION, ctx.client_ip),
-                self.failure_policy,
-                1,
-            )
+            .check_chain(&[
+                RateLimitStep::check(&user_key, self.failure_policy).stop_if_denied(false),
+                RateLimitStep::check(&ip_key, self.failure_policy).stop_if_denied(false),
+            ])
             .await?;
         Ok(())
     }
@@ -398,18 +439,11 @@ impl LoginProtection {
         _ctx: &RequestContext,
     ) -> Result<(), AuthError> {
         self.limiter
-            .reset(&RateLimitKey::account(
-                CAPTCHA_FAILURES_ACTION,
-                attempt.identifier,
-            ))
-            .await?;
-        self.limiter
-            .reset(&RateLimitKey::account(
-                LOCK_FAILURES_ACTION,
-                attempt.identifier,
-            ))
-            .await?;
-        Ok(())
+            .reset_many(&[
+                &RateLimitKey::account(CAPTCHA_FAILURES_ACTION, attempt.identifier),
+                &RateLimitKey::account(LOCK_FAILURES_ACTION, attempt.identifier),
+            ])
+            .await
     }
 
     /// Lifts a soft lock and clears the failure counters (admin "unlock",

@@ -4,6 +4,14 @@
 //! read TAT, decide, write TAT with a TTL equal to the time until the bucket
 //! is empty again. Keys are `authn:rl:<hex keyed hash>`; a single key per
 //! call keeps the script valid on Redis Cluster.
+//!
+//! Several keys (K-128): one multi-key script would break on Redis Cluster
+//! (keys in different slots), so [`RateLimiter::peek_many`],
+//! [`RateLimiter::reset_many`] and the independent steps of a
+//! [`RateLimiter::check_chain`] are sent **concurrently** on the
+//! multiplexed connection (one round trip, each command still atomic on
+//! its own key). A chain step that ends the chain when denied is awaited
+//! before the steps after it are sent.
 
 use std::fmt::Write as _;
 use std::sync::Arc;
@@ -11,7 +19,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use authn_core::error::{AuthError, codes};
-use authn_core::ports::{Clock, RateLimitDecision, RateLimitKey, RateLimitPolicy, RateLimiter};
+use authn_core::ports::{
+    Clock, RateLimitDecision, RateLimitKey, RateLimitPolicy, RateLimitStep, RateLimiter, StepMode,
+};
 use authn_core::secret::{ExposeSecret, SecretString};
 use fred::prelude::{
     Client, ClientLike, Config, ConnectionConfig, KeysInterface, LuaInterface, PerformanceConfig,
@@ -173,6 +183,56 @@ impl RateLimiter for RedisRateLimiter {
             .del(self.redis_key(key))
             .await
             .map_err(|e| unavailable(&e))?;
+        Ok(())
+    }
+
+    async fn check_chain(
+        &self,
+        steps: &[RateLimitStep<'_>],
+    ) -> Result<Vec<RateLimitDecision>, AuthError> {
+        let mut decisions = Vec::with_capacity(steps.len());
+        let mut rest = steps;
+        while !rest.is_empty() {
+            // A segment: steps up to and including the next one that ends
+            // the chain when denied; none of them depends on another.
+            let end = rest
+                .iter()
+                .position(|s| s.stop_if_denied)
+                .map_or(rest.len(), |i| i + 1);
+            let (segment, tail) = rest.split_at(end);
+            let results = futures::future::try_join_all(segment.iter().map(|step| {
+                let (cost, consume) = match step.mode {
+                    StepMode::Check { cost } => (cost, true),
+                    StepMode::Peek => (1, false),
+                };
+                self.run(step.key, step.policy, cost, consume)
+            }))
+            .await?;
+            for (step, decision) in segment.iter().zip(results) {
+                let stop = step.stop_if_denied && !decision.allowed;
+                decisions.push(decision);
+                if stop {
+                    return Ok(decisions);
+                }
+            }
+            rest = tail;
+        }
+        Ok(decisions)
+    }
+
+    async fn peek_many(
+        &self,
+        keys: &[(&RateLimitKey, RateLimitPolicy)],
+    ) -> Result<Vec<RateLimitDecision>, AuthError> {
+        futures::future::try_join_all(
+            keys.iter()
+                .map(|(key, policy)| self.run(key, *policy, 1, false)),
+        )
+        .await
+    }
+
+    async fn reset_many(&self, keys: &[&RateLimitKey]) -> Result<(), AuthError> {
+        futures::future::try_join_all(keys.iter().map(|key| self.reset(key))).await?;
         Ok(())
     }
 }

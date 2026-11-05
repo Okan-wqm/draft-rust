@@ -19,11 +19,13 @@
 //! a restricting policy — the attestation chain and AAGUID. The credential is
 //! then stored with its audit event and notification in one transaction.
 
-use authn_core::domain::Principal;
+use authn_core::domain::{AuthMethodRef, Principal};
 use authn_core::error::{AuthError, codes};
 use authn_core::http::RequestContext;
-use authn_core::id::{CeremonyId, CredentialId, SessionId, UserId};
+use authn_core::id::{CeremonyId, ChallengeId, CredentialId, SessionId, UserId};
 use authn_core::ports::{RateLimitKey, SecurityEventKind};
+use authn_core::secret::SensitiveString;
+use authn_crypto::token::OpaqueToken;
 use authn_store::{StoreError, UserRepository};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -33,9 +35,11 @@ use webauthn_rs::prelude::{
 };
 use webauthn_rs_proto::{CreationChallengeResponse, ResidentKeyRequirement};
 
+use super::authentication::amr_for;
 use super::{
-    PasskeySummary, PasskeyUsage, RegistrationIntent, RegistrationOptionsRequest,
-    RegistrationStart, RegistrationVerifyRequest, WebauthnService, actions, summary,
+    ChallengeRegistrationStart, PasskeySummary, PasskeyUsage, RegistrationIntent,
+    RegistrationOptionsRequest, RegistrationStart, RegistrationVerifyRequest, WebauthnService,
+    actions, summary,
 };
 use crate::metrics;
 use crate::name::{DEFAULT_PASSKEY_NAME, DEFAULT_SECURITY_KEY_NAME, normalize_name};
@@ -111,6 +115,36 @@ fn enrollment_binding(user: UserId, binding_hash: [u8; 32]) -> CeremonyBinding {
     }
 }
 
+/// The binding of a registration ceremony started inside a pending login
+/// challenge (K-112): the user, the login challenge (`auth_challenges.id`)
+/// and the SHA-256 of a fresh client binding token. A K-11 enrollment
+/// ceremony (no challenge) and a ceremony of another challenge can never
+/// match it.
+fn challenge_binding(
+    user: UserId,
+    challenge: ChallengeId,
+    binding_hash: [u8; 32],
+) -> CeremonyBinding {
+    CeremonyBinding {
+        kind: CeremonyKind::Registration,
+        purpose: CeremonyPurpose::Register,
+        user_id: Some(user),
+        session_id: None,
+        challenge_id: Some(challenge),
+        binding_hash: Some(binding_hash),
+    }
+}
+
+/// How a session-less enrollment was authorized (audit metadata
+/// `enrollment`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EnrollmentSource {
+    /// A break-glass enrollment link (K-11).
+    Link,
+    /// The `enroll_mfa` step of a login challenge (K-112).
+    LoginChallenge(ChallengeId),
+}
+
 /// A verified, not yet stored registration.
 struct VerifiedRegistration {
     user: UserId,
@@ -123,20 +157,39 @@ struct VerifiedRegistration {
 /// A passkey enrollment verified by `webauthn-rs`, waiting to be stored in
 /// the caller's transaction ([`WebauthnService::store_enrollment_in_tx`]).
 /// Holds only public key material.
-pub struct VerifiedEnrollment(VerifiedRegistration);
+pub struct VerifiedEnrollment {
+    registration: VerifiedRegistration,
+    source: EnrollmentSource,
+}
 
 impl VerifiedEnrollment {
     /// The account the passkey is for.
     #[must_use]
     pub fn user_id(&self) -> UserId {
-        self.0.user
+        self.registration.user
+    }
+
+    /// User verification (PIN / biometrics) was performed at registration.
+    #[must_use]
+    pub fn user_verified(&self) -> bool {
+        self.registration.credential.user_verified
+    }
+
+    /// RFC 8176 method references the registration proved, the same an
+    /// assertion with this passkey would prove: `swk` / `hwk`, `user` and
+    /// `mfa` with user verification (SES-21).
+    #[must_use]
+    pub fn amr(&self) -> Vec<AuthMethodRef> {
+        let credential = &self.registration.credential;
+        amr_for(credential.backup_eligible, credential.user_verified)
     }
 }
 
 impl std::fmt::Debug for VerifiedEnrollment {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("VerifiedEnrollment")
-            .field("user_id", &self.0.user)
+            .field("user_id", &self.registration.user)
+            .field("source", &self.source)
             .finish_non_exhaustive()
     }
 }
@@ -351,7 +404,7 @@ impl WebauthnService {
             .await?;
         let mut tx = self.begin().await?;
         let summary = self
-            .store_registration(&mut tx, ctx, Some(principal), verified)
+            .store_registration(&mut tx, ctx, Some(principal), verified, None)
             .await?;
         authn_store::commit(tx).await?;
         Ok(summary)
@@ -454,6 +507,7 @@ impl WebauthnService {
         ctx: &RequestContext,
         principal: Option<&Principal>,
         verified: VerifiedRegistration,
+        source: Option<EnrollmentSource>,
     ) -> Result<PasskeySummary, AuthError> {
         let VerifiedRegistration {
             user,
@@ -525,11 +579,20 @@ impl WebauthnService {
             .with_meta("usage", usage.as_str())
             .with_meta("backup_eligible", row.backup_eligible)
             .with_meta("attested", aaguid.is_some());
-        if principal.is_none() {
-            // Enrollment link (K-11): no session; the account owner acts.
-            event = event
-                .with_actor(authn_core::ports::Actor::User(user))
-                .with_meta("enrollment", "link");
+        match source {
+            // No session; the account owner acts.
+            Some(EnrollmentSource::Link) => {
+                event = event
+                    .with_actor(authn_core::ports::Actor::User(user))
+                    .with_meta("enrollment", "link");
+            }
+            Some(EnrollmentSource::LoginChallenge(challenge)) => {
+                event = event
+                    .with_actor(authn_core::ports::Actor::User(user))
+                    .with_meta("enrollment", "login_challenge")
+                    .with_meta("login_challenge_id", challenge.to_string());
+            }
+            None => {}
         }
         self.deps().audit.record_in_tx(&mut *conn, event).await?;
         metrics::registration_finished("success");
@@ -553,6 +616,20 @@ impl WebauthnService {
         user: UserId,
         binding_hash: [u8; 32],
     ) -> Result<RegistrationStart, AuthError> {
+        self.start_sessionless_registration(ctx, user, enrollment_binding(user, binding_hash))
+            .await
+    }
+
+    /// The start of a registration that has no session: the caller
+    /// authorized it (enrollment link, login challenge). Per-user passkey
+    /// and rate limits; the policy (PKY-08) with `active_org = None`, i.e.
+    /// the strictest one of every organization of the user.
+    async fn start_sessionless_registration(
+        &self,
+        ctx: &RequestContext,
+        user: UserId,
+        binding: CeremonyBinding,
+    ) -> Result<RegistrationStart, AuthError> {
         let account = UserRepository::find_by_id(self.pool(), user)
             .await?
             .ok_or_else(|| AuthError::new(codes::common::NOT_FOUND))?;
@@ -561,18 +638,8 @@ impl WebauthnService {
             .clone()
             .ok_or_else(|| AuthError::new(codes::common::NOT_FOUND))?;
         let existing = credentials::list_for_user(self.pool(), user).await?;
-        if existing.len() >= usize::try_from(self.config().max_credentials_per_user).unwrap_or(0) {
-            return Err(AuthError::new(codes::webauthn::PASSKEY_LIMIT_REACHED));
-        }
-        self.deps()
-            .rate_limiter
-            .check(
-                &RateLimitKey::user(actions::REGISTRATION_START, user),
-                self.config().registration_per_user,
-                1,
-            )
-            .await?
-            .into_result()?;
+        // `begin_registration` checks the passkey limit and takes the
+        // per-user rate-limit token (once per start).
         self.begin_registration(
             ctx,
             user,
@@ -581,7 +648,7 @@ impl WebauthnService {
             RegistrationIntent::Passwordless,
             None,
             None,
-            enrollment_binding(user, binding_hash),
+            binding,
         )
         .await
     }
@@ -607,19 +674,99 @@ impl WebauthnService {
                 request,
             )
             .await?;
-        Ok(VerifiedEnrollment(verified))
+        Ok(VerifiedEnrollment {
+            registration: verified,
+            source: EnrollmentSource::Link,
+        })
+    }
+
+    // --- login challenge enrollment (K-112) ---------------------------------
+
+    /// Starts registering a passwordless passkey (user verification
+    /// required) for `user` inside the pending login challenge `challenge`
+    /// (the `enroll_mfa` step, SES-22 / K-112). authn-session has checked
+    /// that the challenge is open, belongs to `user`, already passed the
+    /// primary factor and permits a `webauthn` enrollment. The ceremony is
+    /// bound to the user, the challenge and a fresh 256-bit binding token
+    /// (returned once; only its SHA-256 is stored). Per-user rate limit and
+    /// passkey limit apply; the organization policy (PKY-08) applies with
+    /// `active_org = None` (the strictest of every organization of the
+    /// user). The relying party (RP id, allowed origins) is the configured
+    /// one, as for every other ceremony.
+    pub async fn start_challenge_registration(
+        &self,
+        ctx: &RequestContext,
+        user: UserId,
+        challenge: ChallengeId,
+    ) -> Result<ChallengeRegistrationStart, AuthError> {
+        let binding_token = OpaqueToken::generate()?;
+        let start = self
+            .start_sessionless_registration(
+                ctx,
+                user,
+                challenge_binding(user, challenge, *binding_token.hash().as_bytes()),
+            )
+            .await?;
+        Ok(ChallengeRegistrationStart {
+            ceremony_id: start.ceremony_id,
+            binding_token: binding_token.into_sensitive(),
+            options: start.options,
+            expires_at: start.expires_at,
+        })
+    }
+
+    /// Consumes (and commits) the registration ceremony bound to `user`,
+    /// `challenge` and `binding_token`, then verifies the authenticator
+    /// response (origin, RP id hash, user verification, attestation and
+    /// AAGUID under a restricting policy). Nothing is stored: pass the
+    /// result to [`Self::store_enrollment_in_tx`] in the transaction that
+    /// also records the challenge progress. Holds no connection when it
+    /// returns. Every failure burns the ceremony; an unknown, expired,
+    /// replayed or differently bound ceremony (another challenge, another
+    /// user, a wrong binding token) is `passkey_ceremony_invalid`.
+    pub async fn verify_challenge_registration(
+        &self,
+        ctx: &RequestContext,
+        user: UserId,
+        challenge: ChallengeId,
+        binding_token: &SensitiveString,
+        request: RegistrationVerifyRequest,
+    ) -> Result<VerifiedEnrollment, AuthError> {
+        let Ok(token) = OpaqueToken::parse(binding_token.expose()) else {
+            metrics::registration_finished("invalid_ceremony");
+            return Err(AuthError::new(codes::webauthn::PASSKEY_CEREMONY_INVALID));
+        };
+        let verified = self
+            .consume_and_verify(
+                ctx,
+                None,
+                user,
+                &challenge_binding(user, challenge, *token.hash().as_bytes()),
+                request,
+            )
+            .await?;
+        Ok(VerifiedEnrollment {
+            registration: verified,
+            source: EnrollmentSource::LoginChallenge(challenge),
+        })
     }
 
     /// Stores a verified enrollment in the caller's transaction (audit
-    /// event `passkey.registered` with `enrollment: link`, "factor added"
-    /// notification). Nothing is visible until the caller commits.
+    /// event `passkey.registered` with `enrollment: link` or
+    /// `enrollment: login_challenge`, "factor added" notification). Nothing
+    /// is visible until the caller commits.
     pub async fn store_enrollment_in_tx(
         &self,
         conn: &mut sqlx::PgConnection,
         ctx: &RequestContext,
         enrollment: VerifiedEnrollment,
     ) -> Result<PasskeySummary, AuthError> {
-        self.store_registration(conn, ctx, None, enrollment.0).await
+        let VerifiedEnrollment {
+            registration,
+            source,
+        } = enrollment;
+        self.store_registration(conn, ctx, None, registration, Some(source))
+            .await
     }
 
     /// Records a rejected registration and returns the generic error.

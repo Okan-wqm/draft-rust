@@ -159,7 +159,8 @@ fn no_store<T: Serialize>(status: StatusCode, body: T) -> Response {
         (status = 409, description = "Passkey limit reached", body = authn_core::error::ErrorEnvelope),
         (status = 422, description = "Invalid name", body = authn_core::error::ErrorEnvelope),
         (status = 429, description = "Too many registrations", body = authn_core::error::ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn registration_options(
     State(service): State<WebauthnService>,
@@ -183,7 +184,8 @@ pub async fn registration_options(
         (status = 400, description = "Ceremony invalid / expired / replayed, or response rejected", body = authn_core::error::ErrorEnvelope),
         (status = 403, description = "Authenticator model not allowed", body = authn_core::error::ErrorEnvelope),
         (status = 409, description = "Already registered or limit reached", body = authn_core::error::ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn registration_verify(
     State(service): State<WebauthnService>,
@@ -203,7 +205,8 @@ pub async fn registration_verify(
     responses(
         (status = 200, description = "Passkeys", body = PasskeyList),
         (status = 401, description = "Not authenticated", body = authn_core::error::ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn list_passkeys(
     State(service): State<WebauthnService>,
@@ -224,7 +227,8 @@ pub async fn list_passkeys(
         (status = 200, description = "Renamed", body = PasskeySummary),
         (status = 404, description = "Unknown passkey", body = authn_core::error::ErrorEnvelope),
         (status = 422, description = "Invalid name", body = authn_core::error::ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn rename_passkey(
     State(service): State<WebauthnService>,
@@ -250,7 +254,8 @@ pub async fn rename_passkey(
         (status = 401, description = "Step-up required", body = authn_core::error::ErrorEnvelope),
         (status = 404, description = "Unknown passkey", body = authn_core::error::ErrorEnvelope),
         (status = 409, description = "Last login method / last required factor", body = authn_core::error::ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn delete_passkey(
     State(service): State<WebauthnService>,

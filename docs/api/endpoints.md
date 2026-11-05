@@ -2,9 +2,9 @@
 
 > **Üretilmiş dosya — elle düzenlemeyin.** Kaynak: [`openapi.json`](openapi.json) (sunucunun birleşik OpenAPI belgesi) ve `generate_reference.py` içindeki Türkçe açıklamalar. Yeniden üretmek için [README](README.md#openapi-belgesini-yenilemek).
 
-Toplam **161** işlem. İstek/yanıt şemalarının tamamı, alan açıklamaları ve her yanıt kodunun İngilizce açıklaması `openapi.json`'dadır.
+Toplam **163** işlem. İstek/yanıt şemalarının tamamı, alan açıklamaları ve her yanıt kodunun İngilizce açıklaması `openapi.json`'dadır.
 
-**Kimlik sütunu:** `—` kimlik doğrulaması yok · `oturum` web oturum çerezi (+ durum değiştiren yöntemlerde CSRF) veya `Authorization: Bearer <access token>` · `oturum / API anahtarı` ek olarak organizasyon API anahtarı (`Authorization: Bearer ak_…` / `X-API-Key`) · `admin` platform admini, passkey oturumu + step-up (+ `admin.ip_allow_list`) · `API anahtarı` yalnızca organizasyon API anahtarı · `challenge token'ı` bekleyen girişin token'ı (web: `__Host-authn_challenge` çerezi, native: `X-Authn-Challenge` başlığı). Ayrıntı: [authentication.md](authentication.md). "step-up" = son `session.step_up_max_age` içinde yeniden doğrulama, yoksa `401 step_up_required`.
+**Kimlik sütunu** (her işlemin OpenAPI `security` bildiriminden üretilir; K-129): `—` kimlik doğrulaması yok · `oturum` web oturum çerezi (+ durum değiştiren yöntemlerde CSRF) veya `Authorization: Bearer <access token>` · `oturum / API anahtarı` ek olarak organizasyon API anahtarı (`Authorization: Bearer ak_…` / `X-API-Key`) · `admin` platform admini, passkey oturumu + step-up (+ `admin.ip_allow_list`) · `API anahtarı` yalnızca organizasyon API anahtarı · `challenge token'ı` bekleyen girişin token'ı (web: `__Host-authn_challenge` çerezi, native: `X-Authn-Challenge` başlığı). Ayrıntı: [authentication.md](authentication.md). "step-up" = son `session.step_up_max_age` içinde yeniden doğrulama, yoksa `401 step_up_required`.
 
 `GET /openapi.json` (yalnızca `server.openapi_enabled = true` iken) belgenin kendisidir ve listede yoktur.
 
@@ -31,6 +31,8 @@ Toplam **161** işlem. İstek/yanıt şemalarının tamamı, alan açıklamalar�
 | Yöntem ve yol | Kimlik | Açıklama | İstek gövdesi | Yanıtlar |
 |---------------|--------|----------|---------------|----------|
 | `POST /v1/login/challenge/passkey/options` | challenge token'ı | Bekleyen girişin ikinci faktör adımı için passkey seremonisi başlatır. | — | `200` `401` `403` |
+| `POST /v1/login/challenge/passkey/register/options` | challenge token'ı | Bekleyen girişin `enroll_mfa` adımında (izinli faktörler `webauthn` içeriyorsa, `verify_mfa` bittikten sonra) passkey kayıt seremonisi başlatır; seremoni bu challenge'a, kullanıcıya ve bağlama token'ına bağlıdır, kuruluşların en katı AAGUID politikası uygulanır (K-112). | — | `200` `401` `403` `409` `429` |
+| `POST /v1/login/challenge/passkey/register/verify` | challenge token'ı | Passkey kaydını bitirir; passkey challenge ilerlemesiyle aynı transaction'da saklanır ve bu girişin ikinci faktörü sayılır (`mfa_factors`: `webauthn`). Tek kullanımlık; başka challenge'ın seremonisi reddedilir (K-112). | `PasskeyEnrollmentVerify` | `200` `400` `401` `403` `409` |
 | `POST /v1/login/challenge/send-code` | challenge token'ı | Bekleyen girişte geçerli faktör adımı için kod gönderir (`email`, `sms`, `email_confirmation`). | `SendCodeChannel` | `202` `401` `403` `429` |
 | `POST /v1/login/challenge/step` | challenge token'ı | Bekleyen girişin zorunlu adımını yapar (SES-22): `change_password`, `accept_terms`, `enroll_totp`/`enroll_email`/`enroll_sms`, `confirm_enrollment`. | `ChallengeStep` | `200` `401` `403` `422` |
 | `POST /v1/login/challenge/verify` | challenge token'ı | Bekleyen girişin ikinci faktörünü doğrular (`totp`, `recovery_code`, `email`, `sms`, `passkey`, `email_confirmation`; isteğe bağlı `trust_device`). | `FactorSubmission` | `200` `400` `401` `403` `429` |

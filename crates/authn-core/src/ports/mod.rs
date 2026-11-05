@@ -68,7 +68,8 @@ pub use password_validator::{
     PasswordCheck, PasswordContext, PasswordValidator, PasswordViolation,
 };
 pub use rate_limit::{
-    RateLimitDecision, RateLimitKey, RateLimitPolicy, RateLimitScope, RateLimiter,
+    RateLimitDecision, RateLimitKey, RateLimitPolicy, RateLimitScope, RateLimitStep, RateLimiter,
+    StepMode,
 };
 pub use risk::{RiskAssessment, RiskEvaluator, RiskInput, RiskLevel, RiskReason};
 pub use session_issuer::{

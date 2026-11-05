@@ -42,7 +42,35 @@ pub fn openapi() -> utoipa::openapi::OpenApi {
     doc.components
         .get_or_insert_with(Default::default)
         .add_security_schemes_from_iter(security_schemes());
+    declare_public_operations(&mut doc);
     doc
+}
+
+/// K-129: every operation declares the credentials it accepts. Protected
+/// operations name their schemes in their own `#[utoipa::path(security(…))]`
+/// (alternatives: one scheme per requirement); an operation without one
+/// needs no credential and is given an explicit empty list (`security:
+/// []`). `tests/openapi.rs` probes every operation of the assembled router
+/// and fails when a declaration differs from what is enforced, so a
+/// forgotten annotation cannot make a protected route look public.
+fn declare_public_operations(doc: &mut utoipa::openapi::OpenApi) {
+    for item in doc.paths.paths.values_mut() {
+        for operation in [
+            &mut item.get,
+            &mut item.put,
+            &mut item.post,
+            &mut item.delete,
+            &mut item.options,
+            &mut item.head,
+            &mut item.patch,
+            &mut item.trace,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            operation.security.get_or_insert_with(Vec::new);
+        }
+    }
 }
 
 /// The credentials the API accepts (`docs/api/authentication.md`). Every

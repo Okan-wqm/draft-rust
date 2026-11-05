@@ -3220,6 +3220,37 @@
         ],
         "type": "object"
       },
+      "LoginPasskeyRegistrationOptionsResponse": {
+        "description": "`POST /v1/login/challenge/passkey/register/options` response.",
+        "properties": {
+          "binding_token": {
+            "description": "Native clients: the binding token (web clients get a cookie).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ceremony_id": {
+            "$ref": "#/components/schemas/CeremonyId",
+            "description": "Ceremony id."
+          },
+          "expires_at": {
+            "description": "Ceremony expiry.",
+            "format": "date-time",
+            "type": "string"
+          },
+          "options": {
+            "description": "`CredentialCreationOptions` for `navigator.credentials.create()` /\nthe platform passkey APIs: `{\"publicKey\": {...}}`.",
+            "type": "object"
+          }
+        },
+        "required": [
+          "ceremony_id",
+          "options",
+          "expires_at"
+        ],
+        "type": "object"
+      },
       "LoginResponse": {
         "description": "`200` body of the login endpoints that start a login: signed in, or a\nchallenge with outstanding steps (tell them apart by `status`).\nDocumentation type of the OpenAPI document.",
         "oneOf": [
@@ -4282,6 +4313,39 @@
           "org_id",
           "new_owner",
           "previous_owner"
+        ],
+        "type": "object"
+      },
+      "PasskeyEnrollmentVerify": {
+        "additionalProperties": false,
+        "description": "Body of `POST /v1/login/challenge/passkey/register/verify`.",
+        "properties": {
+          "binding_token": {
+            "description": "Native clients: the binding token of the options response (web\nclients send the `__Host-authn_passkey` cookie).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ceremony_id": {
+            "$ref": "#/components/schemas/CeremonyId",
+            "description": "Ceremony id from the options response."
+          },
+          "credential": {
+            "description": "`PublicKeyCredential` from `navigator.credentials.create()` (JSON,\nbinary fields base64url).",
+            "type": "object"
+          },
+          "name": {
+            "description": "Name shown in the passkey list (1–64 characters). Default\n`Passkey`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "ceremony_id",
+          "credential"
         ],
         "type": "object"
       },
@@ -6766,6 +6830,7 @@
             "description": "No Apple app configured"
           }
         },
+        "security": [],
         "summary": "Apple app-site-association (passkeys + universal links).",
         "tags": [
           "well-known"
@@ -6797,6 +6862,7 @@
             "description": "No Android app configured"
           }
         },
+        "security": [],
         "summary": "Android Digital Asset Links (passkeys + app links).",
         "tags": [
           "well-known"
@@ -6818,6 +6884,7 @@
             "description": "JWKS"
           }
         },
+        "security": [],
         "summary": "The JSON Web Key Set (SES-09): public keys only, cacheable.",
         "tags": [
           "session"
@@ -6849,6 +6916,7 @@
             "description": "No related origins configured"
           }
         },
+        "security": [],
         "summary": "WebAuthn Related Origin Requests document.",
         "tags": [
           "well-known"
@@ -6870,6 +6938,7 @@
             "description": "Alive"
           }
         },
+        "security": [],
         "summary": "Liveness: the process serves HTTP.",
         "tags": [
           "health"
@@ -6901,6 +6970,7 @@
             "description": "Not ready"
           }
         },
+        "security": [],
         "summary": "Readiness: database reachable and schema up to date.",
         "tags": [
           "health"
@@ -6952,6 +7022,7 @@
             "description": "Rate limited"
           }
         },
+        "security": [],
         "summary": "Cancels a scheduled deletion with the e-mailed link (ACC-09).",
         "tags": [
           "account"
@@ -6996,6 +7067,14 @@
             "description": "forbidden / admin_phishing_resistant_mfa_required"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Recent four-eyes approval requests (last 7 days, newest first).",
         "tags": [
           "admin"
@@ -7075,6 +7154,14 @@
             "description": "rate_limited: more than 3 pending or 10 per hour requests of this admin (K-66)"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Requests a second platform admin's approval of a critical operation\n(K-66): an emergency operation or an action on another platform admin,\nwith its exact parameters. Expires after `admin.four_eyes_approval_ttl`.",
         "tags": [
           "admin"
@@ -7157,6 +7244,14 @@
             "description": "admin_reason_required"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Approves another admin's pending request (K-66). The approver passes\nthe full admin guard (passkey session, step-up) and is neither the\nrequester nor the target.",
         "tags": [
           "admin"
@@ -7239,6 +7334,14 @@
             "description": "admin_reason_required"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Denies another admin's pending request (K-66). Final.",
         "tags": [
           "admin"
@@ -7393,6 +7496,14 @@
             "description": "validation_failed"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Lists audit events platform-wide with the justification of admin\nactions (ADM-07).",
         "tags": [
           "admin"
@@ -7454,6 +7565,14 @@
             "description": "admin_reason_required / validation_failed"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Exports matching audit events (bounded; continue with `next_cursor`).\nNeeds a justification; the export is audited.",
         "tags": [
           "admin"
@@ -7515,6 +7634,14 @@
             "description": "validation_failed (anchor)"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Verifies the audit hash chain (AUD-02, ADM-07).",
         "tags": [
           "admin"
@@ -7597,6 +7724,14 @@
             "description": "admin_reason_required / validation_failed (review_at)"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Withholds the justification of an admin action from the subject's data\nexport under a legal restriction until `review_at` (K-39, K-62; KVKK\nart. 28 / GDPR art. 23). The restriction note (`reason`) and the review\ndate (at most 180 days ahead) are mandatory; the restriction is itself\naudited, hidden from the subject while active, and cannot be lifted\nearly through the API.",
         "tags": [
           "admin"
@@ -7689,6 +7824,14 @@
             "description": "admin_reason_required / validation_failed (review_at)"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Extends an active restriction to a later review date (K-62): mandatory\njustification, new date at most 180 days ahead; audited and hidden from\nthe subject like the restriction.",
         "tags": [
           "admin"
@@ -7750,6 +7893,14 @@
             "description": "admin_reason_required / admin_confirmation_required / validation_failed"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Requires a password change at the next login from every account whose\npassword was last changed before `changed_before`. Confirm with\n`\"confirm\": \"force_password_change\"`.",
         "tags": [
           "admin"
@@ -7821,6 +7972,14 @@
             "description": "rate_limited (K-08: per-admin / global budget, cool-down)"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Revokes every session of every user — except the caller's own session\nunless `include_own_session` is `true` (K-10). Confirm with\n`\"confirm\": \"revoke_all_sessions\"`.",
         "tags": [
           "admin"
@@ -7882,6 +8041,14 @@
             "description": "admin_reason_required / admin_confirmation_required"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Emergency signing key rotation: the active key is revoked and a new one\nactivated. Confirm with `\"confirm\": \"rotate_signing_key\"`.",
         "tags": [
           "admin"
@@ -7936,6 +8103,7 @@
             "description": "rate_limited"
           }
         },
+        "security": [],
         "summary": "Registration options for the account of a break-glass enrollment link\n(K-11).",
         "tags": [
           "admin"
@@ -7990,6 +8158,7 @@
             "description": "rate_limited"
           }
         },
+        "security": [],
         "summary": "Stores the passkey and consumes the enrollment link (K-11).",
         "tags": [
           "admin"
@@ -8117,6 +8286,14 @@
             "description": "validation_failed"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Searches accounts (ADM-02): keyset pages, newest first, no secrets.",
         "tags": [
           "admin"
@@ -8179,6 +8356,14 @@
             "description": "not_found"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Details of one account (ADM-02); the access is audited.",
         "tags": [
           "admin"
@@ -8271,6 +8456,14 @@
             "description": "admin_reason_required"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Forces a password reset: the password stops working, sessions are\nrevoked and a reset link is e-mailed (regular users only).",
         "tags": [
           "admin"
@@ -8346,6 +8539,14 @@
             "description": "admin_reason_required / validation_failed (ttl_minutes)"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Starts impersonating the user (ADM-04): read-only by default, 15 minutes\nby default and at most 60. The admin's session cookie is never replaced\n(K-12). Web: the body carries `impersonation_token`, to be sent in the\n`x-impersonation-session` request header; native: tokens whose access\ntokens carry the `act` claim.",
         "tags": [
           "admin"
@@ -8438,6 +8639,14 @@
             "description": "admin_reason_required"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Marks the address verified (regular users only).",
         "tags": [
           "admin"
@@ -8530,6 +8739,14 @@
             "description": "admin_reason_required"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Sets or clears `must_change_password` (regular users only).",
         "tags": [
           "admin"
@@ -8622,6 +8839,14 @@
             "description": "admin_reason_required"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Resets the account's MFA and notifies the user (regular users only).",
         "tags": [
           "admin"
@@ -8714,6 +8939,14 @@
             "description": "admin_reason_required"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Revokes every session and trusted device of the account.",
         "tags": [
           "admin"
@@ -8806,6 +9039,14 @@
             "description": "admin_reason_required"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Suspends the account and revokes its sessions and trusted devices.",
         "tags": [
           "admin"
@@ -8898,6 +9139,14 @@
             "description": "admin_reason_required"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Ends a temporary lock and clears the login soft lock.",
         "tags": [
           "admin"
@@ -8990,6 +9239,14 @@
             "description": "admin_reason_required"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Lifts a suspension (regular users only).",
         "tags": [
           "admin"
@@ -9052,6 +9309,7 @@
             "description": "Server error"
           }
         },
+        "security": [],
         "summary": "Issues a CAPTCHA challenge for an action.",
         "tags": [
           "protect"
@@ -9073,6 +9331,7 @@
             "description": "CSRF token"
           }
         },
+        "security": [],
         "summary": "Returns the CSRF token of the current session, or a pre-session token\nfor login forms (setting the `__Host-authn_csrf` cookie when needed).",
         "tags": [
           "session"
@@ -9144,6 +9403,14 @@
             "description": "Rate limited"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Confirms an e-mail change with the link sent to the new address\n(ACC-07). The account holder must be signed in (any session of theirs):\nthe link alone would let whoever clicks it attach their mailbox to the\nrequester's account (ADR 0002).",
         "tags": [
           "account"
@@ -9205,6 +9472,7 @@
             "description": "Rate limited"
           }
         },
+        "security": [],
         "summary": "Reverts an e-mail change with the link sent to the old address\n(ACC-07): restores it, signs out everywhere and forces a password reset.",
         "tags": [
           "account"
@@ -9256,6 +9524,7 @@
             "description": "Rate limited"
           }
         },
+        "security": [],
         "summary": "Re-sends the verification e-mail (ACC-04). Same answer for every\naddress.",
         "tags": [
           "account"
@@ -9337,6 +9606,7 @@
             "description": "Rate limited"
           }
         },
+        "security": [],
         "summary": "Verifies an address (ACC-04) with the e-mailed link or code. A link\ncompletes a registration only for the client that submitted it (cookie\nor `registration`), or with the password chosen in it (`password`), or\nwith a new password chosen now (`new_password`); a code only together\nwith the registration handle (ADR 0002).",
         "tags": [
           "account"
@@ -9408,6 +9678,14 @@
             "description": "rate_limited"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Accepts an invitation (ORG-05).",
         "tags": [
           "organizations"
@@ -9459,6 +9737,14 @@
             "description": "rate_limited"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Shows what an invitation grants (signed-in user).",
         "tags": [
           "organizations"
@@ -9500,7 +9786,142 @@
             "description": "challenge_step_not_allowed"
           }
         },
+        "security": [],
         "summary": "SES-02: starts a passkey ceremony for the second-factor step.",
+        "tags": [
+          "login"
+        ]
+      }
+    },
+    "/v1/login/challenge/passkey/register/options": {
+      "post": {
+        "operationId": "challenge_passkey_register_options",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginPasskeyRegistrationOptionsResponse"
+                }
+              }
+            },
+            "description": "Ceremony started (web: binding cookie)"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "challenge_invalid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "challenge_step_not_allowed / csrf_failed / passkey_not_allowed (organization AAGUID policy) / passkey_not_available"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "passkey_limit_reached"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "rate_limited"
+          }
+        },
+        "security": [],
+        "summary": "SES-22, MFA-07 (K-112): starts registering a passkey for the\n`enroll_mfa` step of a pending login (`allowed_factors` contains\n`webauthn`; no `verify_mfa` step outstanding).",
+        "tags": [
+          "login"
+        ]
+      }
+    },
+    "/v1/login/challenge/passkey/register/verify": {
+      "post": {
+        "operationId": "challenge_passkey_register_verify",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasskeyEnrollmentVerify"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChallengeStepResponse"
+                }
+              }
+            },
+            "description": "Signed in (`authenticated`), or the next step (`challenge_required`); `data.passkey` is the new passkey"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "passkey_ceremony_invalid / passkey_registration_failed / validation_failed (name)"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "challenge_invalid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "challenge_step_not_allowed / csrf_failed / passkey_not_allowed (organization AAGUID policy)"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "passkey_already_registered / passkey_limit_reached"
+          }
+        },
+        "security": [],
+        "summary": "SES-22, MFA-07 (K-112): finishes the passkey registration of the\n`enroll_mfa` step; the passkey becomes the second factor of this login.",
         "tags": [
           "login"
         ]
@@ -9561,6 +9982,7 @@
             "description": "cooldown / budget"
           }
         },
+        "security": [],
         "summary": "SES-02, RSK-03: sends a code for the current factor step.",
         "tags": [
           "login"
@@ -9622,6 +10044,7 @@
             "description": "password policy / validation"
           }
         },
+        "security": [],
         "summary": "SES-22: performs a required action of a pending login.",
         "tags": [
           "login"
@@ -9693,6 +10116,7 @@
             "description": "too_many_attempts"
           }
         },
+        "security": [],
         "summary": "SES-02: verifies the second factor of a pending login.",
         "tags": [
           "login"
@@ -9744,6 +10168,7 @@
             "description": "rate_limited"
           }
         },
+        "security": [],
         "summary": "SES-19: requests an e-mail login code (same answer for every address).",
         "tags": [
           "login"
@@ -9785,6 +10210,7 @@
             "description": "invalid_code (uniform)"
           }
         },
+        "security": [],
         "summary": "SES-19: signs in with the e-mailed code.",
         "tags": [
           "login"
@@ -9846,6 +10272,7 @@
             "description": "rate_limited"
           }
         },
+        "security": [],
         "summary": "SES-18: requests a magic link (same answer for every address).",
         "tags": [
           "login"
@@ -9897,6 +10324,7 @@
             "description": "magic_link_confirmation_required (other device)"
           }
         },
+        "security": [],
         "summary": "SES-18: signs in with the token of a magic link (POST only).",
         "tags": [
           "login"
@@ -9938,6 +10366,7 @@
             "description": "invalid_or_expired_token"
           }
         },
+        "security": [],
         "summary": "RSK-04: \"this wasn't me\" — ends every session and trusted device and\nforces a password reset.",
         "tags": [
           "login"
@@ -9989,6 +10418,7 @@
             "description": "csrf_failed / account status / organization policy"
           }
         },
+        "security": [],
         "summary": "SES-20, SES-21: finishes a passkey login.",
         "tags": [
           "login"
@@ -10040,6 +10470,7 @@
             "description": "rate_limited"
           }
         },
+        "security": [],
         "summary": "SES-20: starts a username-less passkey login.",
         "tags": [
           "login"
@@ -10101,6 +10532,7 @@
             "description": "rate_limited / login_temporarily_blocked (`Retry-After`)"
           }
         },
+        "security": [],
         "summary": "SES-01: e-mail + password.",
         "tags": [
           "login"
@@ -10135,6 +10567,14 @@
             "description": "csrf_failed"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Logout (SES-12): revokes the session and its refresh tokens; web\nclients get the cookie deleted and `Clear-Site-Data: \"cookies\"`.",
         "tags": [
           "session"
@@ -10169,6 +10609,14 @@
             "description": "csrf_failed / forbidden"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Signs out everywhere (SES-11, SES-12): every session of the user and\nthe trusted devices (MFA-09).",
         "tags": [
           "session"
@@ -10220,6 +10668,14 @@
             "description": "`account_deletion_blocked_last_owner` (organizations in `details`)"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Schedules the deletion of the signed-in user's account (ACC-09).",
         "tags": [
           "account"
@@ -10249,6 +10705,14 @@
             "description": "unauthenticated"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "The signed-in user (SES-16).",
         "tags": [
           "session"
@@ -10270,6 +10734,14 @@
             "description": "Acceptances"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "The signed-in user's recorded acceptances (ACC-11).",
         "tags": [
           "account"
@@ -10312,6 +10784,14 @@
             "description": "`validation_failed`"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Accepts current document versions (ACC-11); IP and user agent are\nrecorded.",
         "tags": [
           "account"
@@ -10343,6 +10823,14 @@
             "description": "Nothing scheduled"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "The scheduled deletion of the signed-in user (ACC-09).",
         "tags": [
           "account"
@@ -10374,6 +10862,14 @@
             "description": "`account_deletion_not_scheduled`"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Cancels the signed-in user's scheduled deletion (ACC-09).",
         "tags": [
           "account"
@@ -10435,6 +10931,14 @@
             "description": "Rate limited"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Requests an e-mail change (ACC-07). Same answer whether or not the new\naddress is available.",
         "tags": [
           "account"
@@ -10486,6 +10990,14 @@
             "description": "`too_many_attempts` / rate limited"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Confirms an e-mail change with the code sent to the new address\n(ACC-07).",
         "tags": [
           "account"
@@ -10527,6 +11039,14 @@
             "description": "Cooldown / hourly limit (`Retry-After`)"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Re-sends the verification e-mail to the signed-in user (ACC-04).",
         "tags": [
           "account"
@@ -10588,6 +11108,14 @@
             "description": "`too_many_attempts` / rate limited"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Verifies the signed-in user's address with the code (ACC-04, ACC-05\nlimited mode).",
         "tags": [
           "account"
@@ -10641,6 +11169,14 @@
             "description": "Rate limited (`Retry-After`)"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Machine-readable export of all personal data (ACC-10, KVKK/GDPR).",
         "tags": [
           "account"
@@ -10672,6 +11208,14 @@
             "description": "Not authenticated"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "The caller's linked identities (SOC-06).",
         "tags": [
           "social-login"
@@ -10733,6 +11277,14 @@
             "description": "Unknown provider"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Starts linking a provider in the browser (SOC-06; step-up required).",
         "tags": [
           "social-login"
@@ -10784,6 +11336,14 @@
             "description": "identity_already_linked / identity_provider_already_linked"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Links a provider with a native ID token (SOC-06; step-up required).",
         "tags": [
           "social-login"
@@ -10840,6 +11400,14 @@
             "description": "identity_last_login_method"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Unlinks an identity (SOC-06; step-up required; never the last way to\nsign in).",
         "tags": [
           "social-login"
@@ -10871,6 +11439,14 @@
             "description": "unauthenticated"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "The caller's MFA state: factors (no secrets, masked contact data),\nrecovery-code counters and trusted-device count (MFA-10).",
         "tags": [
           "mfa"
@@ -10932,6 +11508,14 @@
             "description": "Resend cooldown / budget (Retry-After)"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Starts the e-mail OTP factor on the account address (MFA-05) and sends a\nconfirmation code. Requires step-up.",
         "tags": [
           "mfa"
@@ -10987,6 +11571,14 @@
             "description": "mfa_last_factor_required"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Removes a factor (MFA-07). Blocked for the last usable factor while MFA\nis required by policy. Sends a notification and revokes trusted devices.\nRequires step-up.",
         "tags": [
           "mfa"
@@ -11079,6 +11671,14 @@
             "description": "too_many_attempts (Retry-After)"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Confirms a pending factor with a code and activates it. The first factor\nalso returns freshly generated recovery codes (once). Requires step-up.",
         "tags": [
           "mfa"
@@ -11151,6 +11751,14 @@
             "description": "Cooldown / pumping protection (Retry-After)"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Sends a new confirmation code for a pending e-mail / SMS factor.\nRequires step-up.",
         "tags": [
           "mfa"
@@ -11182,6 +11790,14 @@
             "description": "unauthenticated"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Recovery-code counters (MFA-04).",
         "tags": [
           "mfa"
@@ -11221,6 +11837,14 @@
             "description": "mfa_factor_not_available (no active factor)"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Generates new recovery codes, invalidating all old ones (MFA-04). The\ncodes are shown once. Requires step-up.",
         "tags": [
           "mfa"
@@ -11302,6 +11926,14 @@
             "description": "Cooldown / pumping protection (Retry-After)"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Starts an SMS factor (MFA-06): the E.164 number must be in an allowed\ncountry; a verification code is sent and the number becomes a factor\nonly after confirmation. SMS is a weak factor. Requires step-up.",
         "tags": [
           "mfa"
@@ -11364,6 +11996,14 @@
             "description": "validation_failed (label)"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Starts a TOTP enrollment (MFA-01): returns the secret, the `otpauth://`\nURI and a QR code once; the factor stays pending until confirmed with a\nvalid code. Requires step-up.",
         "tags": [
           "mfa"
@@ -11395,6 +12035,14 @@
             "description": "unauthenticated"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Revokes all of the caller's trusted devices (MFA-09).",
         "tags": [
           "mfa"
@@ -11424,6 +12072,14 @@
             "description": "unauthenticated"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "The caller's trusted devices (MFA-09).",
         "tags": [
           "mfa"
@@ -11469,6 +12125,14 @@
             "description": "not_found"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Revokes one trusted device (MFA-09).",
         "tags": [
           "mfa"
@@ -11500,6 +12164,14 @@
             "description": "Not authenticated"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Lists the caller's passkeys (PKY-04).",
         "tags": [
           "passkeys"
@@ -11581,6 +12253,14 @@
             "description": "Too many registrations"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Starts registering a passkey: returns `CredentialCreationOptions` for\n`navigator.credentials.create()` / the platform passkey APIs.",
         "tags": [
           "passkeys"
@@ -11642,6 +12322,14 @@
             "description": "Already registered or limit reached"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Verifies the authenticator response and stores the passkey.",
         "tags": [
           "passkeys"
@@ -11698,6 +12386,14 @@
             "description": "Last login method / last required factor"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Removes a passkey (PKY-04; step-up required).",
         "tags": [
           "passkeys"
@@ -11759,6 +12455,14 @@
             "description": "Invalid name"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Renames a passkey (PKY-04).",
         "tags": [
           "passkeys"
@@ -11793,6 +12497,14 @@
             "description": "password_not_set / password_removal_not_allowed"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Removes the caller's password (PWD-11): requires step-up and another\nstrong sign-in method (passkey or linked identity).",
         "tags": [
           "password"
@@ -11845,6 +12557,14 @@
             "description": "password_policy_violation"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Adds a password to a passwordless account (PWD-10). Requires step-up.",
         "tags": [
           "password"
@@ -11919,6 +12639,14 @@
             "description": "Rate limited (Retry-After)"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Changes the caller's password (PWD-06): requires the current password or\na recent step-up; other sessions are signed out.",
         "tags": [
           "password"
@@ -11950,6 +12678,14 @@
             "description": "`unauthenticated`"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "The signed-in user's profile (ACC-08).",
         "tags": [
           "account"
@@ -11989,6 +12725,14 @@
             "description": "`invalid_display_name` / `invalid_time_zone` / `validation_failed`"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Updates display name, language and time zone (ACC-08).",
         "tags": [
           "account"
@@ -12072,6 +12816,14 @@
             "description": "Rate limited"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "The caller's own security events of the last 90 days (AUD-04).",
         "tags": [
           "audit"
@@ -12103,6 +12855,14 @@
             "description": "unauthenticated"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "The caller's live sessions (SES-11).",
         "tags": [
           "session"
@@ -12144,6 +12904,14 @@
             "description": "csrf_failed / forbidden"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Signs out every other session of the caller (SES-11); also revokes the\ntrusted devices (MFA-09).",
         "tags": [
           "session"
@@ -12199,6 +12967,14 @@
             "description": "not_found"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Revokes one of the caller's sessions (SES-11). Another user's session\nis `404`.",
         "tags": [
           "session"
@@ -12260,6 +13036,7 @@
             "description": "Too many requests"
           }
         },
+        "security": [],
         "summary": "Issues a single-use nonce for a native ID token (SOC-04).",
         "tags": [
           "social-login"
@@ -12281,6 +13058,7 @@
             "description": "Enabled providers"
           }
         },
+        "security": [],
         "summary": "Lists the enabled providers (SOC-01).",
         "tags": [
           "social-login"
@@ -12382,6 +13160,7 @@
             "description": "oauth_link_required / identity_already_linked"
           }
         },
+        "security": [],
         "summary": "Provider callback (query parameters).",
         "tags": [
           "social-login"
@@ -12435,6 +13214,7 @@
             "description": "oauth_token_invalid"
           }
         },
+        "security": [],
         "summary": "Provider callback (`response_mode=form_post`, Sign in with Apple).",
         "tags": [
           "social-login"
@@ -12510,6 +13290,7 @@
             "description": "oauth_link_required"
           }
         },
+        "security": [],
         "summary": "Native login with a platform-SDK ID token (SOC-04). Answers like every\nnative login: tokens, or a challenge (MFA / required actions, SOC-09).",
         "tags": [
           "social-login"
@@ -12592,6 +13373,7 @@
             "description": "Too many starts"
           }
         },
+        "security": [],
         "summary": "Starts a browser login: redirects to the provider and sets the\nbrowser-binding cookie (SOC-02).",
         "tags": [
           "social-login"
@@ -12623,6 +13405,14 @@
             "description": "unauthenticated"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "The permission catalog (ORG-03).",
         "tags": [
           "organizations"
@@ -12686,6 +13476,14 @@
             "description": "API keys cannot list memberships"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "The caller's organizations (ORG-01, ORG-02).",
         "tags": [
           "organizations"
@@ -12765,6 +13563,14 @@
             "description": "rate_limited"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Creates an organization; the caller becomes `owner` (ORG-01).",
         "tags": [
           "organizations"
@@ -12837,6 +13643,20 @@
             "description": "org_pending_deletion"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          },
+          {
+            "api_key": []
+          },
+          {
+            "api_key_bearer": []
+          }
+        ],
         "summary": "Schedules the organization's deletion (owner + step-up, ORG-12).",
         "tags": [
           "organizations"
@@ -12897,6 +13717,20 @@
             "description": "not_found (unknown or other tenant)"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          },
+          {
+            "api_key": []
+          },
+          {
+            "api_key_bearer": []
+          }
+        ],
         "summary": "Reads an organization (`org:read`).",
         "tags": [
           "organizations"
@@ -12977,6 +13811,20 @@
             "description": "validation_failed"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          },
+          {
+            "api_key": []
+          },
+          {
+            "api_key_bearer": []
+          }
+        ],
         "summary": "Renames the organization / changes its slug (`org:update`).",
         "tags": [
           "organizations"
@@ -13039,6 +13887,20 @@
             "description": "not_found"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          },
+          {
+            "api_key": []
+          },
+          {
+            "api_key_bearer": []
+          }
+        ],
         "summary": "Lists API keys (`api_keys:read`, ORG-08).",
         "tags": [
           "organizations"
@@ -13129,6 +13991,20 @@
             "description": "api_key_scope_invalid / api_key_expiry_invalid"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          },
+          {
+            "api_key": []
+          },
+          {
+            "api_key_bearer": []
+          }
+        ],
         "summary": "Creates an API key (`api_keys:manage` + step-up). The key is shown once.",
         "tags": [
           "organizations"
@@ -13180,6 +14056,20 @@
             "description": "not_found"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          },
+          {
+            "api_key": []
+          },
+          {
+            "api_key_bearer": []
+          }
+        ],
         "summary": "Revokes an API key (`api_keys:manage`).",
         "tags": [
           "organizations"
@@ -13229,6 +14119,20 @@
             "description": "not_found"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          },
+          {
+            "api_key": []
+          },
+          {
+            "api_key_bearer": []
+          }
+        ],
         "summary": "Reads an API key's metadata (`api_keys:read`).",
         "tags": [
           "organizations"
@@ -13320,6 +14224,20 @@
             "description": "api_key_inactive"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          },
+          {
+            "api_key": []
+          },
+          {
+            "api_key_bearer": []
+          }
+        ],
         "summary": "Rotates an API key (`api_keys:manage` + step-up). The new key is shown\nonce; the old key works until the grace period ends.",
         "tags": [
           "organizations"
@@ -13475,6 +14393,20 @@
             "description": "Rate limited"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          },
+          {
+            "api_key": []
+          },
+          {
+            "api_key_bearer": []
+          }
+        ],
         "summary": "An organization's audit log with filters (AUD-04).",
         "tags": [
           "audit"
@@ -13547,6 +14479,20 @@
             "description": "org_deletion_not_scheduled"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          },
+          {
+            "api_key": []
+          },
+          {
+            "api_key_bearer": []
+          }
+        ],
         "summary": "Cancels a scheduled deletion (owner + step-up, ORG-12).",
         "tags": [
           "organizations"
@@ -13589,6 +14535,20 @@
             "description": "not_found"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          },
+          {
+            "api_key": []
+          },
+          {
+            "api_key_bearer": []
+          }
+        ],
         "summary": "Lists domains (`domains:read`).",
         "tags": [
           "organizations"
@@ -13659,6 +14619,20 @@
             "description": "validation_failed"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          },
+          {
+            "api_key": []
+          },
+          {
+            "api_key_bearer": []
+          }
+        ],
         "summary": "Adds a domain (`domains:manage`, ORG-06). The response names the TXT\nrecord to publish.",
         "tags": [
           "organizations"
@@ -13703,6 +14677,20 @@
             "description": "not_found"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          },
+          {
+            "api_key": []
+          },
+          {
+            "api_key_bearer": []
+          }
+        ],
         "summary": "Removes a domain (`domains:manage`).",
         "tags": [
           "organizations"
@@ -13772,6 +14760,20 @@
             "description": "org_domain_not_verified"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          },
+          {
+            "api_key": []
+          },
+          {
+            "api_key_bearer": []
+          }
+        ],
         "summary": "Turns auto-join on / off (`domains:manage`).",
         "tags": [
           "organizations"
@@ -13863,6 +14865,20 @@
             "description": "service_unavailable (DNS)"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          },
+          {
+            "api_key": []
+          },
+          {
+            "api_key_bearer": []
+          }
+        ],
         "summary": "Checks the DNS TXT record (`domains:manage`, ORG-06).",
         "tags": [
           "organizations"
@@ -13925,6 +14941,20 @@
             "description": "not_found"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          },
+          {
+            "api_key": []
+          },
+          {
+            "api_key_bearer": []
+          }
+        ],
         "summary": "Lists invitations (`members:invite`).",
         "tags": [
           "organizations"
@@ -14015,6 +15045,20 @@
             "description": "rate_limited"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          },
+          {
+            "api_key": []
+          },
+          {
+            "api_key_bearer": []
+          }
+        ],
         "summary": "Invites an address (`members:invite`, ORG-05).",
         "tags": [
           "organizations"
@@ -14069,6 +15113,20 @@
             "description": "conflict (not pending)"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          },
+          {
+            "api_key": []
+          },
+          {
+            "api_key_bearer": []
+          }
+        ],
         "summary": "Revokes a pending invitation (`members:invite`).",
         "tags": [
           "organizations"
@@ -14140,6 +15198,20 @@
             "description": "rate_limited"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          },
+          {
+            "api_key": []
+          },
+          {
+            "api_key_bearer": []
+          }
+        ],
         "summary": "Re-sends an invitation with a new token (`members:invite`).",
         "tags": [
           "organizations"
@@ -14185,6 +15257,20 @@
             "description": "org_last_owner"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          },
+          {
+            "api_key": []
+          },
+          {
+            "api_key_bearer": []
+          }
+        ],
         "summary": "The caller leaves the organization (ORG-02; the last owner cannot).",
         "tags": [
           "organizations"
@@ -14257,6 +15343,20 @@
             "description": "not_found"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          },
+          {
+            "api_key": []
+          },
+          {
+            "api_key_bearer": []
+          }
+        ],
         "summary": "Lists members (`members:read`).",
         "tags": [
           "organizations"
@@ -14321,6 +15421,20 @@
             "description": "org_last_owner"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          },
+          {
+            "api_key": []
+          },
+          {
+            "api_key_bearer": []
+          }
+        ],
         "summary": "Removes a member (`members:remove`).",
         "tags": [
           "organizations"
@@ -14370,6 +15484,20 @@
             "description": "not_found"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          },
+          {
+            "api_key": []
+          },
+          {
+            "api_key_bearer": []
+          }
+        ],
         "summary": "Reads a member (`members:read`).",
         "tags": [
           "organizations"
@@ -14459,6 +15587,20 @@
             "description": "org_last_owner"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          },
+          {
+            "api_key": []
+          },
+          {
+            "api_key_bearer": []
+          }
+        ],
         "summary": "Changes a member's role / status (`members:update`; escalation guard,\nlast-owner protection; granting `owner` needs step-up).",
         "tags": [
           "organizations"
@@ -14504,6 +15646,20 @@
             "description": "not_found"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          },
+          {
+            "api_key": []
+          },
+          {
+            "api_key_bearer": []
+          }
+        ],
         "summary": "Cancels pending ownership transfers (owner).",
         "tags": [
           "organizations"
@@ -14594,6 +15750,20 @@
             "description": "rate_limited"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          },
+          {
+            "api_key": []
+          },
+          {
+            "api_key_bearer": []
+          }
+        ],
         "summary": "Starts an ownership transfer (owner + step-up, ORG-11).",
         "tags": [
           "organizations"
@@ -14636,6 +15806,20 @@
             "description": "not_found"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          },
+          {
+            "api_key": []
+          },
+          {
+            "api_key_bearer": []
+          }
+        ],
         "summary": "Reads the security policy (`policies:read`, ORG-07).",
         "tags": [
           "organizations"
@@ -14706,6 +15890,20 @@
             "description": "validation_failed / org_policy_lockout"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          },
+          {
+            "api_key": []
+          },
+          {
+            "api_key_bearer": []
+          }
+        ],
         "summary": "Replaces the security policy (`policies:manage` + step-up, ORG-07).",
         "tags": [
           "organizations"
@@ -14748,6 +15946,20 @@
             "description": "not_found"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          },
+          {
+            "api_key": []
+          },
+          {
+            "api_key_bearer": []
+          }
+        ],
         "summary": "Built-in and custom roles (`roles:read`).",
         "tags": [
           "organizations"
@@ -14828,6 +16040,20 @@
             "description": "validation_failed"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          },
+          {
+            "api_key": []
+          },
+          {
+            "api_key_bearer": []
+          }
+        ],
         "summary": "Creates a custom role (`roles:manage`).",
         "tags": [
           "organizations"
@@ -14882,6 +16108,20 @@
             "description": "org_role_in_use / org_builtin_role_immutable"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          },
+          {
+            "api_key": []
+          },
+          {
+            "api_key_bearer": []
+          }
+        ],
         "summary": "Deletes an unused custom role (`roles:manage`).",
         "tags": [
           "organizations"
@@ -14961,6 +16201,20 @@
             "description": "org_builtin_role_immutable"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          },
+          {
+            "api_key": []
+          },
+          {
+            "api_key_bearer": []
+          }
+        ],
         "summary": "Changes a custom role (`roles:manage`).",
         "tags": [
           "organizations"
@@ -15023,6 +16277,20 @@
             "description": "not_found"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          },
+          {
+            "api_key": []
+          },
+          {
+            "api_key_bearer": []
+          }
+        ],
         "summary": "Lists service accounts (`service_accounts:read`, ORG-09).",
         "tags": [
           "organizations"
@@ -15103,6 +16371,20 @@
             "description": "validation_failed"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          },
+          {
+            "api_key": []
+          },
+          {
+            "api_key_bearer": []
+          }
+        ],
         "summary": "Creates a service account (`service_accounts:manage`).",
         "tags": [
           "organizations"
@@ -15157,6 +16439,20 @@
             "description": "not_found"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          },
+          {
+            "api_key": []
+          },
+          {
+            "api_key_bearer": []
+          }
+        ],
         "summary": "Deletes a service account and its keys (`service_accounts:manage`).",
         "tags": [
           "organizations"
@@ -15206,6 +16502,20 @@
             "description": "not_found"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          },
+          {
+            "api_key": []
+          },
+          {
+            "api_key_bearer": []
+          }
+        ],
         "summary": "Reads a service account (`service_accounts:read`).",
         "tags": [
           "organizations"
@@ -15285,6 +16595,20 @@
             "description": "service_account_name_taken"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          },
+          {
+            "api_key": []
+          },
+          {
+            "api_key_bearer": []
+          }
+        ],
         "summary": "Changes a service account (`service_accounts:manage`).",
         "tags": [
           "organizations"
@@ -15327,6 +16651,20 @@
             "description": "Unknown organization or no access"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          },
+          {
+            "api_key": []
+          },
+          {
+            "api_key_bearer": []
+          }
+        ],
         "summary": "Lists an organization's webhook endpoints (AUD-07).",
         "tags": [
           "webhooks"
@@ -15427,6 +16765,20 @@
             "description": "Rate limited"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          },
+          {
+            "api_key": []
+          },
+          {
+            "api_key_bearer": []
+          }
+        ],
         "summary": "Creates a webhook endpoint; the signing secret is returned once\n(AUD-07).",
         "tags": [
           "webhooks"
@@ -15481,6 +16833,20 @@
             "description": "Unknown endpoint or no access"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          },
+          {
+            "api_key": []
+          },
+          {
+            "api_key_bearer": []
+          }
+        ],
         "summary": "Deletes a webhook endpoint and its delivery history (AUD-07).",
         "tags": [
           "webhooks"
@@ -15530,6 +16896,20 @@
             "description": "Unknown endpoint or no access"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          },
+          {
+            "api_key": []
+          },
+          {
+            "api_key_bearer": []
+          }
+        ],
         "summary": "One webhook endpoint (AUD-07).",
         "tags": [
           "webhooks"
@@ -15619,6 +16999,20 @@
             "description": "Invalid values"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          },
+          {
+            "api_key": []
+          },
+          {
+            "api_key_bearer": []
+          }
+        ],
         "summary": "Changes a webhook endpoint (AUD-07).",
         "tags": [
           "webhooks"
@@ -15690,6 +17084,20 @@
             "description": "Unknown endpoint or no access"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          },
+          {
+            "api_key": []
+          },
+          {
+            "api_key_bearer": []
+          }
+        ],
         "summary": "Delivery history of an endpoint (AUD-07).",
         "tags": [
           "webhooks"
@@ -15770,6 +17178,20 @@
             "description": "Rate limited"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          },
+          {
+            "api_key": []
+          },
+          {
+            "api_key_bearer": []
+          }
+        ],
         "summary": "Schedules a finished delivery again (AUD-07).",
         "tags": [
           "webhooks"
@@ -15840,6 +17262,20 @@
             "description": "Unknown endpoint or no access"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          },
+          {
+            "api_key": []
+          },
+          {
+            "api_key_bearer": []
+          }
+        ],
         "summary": "Rotates the signing secret; the new secret is returned once (AUD-07).",
         "tags": [
           "webhooks"
@@ -15901,6 +17337,14 @@
             "description": "rate_limited"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Accepts an ownership transfer (target user + step-up, ORG-11).",
         "tags": [
           "organizations"
@@ -15962,6 +17406,7 @@
             "description": "Breach check unavailable (fail-closed)"
           }
         },
+        "security": [],
         "summary": "Live password policy check for registration and change forms (PWD-05).\nRate limited per IP; the password is never logged or stored.",
         "tags": [
           "password"
@@ -16013,6 +17458,7 @@
             "description": "Rate limited per IP or per address (Retry-After)"
           }
         },
+        "security": [],
         "summary": "Requests a password reset (PWD-07, PWD-08). The answer is identical —\nstatus, body and timing — whether or not an account exists; if one does,\na link and (for mobile) a 6-digit code are e-mailed.",
         "tags": [
           "password"
@@ -16074,6 +17520,7 @@
             "description": "Rate limited (Retry-After)"
           }
         },
+        "security": [],
         "summary": "Completes a password reset with the link token or with e-mail + code\n(PWD-08, PWD-09). Revokes every session, refresh token and trusted\ndevice; no session is issued — the next login (with MFA if enabled)\nfollows.",
         "tags": [
           "password"
@@ -16135,6 +17582,14 @@
             "description": "rate_limited / too_many_attempts"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Step-up re-authentication (SES-13); rotates the session.",
         "tags": [
           "session"
@@ -16186,6 +17641,14 @@
             "description": "csrf_failed / forbidden"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Starts a passkey step-up ceremony bound to the current session (SES-13).",
         "tags": [
           "session"
@@ -16247,6 +17710,14 @@
             "description": "not_found (no membership)"
           }
         },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
         "summary": "Switches the active organization (SES-17); rotates the session.",
         "tags": [
           "session"
@@ -16338,6 +17809,7 @@
             "description": "Busy or CAPTCHA provider unavailable"
           }
         },
+        "security": [],
         "summary": "Registers an account (ACC-01). The answer is identical whether or not\nthe address is already registered (ACC-02); the verification (or a\n\"someone tried to register\" notice) arrives by e-mail. The answer carries\na fresh registration handle (body and cookie) that binds the e-mailed\nlink and code to this client (ADR 0002).",
         "tags": [
           "account"
@@ -16359,6 +17831,7 @@
             "description": "Current versions"
           }
         },
+        "security": [],
         "summary": "Current terms of service / privacy policy versions (ACC-11).",
         "tags": [
           "account"
@@ -16390,6 +17863,7 @@
             "description": "Server error"
           }
         },
+        "security": [],
         "summary": "Returns the server time.",
         "tags": [
           "meta"
@@ -16500,6 +17974,7 @@
             "description": "rate_limited"
           }
         },
+        "security": [],
         "summary": "Rotates a refresh token (SES-05). A replayed token revokes its whole\nfamily; every failure is `invalid_refresh_token`.",
         "tags": [
           "session"

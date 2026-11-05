@@ -50,7 +50,7 @@ let sessionCsrf = body.csrf_token;
 ```
 
 - Hata akışı: `401 invalid_credentials` (tek tip), `403 captcha_required` (→ `GET /v1/captcha/challenge?action=…`, sonra `captcha` alanıyla tekrar), `429 rate_limited` / `login_temporarily_blocked` (`Retry-After`), `403 login_method_not_allowed` / `org_policy_mfa_required` (`org_id` ile organizasyona giriş).
-- Zorunlu adımlar (`required_actions`): şifre değiştirme, şartları kabul, MFA kaydı, e-posta doğrulama — her biri `POST /v1/login/challenge/step`.
+- Zorunlu adımlar (`required_actions`): şifre değiştirme, şartları kabul, MFA kaydı, e-posta doğrulama — her biri `POST /v1/login/challenge/step`. İstisna: `enroll_mfa` ile `allowed_factors` `webauthn` içeriyorsa passkey kaydı kendi seremonisiyle yapılır (K-112): `POST /v1/login/challenge/passkey/register/options` → `navigator.credentials.create(options)` → `POST /v1/login/challenge/passkey/register/verify` (`ceremony_id`, `credential`, isteğe bağlı `name`); bağlama token'ı `__Host-authn_passkey` çerezindedir.
 - `remember_me: true` kalıcı çerez (varsayılan 14 g boşta / 30 g mutlak); `shared_device: true` her zaman tarayıcı oturumu çerezi + kısa ömür.
 
 ## 3. Oturum açıkken

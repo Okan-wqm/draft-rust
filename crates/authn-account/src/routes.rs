@@ -448,7 +448,8 @@ pub async fn verify_email(
         (status = 401, description = "`unauthenticated`: sign in as the account holder first", body = authn_core::error::ErrorEnvelope),
         (status = 403, description = "Impersonation or API key", body = authn_core::error::ErrorEnvelope),
         (status = 429, description = "Rate limited", body = authn_core::error::ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn confirm_email_change(
     State(svc): State<AccountService>,
@@ -529,7 +530,8 @@ pub async fn current_terms(
         (status = 401, description = "`unauthenticated` / `step_up_required`", body = authn_core::error::ErrorEnvelope),
         (status = 403, description = "Impersonation or API key", body = authn_core::error::ErrorEnvelope),
         (status = 409, description = "`account_deletion_blocked_last_owner` (organizations in `details`)", body = authn_core::error::ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn request_deletion(
     State(svc): State<AccountService>,
@@ -548,7 +550,8 @@ pub async fn request_deletion(
     responses(
         (status = 200, description = "Profile", body = ProfileView),
         (status = 401, description = "`unauthenticated`", body = authn_core::error::ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn get_profile(
     State(svc): State<AccountService>,
@@ -566,7 +569,8 @@ pub async fn get_profile(
     responses(
         (status = 200, description = "Updated profile", body = ProfileView),
         (status = 422, description = "`invalid_display_name` / `invalid_time_zone` / `validation_failed`", body = authn_core::error::ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn update_profile(
     State(svc): State<AccountService>,
@@ -588,7 +592,8 @@ pub async fn update_profile(
         (status = 401, description = "`step_up_required`", body = authn_core::error::ErrorEnvelope),
         (status = 422, description = "`invalid_email`, `email_unchanged`, `email_domain_not_allowed`", body = authn_core::error::ErrorEnvelope),
         (status = 429, description = "Rate limited", body = authn_core::error::ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn request_email_change(
     State(svc): State<AccountService>,
@@ -612,7 +617,8 @@ pub async fn request_email_change(
         (status = 200, description = "Address changed", body = StatusResponse),
         (status = 400, description = "`invalid_code`", body = authn_core::error::ErrorEnvelope),
         (status = 429, description = "`too_many_attempts` / rate limited", body = authn_core::error::ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn confirm_email_change_code(
     State(svc): State<AccountService>,
@@ -634,7 +640,8 @@ pub async fn confirm_email_change_code(
         (status = 202, description = "Sent", body = StatusResponse),
         (status = 409, description = "`email_already_verified`", body = authn_core::error::ErrorEnvelope),
         (status = 429, description = "Cooldown / hourly limit (`Retry-After`)", body = authn_core::error::ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn resend_own_verification(
     State(svc): State<AccountService>,
@@ -657,7 +664,8 @@ pub async fn resend_own_verification(
         (status = 400, description = "`invalid_code`", body = authn_core::error::ErrorEnvelope),
         (status = 409, description = "`email_already_verified`", body = authn_core::error::ErrorEnvelope),
         (status = 429, description = "`too_many_attempts` / rate limited", body = authn_core::error::ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn verify_own_email(
     State(svc): State<AccountService>,
@@ -678,7 +686,8 @@ pub async fn verify_own_email(
     responses(
         (status = 200, description = "Scheduled deletion", body = DeletionView),
         (status = 404, description = "Nothing scheduled", body = authn_core::error::ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn deletion_status(
     State(svc): State<AccountService>,
@@ -699,7 +708,8 @@ pub async fn deletion_status(
     responses(
         (status = 200, description = "Cancelled", body = StatusResponse),
         (status = 409, description = "`account_deletion_not_scheduled`", body = authn_core::error::ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn cancel_deletion(
     State(svc): State<AccountService>,
@@ -734,7 +744,8 @@ pub async fn cancel_deletion(
         (status = 403, description = "`csrf_failed` (web request without the CSRF header or same-origin `Origin`) / `forbidden` (impersonation)", body = authn_core::error::ErrorEnvelope),
         (status = 405, description = "`GET` (the method before K-58/K-79) is not allowed"),
         (status = 429, description = "Rate limited (`Retry-After`)", body = authn_core::error::ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn export_data(
     State(svc): State<AccountService>,
@@ -757,7 +768,8 @@ pub async fn export_data(
     get,
     path = "/v1/me/consents",
     tag = "account",
-    responses((status = 200, description = "Acceptances", body = ConsentListResponse))
+    responses((status = 200, description = "Acceptances", body = ConsentListResponse)),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn list_consents(
     State(svc): State<AccountService>,
@@ -779,7 +791,8 @@ pub async fn list_consents(
         (status = 204, description = "Recorded"),
         (status = 409, description = "`terms_version_not_current`", body = authn_core::error::ErrorEnvelope),
         (status = 422, description = "`validation_failed`", body = authn_core::error::ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn record_consent(
     State(svc): State<AccountService>,

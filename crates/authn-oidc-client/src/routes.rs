@@ -390,7 +390,8 @@ pub async fn native_login(
     responses(
         (status = 200, description = "Identities", body = IdentityList),
         (status = 401, description = "Not authenticated", body = authn_core::error::ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn list_identities(
     State(service): State<OidcClientService>,
@@ -411,7 +412,8 @@ pub async fn list_identities(
         (status = 401, description = "Step-up required", body = authn_core::error::ErrorEnvelope),
         (status = 403, description = "identity_link_not_allowed", body = authn_core::error::ErrorEnvelope),
         (status = 404, description = "Unknown provider", body = authn_core::error::ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn start_link(
     State(service): State<OidcClientService>,
@@ -449,7 +451,8 @@ pub async fn start_link(
         (status = 201, description = "Linked", body = IdentitySummary),
         (status = 401, description = "Step-up required / oauth_token_invalid", body = authn_core::error::ErrorEnvelope),
         (status = 409, description = "identity_already_linked / identity_provider_already_linked", body = authn_core::error::ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn link_native(
     State(service): State<OidcClientService>,
@@ -481,7 +484,8 @@ pub async fn link_native(
         (status = 401, description = "Step-up required", body = authn_core::error::ErrorEnvelope),
         (status = 404, description = "Unknown identity", body = authn_core::error::ErrorEnvelope),
         (status = 409, description = "identity_last_login_method", body = authn_core::error::ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn unlink_identity(
     State(service): State<OidcClientService>,

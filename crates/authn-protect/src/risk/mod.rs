@@ -167,20 +167,19 @@ impl DefaultRiskEvaluator {
 
     async fn recent_failures(&self, input: &RiskInput) -> Result<bool, AuthError> {
         let policy = self.failure_policy();
-        if let Some(user) = input.user_id
-            && !self
-                .limiter
-                .peek(&RateLimitKey::user(FAILURE_ACTION, user), policy)
-                .await?
-                .allowed
-        {
-            return Ok(true);
+        let ip_key = RateLimitKey::ip(FAILURE_ACTION, input.ip);
+        let user_key = input.user_id.map(|u| RateLimitKey::user(FAILURE_ACTION, u));
+        let mut keys = vec![(&ip_key, policy)];
+        if let Some(key) = &user_key {
+            keys.push((key, policy));
         }
-        Ok(!self
+        // One round trip for both counters (K-128).
+        Ok(self
             .limiter
-            .peek(&RateLimitKey::ip(FAILURE_ACTION, input.ip), policy)
+            .peek_many(&keys)
             .await?
-            .allowed)
+            .iter()
+            .any(|d| !d.allowed))
     }
 
     async fn impossible_travel(&self, input: &RiskInput) -> bool {
@@ -272,17 +271,18 @@ impl RiskEvaluator for DefaultRiskEvaluator {
         let mut reasons = Vec::new();
         if let Some(user) = input.user_id
             && !passkey
-            && self.store.has_history(user).await?
         {
-            let known_device = match input.device_id.as_deref() {
-                Some(device) => self.store.is_known_device(user, device).await?,
-                None => false,
-            };
-            if !known_device {
-                reasons.push(RiskReason::NewDevice);
-            }
-            if !self.store.is_known_network(user, input.ip).await? {
-                reasons.push(RiskReason::NewNetwork);
+            let seen = self
+                .store
+                .familiarity(user, input.device_id.as_deref(), input.ip)
+                .await?;
+            if seen.history {
+                if !seen.known_device {
+                    reasons.push(RiskReason::NewDevice);
+                }
+                if !seen.known_network {
+                    reasons.push(RiskReason::NewNetwork);
+                }
             }
         }
         if !passkey && self.recent_failures(input).await? {

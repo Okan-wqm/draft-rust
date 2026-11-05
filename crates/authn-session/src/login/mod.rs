@@ -27,7 +27,9 @@ pub mod routes;
 use authn_core::secret::SensitiveString;
 use axum::http::HeaderMap;
 
-pub use self::challenge::{ChallengeOutcome, ChallengeStep, FactorSubmission, SendCodeChannel};
+pub use self::challenge::{
+    ChallengeOutcome, ChallengeStep, FactorSubmission, PasskeyEnrollmentVerify, SendCodeChannel,
+};
 pub use self::not_me::{NOT_ME_TTL, NotMeRequest};
 pub use self::passkey::{PasskeyLogin, PasskeyLoginOptions, PasskeyLoginStart};
 pub use self::password::PasswordLogin;

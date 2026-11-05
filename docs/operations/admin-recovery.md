@@ -61,7 +61,14 @@ Bu şifre **tek kullanımlık bir başlangıç şifresidir** (K-110):
 - Oluşturma olayı (`admin.action`, `action: break_glass_admin_created`, `enrollment: password`) son geçerlilik zamanını `initial_login_expires_unix` olarak taşır; süresi dolmuş şifreyle her deneme normal `login.failed` olayıdır.
 - Süresi dolan ya da kaybolan şifre için hesabı silmeye gerek yok: `admin-enrollment-link` (bölüm 5) şifreyi siler ve tek kullanımlık passkey bağlantısı üretir.
 
-> **Bilinen kısıt (K-112):** giriş challenge'ı içinde passkey kaydı adımı henüz yok; platform admininin zorunlu passkey kaydı (`enroll_mfa`, yalnızca `webauthn`) bu yüzden şifreyle başlayan bir girişte tamamlanamaz. Şifreli oluşturulmuş break-glass hesabını kullanılabilir yapmanın bugünkü tek yolu `admin-enrollment-link`'tir. Yeni kurulumda doğrudan `--passkey-link` kullanın.
+**İlk giriş adım adım** (K-112; web istemcisinde challenge token'ı `__Host-authn_challenge` çerezinde, native'de `X-Authn-Challenge` başlığında):
+
+1. `POST /v1/login/password` (adres + yazdırılan şifre) → `challenge_required`, `required_actions: ["verify_mfa", "enroll_mfa", "change_password"]`, `allowed_factors: ["email"]`. Bu aşamada passkey kaydı **sunulmaz** (`403 challenge_step_not_allowed`).
+2. `POST /v1/login/challenge/send-code` (`{"channel": "email_confirmation"}`), gelen kodla `POST /v1/login/challenge/verify` (`{"method": "email_confirmation", "code": "…"}`) → `required_actions: ["enroll_mfa", "change_password"]`, `allowed_factors: ["webauthn"]`.
+3. `POST /v1/login/challenge/passkey/register/options` → donanım anahtarıyla `navigator.credentials.create()` → `POST /v1/login/challenge/passkey/register/verify`. Seremoni bu challenge'a, hesaba ve bir bağlama token'ına bağlıdır (başka bir girişin seremonisi kullanılamaz, tek kullanımlıktır); RP kimliği/origin ve kuruluşların AAGUID politikası uygulanır. Passkey, challenge'ın ilerlemesiyle aynı transaction'da saklanır ve bu girişin ikinci faktörü olur. Olay: `passkey.registered` (`enrollment: login_challenge`).
+4. `POST /v1/login/challenge/step` (`{"step": "change_password", "new_password": "…"}`) → oturum. Oturum passkey'le açılmış sayılır (`amr`: `hwk`/`swk` + `mfa`), admin API'si açılır; sonraki girişler doğrudan passkey'ledir.
+
+Uçtan uca test: `crates/authn-server/tests/login_passkey_enrollment.rs` (`ses_22_k112_password_break_glass_admin_completes_login_with_passkey_enrollment`). Yine de yeni kurulumda `--passkey-link` önerilir: kasada şifre gibi çalınabilecek bir sır hiç oluşmaz.
 
 **Kullanma:** break-glass hesabıyla passkey'le giriş yapılır, step-up yine passkey'le yapılır ve konsoldaki her işlem normal admin uçlarından yürür. Farklar:
 

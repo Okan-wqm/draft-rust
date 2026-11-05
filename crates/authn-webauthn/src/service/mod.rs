@@ -47,7 +47,8 @@ pub use self::registration::VerifiedEnrollment;
 #[cfg(feature = "passkey")]
 pub use self::types::{
     AuthenticatedPasskey, AuthenticationFinish, AuthenticationStart, AuthenticationTarget,
-    RegistrationIntent, RegistrationOptionsRequest, RegistrationStart, RegistrationVerifyRequest,
+    ChallengeRegistrationStart, RegistrationIntent, RegistrationOptionsRequest, RegistrationStart,
+    RegistrationVerifyRequest,
 };
 pub use self::types::{AuthenticationPurpose, PasskeySummary, PasskeyUsage};
 use crate::hooks::{AccountMethodsSource, PasskeyPolicySource};

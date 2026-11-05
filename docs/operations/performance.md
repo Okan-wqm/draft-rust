@@ -63,7 +63,7 @@ Bu sayılar **mutlak üretim tahmini değildir**. Uygulama ile PostgreSQL aynı 
 | `GET /v1/me` (bearer) | 3,3–3,7 ms | 9–13 ms | 10 ifade |
 | `POST /v1/token/refresh` | 3,1–4,2 ms | 8–17 ms | 10 ifade, tek transaction |
 | `POST /v1/token/introspect` | 1,5–2,3 ms | 4–11 ms | 4 ifade |
-| `POST /v1/login/password` (yerel, Argon2id varsayılan) | 41–61 ms | 70–118 ms | Argon2id ≈ 23–30 ms + 42 ifade |
+| `POST /v1/login/password` (yerel, Argon2id varsayılan) | 39–40 ms | 59 ms | Argon2id ≈ 23–30 ms + 26 ifade (K-128 öncesi 42; bkz. K-128) |
 | `POST /v1/login/passkey` (doğrulama isteği) | 18–31 ms | 45–57 ms | WebAuthn doğrulama, oturum, risk/uyarı, audit |
 | `ratelimit/memory` | 2 µs | 3–9 µs | yalnızca tek örnek |
 | `ratelimit/postgres` | 0,36–0,42 ms | 0,9–4 ms | tek `INSERT … ON CONFLICT … RETURNING` |
@@ -85,7 +85,7 @@ Aralıklar birden fazla koşunun p50/p99'larıdır. Önce/sonra karşılaştırm
 
 **Dürüst yorum:** iki sürüm bu makinede gürültü içinde aynıdır ("sonra" turları daha yüksek yük ortalamasında koştu: 7,9 karşı 5,3–6,8; `GET /v1/time`'ın ifade sayısı bu dalgada değişmedi, yalnızca doğrulayıcı kopyası kalktı). Uygulama ve PostgreSQL aynı 4 vCPU'yu paylaştığından yük altında sınır CPU'dur, localhost gidiş-dönüşü değil; ifade sayısındaki azalmanın etkisi ayrı bir veritabanı sunucusunda (her ifade = bir ağ gidiş-dönüşü) ve veritabanı tarafındaki yükte görülür. Bu dalganın ölçülebilir büyük kazancı temizlik işindeki indeks düzeltmesidir (aşağıda, 23,8 s → 17 ms).
 
-Girişte gecikme Little yasasıyla açıklanır: 64 bekleyen istek / ~78 giriş/sn ≈ 0,8 s. Tavan Argon2id'dir (aşağıda: bu makinede 4 izinle ~75–77 doğrulama/sn); kalan CPU PostgreSQL ve girişin 42 ifadesi arasında paylaşılır.
+Girişte gecikme Little yasasıyla açıklanır: 64 bekleyen istek / ~78 giriş/sn ≈ 0,8 s. Tavan Argon2id'dir (aşağıda: bu makinede 4 izinle ~75–77 doğrulama/sn); kalan CPU PostgreSQL ve girişin ifadeleri (K-128 öncesi 42, sonrası 26) arasında paylaşılır.
 
 ### Hız sınırı arka ucu (64 eşzamanlı, havuz 20)
 
@@ -143,11 +143,79 @@ Hiçbiri bir güvenlik kontrolünü kaldırmaz veya gevşetmez: oturum kontrolü
 
 ### Ölçülüp bilinçli olarak dokunulmayanlar (izleme adayları)
 
-- **Şifre girişi 42 ifade.** Aynı `users` satırı 6 kez okunuyor (giriş hattı, parola modülü, politika, MFA, risk/bildirim), hız sınırı 9 ifade (4 karar, 2 `peek`, 2 başarı sonrası sıfırlama), audit zinciri 5 ifade. Tek çağıranda ~17 ms'lik bu veritabanı işi Argon2id'nin (~25 ms) yanında küçük değil; ayrı veritabanı sunucusunda (0,5 ms RTT) +21 ms. Düzeltme birden çok modülün (session giriş hattı, password, protect, mfa) arayüzünü etkiler ve bilinmeyen hesap yolundaki eşit maliyet garantisine (CRY-05, SES-01) dokunur; ayrı bir iş olarak, zamanlama testleriyle birlikte yapılmalı.
-- **Audit zinciri başı tek satır.** Her audit olayı `audit_chain_head` satırını kilitler ve kilit çağıranın `COMMIT`'ine kadar tutulur (olay çağıranın transaction'ında yazılır). Sistem genelinde audit'li yazmaları sıralar: bu makinede sorun değil, uzak veritabanında (0,5 ms RTT, kilit altında ~5 ifade) tavan kabaca ~400 audit'li olay/sn. Kaldırmak bir port değişikliği ister (authn-audit README "Bilinen sınırlamalar", wave 5A).
+- ~~**Şifre girişi 42 ifade.**~~ K-128'de 26'ya indi (aşağıda "K-128"). Kalan adaylar: MFA durumu hâlâ 4 ifade (faktörler, kurtarma kodu sayısı, passkey sayısı, MFA ayarı — authn-mfa deposu ve webauthn kancası; tek sorguya birleştirmek mfa/webauthn sözleşme değişikliği ister); HTTP katmanının IP başına sınırı ile giriş hattının sınır zinciri ayrı katmanlarda olduğu için iki ifadedir.
+- **Audit zinciri başı tek satır.** Her audit olayı `audit_chain_head` satırını kilitler ve kilit çağıranın `COMMIT`'ine kadar tutulur (olay çağıranın transaction'ında yazılır). Sistem genelinde audit'li yazmaları sıralar. K-128'den sonra kilit altında 2 ifade + `COMMIT` var (önce 5 + `COMMIT`); uzak veritabanında (0,5 ms RTT) tavan kabaca ~330–400'den ~650 audit'li olay/sn'ye çıkar (kaba hesap: kilit süresi ≈ (kilit altındaki ifadeler + `COMMIT`) × RTT = 6 → 3 gidiş-dönüş). Kilidi tamamen kaldırmak bir port değişikliği ister (authn-audit README "Bilinen sınırlamalar", wave 5A); seçenekler K-128 bölümünde.
 - **`GET /v1/me` 10 ifade** (profil, parola bayrağı, passkey sayısı, MFA durumunun 4 ifadesi). MFA için yalnızca etkin faktör türlerini döndüren daha ucuz bir API, account/mfa sahipleriyle sözleşme değişikliği gerektirir; uç sayfa açılışında bir kez çağrılır, sıcak istek yolunda değildir.
 - **Webauthn seremonileri** (`webauthn_ceremonies.session_id`, `user_id`, `challenge_id`) ve birkaç seyrek silinen referansın (`organizations.created_by` vb.) yabancı anahtar indeksleri yok; tablolar kısa ömürlü veya silme nadir. Gerekirse sahip modüller kendi aralıklarında ekler.
 - **Erişim token'ı başına oturum kontrolü** (1 ifade) bilinçli: iptal anında geçerli olur. `session.access_token_session_check = false` bir ifade kazandırır ama iptali token ömrüne (≤ `access_token_ttl`) erteler — varsayılan açık kalmalı.
+
+## K-128: şifre girişinin ifade sayısı (2026-11-05)
+
+Amaç: girişin veritabanı gidiş-dönüşlerini **hiçbir kontrolü gevşetmeden** azaltmak. Her ifade ayrı bir veritabanı sunucusunda bir ağ gidiş-dönüşüdür (0,2–1 ms); K-70 ölçümünde giriş 42 ifadeydi (0,5 ms RTT'de ≈ +21 ms).
+
+### Önce / sonra (ifade sayısı, `query_budget.rs`)
+
+`BEGIN` sayılmaz (sqlx onu `sqlx::query` olayı olarak yaymaz; her transaction'a bir gidiş-dönüş daha ekleyin).
+
+| Yol | Önce | Sonra | Not |
+|-----|------|-------|-----|
+| `POST /v1/login/password` (başarılı, geri dönen kullanıcı) | 42 | **26** | + 2 `BEGIN` |
+| `POST /v1/login/password` yanlış şifre | 18 | **10** | + 1 `BEGIN` |
+| `POST /v1/login/password` bilinmeyen hesap | **17** | **10** | önce yanlış şifreden bir ifade **eksikti** (aşağıda) |
+| Soft-lock'lu tanımlayıcı (`check_attempt`) | 4 | **2** | var olan / olmayan aynı |
+| Bir audit olayı (`record_in_tx`) | 5–6 | **3** | kilit altında 2 |
+| Bir audit olayı (`record`, kendi transaction'ı) | 7–8 | **3** + `COMMIT` | `SET LOCAL` `BEGIN` ile tek mesaj |
+| `GET /v1/me`, refresh, introspection, bearer `GET` | 10 / 10 / 4 / 2 | aynı | dokunulmadı |
+
+Ayrı veritabanı sunucusunda (0,5 ms RTT) başarılı giriş ≈ 8 ms, başarısız giriş ≈ 4 ms daha hızlı olur (16 / 8 gidiş-dönüş × 0,5 ms).
+
+### Ölçüm (release, bu makine — veritabanı aynı makinede)
+
+Taban (`e04870e`) ve sonrası **aynı koşullarda art arda** (taban → sonra → taban → sonra), `AUTHN_BENCH_ITERS=300`, `RUST_LOG=error`. Makinede paralel bir agent derleme/test yapıyordu (yük ortalaması 2–6).
+
+| Ölçüm | Taban 1 | Sonra 1 | Taban 2 | Sonra 2 |
+|-------|---------|---------|---------|---------|
+| Tek çağıran giriş p50 | 45,0 ms | 39,5 ms | 40,2 ms | 38,6 ms |
+| Tek çağıran giriş p99 | 78,6 ms | 560 ms¹ | 62,4 ms | 58,7 ms |
+| Yük testi giriş (64 eşzamanlı, havuz 20) | 87 /sn, p50 0,72 s | 82 /sn, p50 0,76 s | 79 /sn, p50 0,80 s | 83 /sn, p50 0,77 s |
+| Yük testi `GET /v1/time` (değişmedi, kontrol) | 4 624 /sn | 4 465 /sn | 4 185 /sn | 4 409 /sn |
+
+¹ Bu koşu sırasında diğer agent'ın tam test koşusu çalışıyordu (p95 228 ms); gürültü.
+
+**Dürüst yorum:** tek çağıran p50'si her iki çiftte 1,5–5 ms düştü (16 yerel gidiş-dönüş × ~0,1–0,3 ms ile tutarlı), fakat fark bu makinedeki koşudan koşuya oynamanın (±%15) içinde. Yük altında giriş Argon2id ile sınırlı (4 izin, ~80 doğrulama/sn) ve uygulama ile PostgreSQL aynı 4 vCPU'yu paylaşıyor; verim değişmedi (ortalama 83 → 82,5 /sn, gürültü). Kazanç asıl **ayrı veritabanı sunucusunda** görülür: 16 gidiş-dönüş × RTT (0,5 ms'de ≈ 8 ms başarılı, ≈ 4 ms başarısız giriş başına) ve veritabanı tarafında daha az ifade/transaction. Bu konteynerde ağ gecikmesi enjekte edilemediği (`tc netem` root + paylaşımlı `lo` ister) için bu kısım hesapla verilmiştir, ölçülmemiştir.
+
+### Yapılan değişiklikler
+
+| Alan | Önce | Sonra | Neden doğru (TOCTOU / atomiklik) |
+|------|------|-------|----------------------------------|
+| `users` satırı | 6 okuma | 2 (adres araması + `FOR UPDATE` kilidi) | Şifre girişinin okuduğu satır hatta aktarılır (`run_login_pipeline_for`); MFA politikası yalnızca `is_platform_admin`'i satırdan alır (`MfaService::policy_input_for_account`); bildirim alıcısı ve alan adı otomatik katılımı kilit altında okunmuş satırı kullanır (`profile_of_record`, `auto_join_verified_domains_of`). Karar yalnızca satır kilitliyken ve **kararın dayandığı her alan** (durum, kilit, doğrulama, platform yöneticisi) aynıysa uygulanır (`LoginPlan::still_matches`) — önceki yeniden okuma da kilitsizdi, aynı kontrolle korunuyordu. Otomatik katılım satır doğrulanmamış görünüyorsa yine yeniden okur (bu giriş adresi doğrulamış olabilir). |
+| Hız sınırı | 9 ifade | 3 (`check_chain` 1, başarıda `reset_many` 1, risk `peek_many` 1) + HTTP katmanı 1 | Yeni port metotları (`RateLimiter::check_chain`, `peek_many`, `reset_many`; varsayılan uygulama tek tek çağırır). PostgreSQL: zincirin her adımı **aynı koşullu UPSERT**'tür (satır kilidi altında GCRA), tek ifadede veri değiştiren CTE'ler; reddi zinciri bitiren adımdan sonraki adımlar `WHERE` korumasıyla hiçbir şey eklemez/güncellemez. Bir adım, aynı istekteki tek çağrıyla birebir aynı kararı verir (`prt_01_k_128_postgres_chain_decides_like_single_calls`, bellek arka ucuyla karşılaştırma). Aynı anahtar bir zincirde iki kez geçerse (bir satır bir ifadede bir kez değişebilir) tek tek çağrılara düşer. Redis: çok anahtarlı Lua betiği Redis Cluster'da geçersiz olduğundan bağımsız adımlar çoğullanmış bağlantıda **eşzamanlı** gönderilir (tek gidiş-dönüş, her komut kendi anahtarında atomik); zinciri bitirebilen adım beklenir. |
+| Giriş koruması sırası | IP sınırı → bilinen cihaz → soft-lock `peek` → CAPTCHA bütçesi → (CAPTCHA kapısı) → soft-lock bütçesi | bilinen cihaz → **tek zincir** [IP sınırı, soft-lock `peek` (cihaz güvenilir değilse reddi bitirir), CAPTCHA bütçesi, soft-lock bütçesi] → CAPTCHA kapısı | Soft-lock bütçesi zincire yalnızca CAPTCHA kapısı **kesin geçecekse** girer: CAPTCHA bütçesi kabul edildiyse ve politika CAPTCHA'yı zaten istemiyorsa (`!is_required(policy, false)`). Aksi halde (bütçe bitmiş ya da `always`) bütçe kapıdan sonra ayrı ifadeyle ayrılır — yanlış/eksik CAPTCHA yanıtı soft-lock bütçesini hâlâ tüketmez. Eşzamanlı denemeler sayaçları aşamaz (`prt_02_k_128_concurrent_attempts_cannot_outrun_the_counters_on_postgres`, `prt_01_k_128_postgres_chain_is_race_safe`: 60 eşzamanlı zincirden tam 10'u, son birimi iki eşzamanlı istekten yalnızca biri alır). Bilinen cihaz sorgusu artık IP sınırından önce çalışır (IP'si sınırlanmış istek için de bir ifade; var olan/olmayan hesap için aynı). |
+| Başarısızlık sayaçları | 2 ifade | 1 (`check_chain`, durdurmasız iki adım) | Her iki sayaç her zaman sayar. |
+| Risk değerlendirmesi | 5 ifade (geçmiş, cihaz, ağ; iki `peek`) | 2 (`RiskStore::familiarity` + `peek_many`) | Üç `EXISTS` tek ifadede; geçmiş yoksa cihaz/ağ sonucu yok sayılır (önceki koşullu sorgularla aynı karar). |
+| Cihaz/ağ kaydı | 3 ifade + `COMMIT` | 1 + `COMMIT` | Tek CTE: geçmiş okuması ifadenin anlık görüntüsünü (upsert'lerden önceki durum) görür — önceki "önce oku, sonra yaz" sırasıyla aynı; upsert'ler aynı `ON CONFLICT` kuralları. |
+| Audit ekleme | pseudonim (aday varsa) + baş kilidi + yineleme kontrolü + olay + PII + baş = 5–6 | pseudonim (**her zaman**) + [baş kilidi ∪ yineleme kontrolü] + [olay ∪ PII ∪ baş, tek CTE] = 3 | Zincir aynı hesaplanır: `prev_hash` kilitli baştan, HMAC (K-77) uygulamada. `audit_event_pii`'nin yabancı anahtarı ifade sonunda denetlenir (olay satırı aynı ifadede eklenmiştir); baş güncellemesinin `chain_key_switch` tetikleyicisi (1703) aynen çalışır. `keyed_chain.rs`, 48 eşzamanlı yazar testi ve yeni `aud_02_k_128_*` testleri yeşil. |
+
+### Bulunan ve kapatılan sızıntı: bilinmeyen hesap bir ifade eksikti
+
+Yeni yapısal test (`ses_01_k_128_unknown_account_runs_the_statements_of_a_wrong_password`) ilk koşusunda kırmızıydı: başarısız giriş audit olayı var olan hesapta `subject` taşıdığı için audit pseudonim sorgusu çalışıyor, bilinmeyen hesapta (`subject` yok, aday yok) atlanıyordu — bilinmeyen hesap yolu bir gidiş-dönüş (≈ 0,3–1 ms) kısaydı. Bu, CRY-05/SES-01'in yanıt süresi şartını küçük ama sistematik olarak çiğniyordu. Düzeltme audit tarafında genel: pseudonim sorgusu aday olmasa da çalışır (konusuz olaylara bir ifade ekler; her yerde aynı maliyet). Test artık iki yolun ifade **dizisinin** birebir aynı olduğunu (tür ve sıra) ve yanıt gövdelerinin (istek kimliği hariç) aynı olduğunu iddia eder.
+
+### Zamanlama testlerinin istatistik yöntemi
+
+Mevcut testler (`ses_01_unknown_account_takes_as_long_as_a_wrong_password`, `ses_01_captcha_escalated_answers_take_the_same_time`, `ses_19_*`, `prt_03_lock_response_does_not_reveal_account_existence`, `authn-password`'ün `compare_timings` testleri) ABAB/BABA dönüşümlü ölçer, ısınma atar, **medyanları** karşılaştırır ve %35 (protect'te %50) göreli tolerans kullanır; `compare_timings_repeated` 3 tura kadar tekrarlar, toleransı genişletmez. Bu yöntem kaba farkları (Argon2id'nin atlanması: ~25 ms'ye karşı ~0) güvenilir yakalar ve paylaşımlı makinede kararlıdır; ama **tek bir gidiş-dönüşlük** farkı (~0,3 ms / ~45 ms giriş = %1) göremez — yukarıdaki sızıntı bu testlerden geçiyordu. Bu yüzden zamanlama testleri değiştirilmedi (anlamlı ve yeşil), yanlarına gürültüsüz yapısal eşitlik testleri eklendi: `ses_01_k_128_*` (HTTP, tam yığın), `prt_03_k_128_attempt_statements_do_not_reveal_account_existence` (normal ve soft-lock'lu yol, `record_failure`), `aud_02_k_128_append_is_three_statements_with_or_without_a_subject`. Bu ikisi birlikte: kaba fark → zamanlama testi, ince (ifade düzeyinde) fark → yapısal test.
+
+### Test altyapısı düzeltmesi: `count_queries` paralel testlerde ifade kaybediyordu
+
+`authn_testkit::bench::count_queries` küresel bir `tracing` aboneliği olmayan test ikililerinde, testler paralel koşarken ifadeleri sessizce kaçırıyordu (sayım 0). Neden `tracing-core`'da: kayıtlı en fazla bir dağıtıcı varken (`has_just_one`) çağrı noktası ilgisini **yalnızca küresel** dağıtıcıyla hesaplar; sayaç tek kayıtlı dağıtıcıyken başka bir test iş parçacığının ilk kez çalıştırdığı bir çağrı noktası `never` olarak önbelleğe alınır. `count_queries` artık önce `init_tracing()` ile küresel test aboneliğini kurar (en az iki dağıtıcı). `query_budget.rs` bu ikilide şimdiye kadar şans eseri doğru sayıyordu.
+
+### Değerlendirilip reddedilenler / ertelenenler
+
+- **Audit eklemesini tek ifadeye indirmek** (kilit + yazma): anahtarlı zincir (K-77) `HMAC(K_v, prev_hash ‖ kayıt)` ister; `prev_hash` kilitli baştan gelir ve anahtar veritabanına verilmez. Bunun için HMAC'ı SQL'de hesaplamak (anahtar veritabanında) gerekirdi — K-77'nin "veritabanı yazma yetkisi olan zinciri yeniden hesaplayamaz" güvencesini bozar. Reddedildi.
+- **Pseudonim çözümlemesini baş kilidi ifadesine katmak** (2 ifade): ilk kez görülen bir kullanıcı için eşleme (`audit_subjects` INSERT, `users`'a yabancı anahtar → `FOR KEY SHARE`) baş kilidi tutulurken yapılırdı. `users` satırını `FOR UPDATE` ile kilitleyip sonra audit yazan bir transaction (girişin kendisi) ile kilitlenme (deadlock) olur. Reddedildi; çözümleme kilitten önce kalır.
+- **Audit'i transaction'ın son ifadesine ertelemek** (olayları biriktirip `COMMIT`'ten hemen önce eklemek): kritik bölümü daha da kısaltırdı ama `AuditSink` portunun anlamını (çağrı anında eklenmiş, `seq` bilinir) ve 30+ çağıranı etkiler. Girişte audit zaten son yazımdır (ardından yalnızca `COMMIT`, break-glass'ta bir olay daha); `record_in_tx`'i son adım olarak çağırma kuralı README'de duruyor. Ertelendi.
+- **Baş satır kilidini kaldırmak** (ör. sıra numarasıyla iyimser ekleme + çatal tespitinde yeniden deneme, ya da parçalı zincirler): zincir biçimi ve doğrulama değişir; ayrı iş (wave 5A notu).
+- **`find_by_email` ile şifre kimlik bilgisini tek JOIN'de okumak**: authn-password'ün `verify_login_password` arayüzü (sahte hash ile eşit maliyet, yeniden hash) değişirdi; bilinmeyen hesap yolu yine aynı iki ifadeyi çalıştırıyor. Ertelendi (1 ifade).
+- **Redis'te çok anahtarlı tek betik**: Redis Cluster'da farklı yuvalardaki anahtarlar için geçersiz. Eşzamanlı gönderim seçildi.
 
 ## Gecikme bütçeleri
 
@@ -160,7 +228,8 @@ Hedefler sunucu tarafıdır (istemci ağı hariç), "nominal yükte" (doygunluğ
 | `GET /v1/me` | 10 | 10 ms | 40 ms | 3,5 / 9–13 ms |
 | `POST /v1/token/refresh` | 10 | 10 ms | 40 ms | 3,5 / 8–17 ms |
 | `POST /v1/token/introspect` | 4 | 5 ms | 25 ms | 1,8 / 4–11 ms |
-| `POST /v1/login/password` | 42 | 80 ms | 250 ms | 41–61 / 70–118 ms |
+| `POST /v1/login/password` | 26 | 80 ms | 250 ms | 39–40 / 59 ms |
+| `POST /v1/login/password` (başarısız) | 10 | 80 ms | 250 ms | — (bilinmeyen hesap ve yanlış şifre aynı 10 ifade) |
 | `POST /v1/login/passkey` | — | 50 ms | 150 ms | 18–31 / 45–57 ms |
 
 Yük testi için taban (bu makine sınıfında, 4 vCPU, veritabanı aynı makinede, PostgreSQL hız sınırı): `GET /v1/time` ≥ 3 000 istek/sn, `GET /v1/me` ≥ 1 200, introspection ≥ 2 000, refresh ≥ 900, şifre girişi ≥ 60/sn. Bunlar CI'da zorlanmaz (duvar saati eşikleri paylaşımlı makinelerde dalgalanır); sürüm öncesi elle koşulur.

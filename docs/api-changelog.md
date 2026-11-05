@@ -2,6 +2,21 @@
 
 İstemcileri, SDK'ları (K-85) ve operatörleri etkileyen değişiklikler. En yeni en üstte. Her madde neyin değiştiğini, kimin ne yapması gerektiğini ve geriye uyumluluğu söyler.
 
+## Wave 9A (2026-11-05)
+
+### K-112 — Giriş challenge'ı içinde passkey kaydı (yeni uçlar; geriye uyumlu)
+
+- **Ne değişti:** iki yeni uç: `POST /v1/login/challenge/passkey/register/options` ve `POST /v1/login/challenge/passkey/register/verify`. Bekleyen bir girişin `required_actions`'ı `enroll_mfa` içeriyor ve `allowed_factors` `webauthn` içeriyorsa (platform adminleri; `webauthn` isteyen kuruluş politikası) istemci passkey'i bu uçlarla kaydeder. Önceden bu durumda giriş hiç tamamlanamıyordu (passkey'siz platform admini, şifreyle oluşturulmuş break-glass hesabı).
+- **Akış:** `verify_mfa` (ör. e-postayla gelen kod) bitmeden uçlar `403 challenge_step_not_allowed` döner. `options` yanıtı `CredentialCreationOptions`'ı (`options`), `ceremony_id`'yi ve `expires_at`'i verir; bağlama token'ı web'de `__Host-authn_passkey` çerezinde, native'de gövdede (`binding_token`). `navigator.credentials.create()` (ya da platformun passkey API'si) sonucunu `verify`'a `{"ceremony_id", "credential", "binding_token"?, "name"?}` olarak gönderin. Yanıt diğer challenge adımlarıyla aynıdır (`ChallengeStepResponse`): kalan adımlar ya da oturum; `data.passkey` yeni passkey'in özetidir.
+- **Hatalar:** `400 passkey_ceremony_invalid` (bilinmeyen, süresi dolmuş, kullanılmış ya da başka bir challenge'a bağlı seremoni), `400 passkey_registration_failed`, `403 passkey_not_allowed` (kuruluş AAGUID politikası), `409 passkey_already_registered` / `passkey_limit_reached`, `429 rate_limited`. Başarısız doğrulama challenge denemesinden düşer.
+- **İstemciler:** `enroll_mfa` + `allowed_factors: ["webauthn"]` gördüğünüzde bu uçları kullanın. Mevcut adımlar değişmedi.
+
+### K-129 — Her OpenAPI işlemi `security` bildiriyor (yalnızca belge)
+
+- **Ne değişti:** sunucu davranışı aynı; `openapi.json`'daki **her** işlem artık kabul ettiği kimliği bildiriyor (önceden yalnızca `POST /v1/token/introspect`). Kimlik istemeyen işlemler `security: []`; diğerleri alternatif listesi (`session_cookie` | `bearer_jwt`, organizasyon uçlarında ek olarak `api_key` | `api_key_bearer`). Tablo: [`docs/api/README.md`](api/README.md#güvenlik-şemaları).
+- **İstemciler:** OpenAPI'den üretilmiş istemcileri yeniden üretin; elle eklediğiniz kimlik başlıklarını kaldırabilirsiniz. Belgede ilk kez görülen bir ayrıntı: `POST /v1/email/change/confirm` (e-posta değişikliği bağlantısı) hesap sahibinin oturumunu ister (önceki el yazımı referansta da "oturum" yazıyordu).
+- **Kalıcı koruma:** `arc_09_k129_declared_security_matches_the_router` her işlemi gerçek router'da her kimlik türüyle dener; bildirim ile uygulanan koruma ayrışırsa CI kırmızıdır.
+
 ## Wave 8A (2026-11-05)
 
 ### K-120 … K-124 — OpenAPI belgesi düzeltmeleri (yalnızca belge; kablo biçimi değişmedi)

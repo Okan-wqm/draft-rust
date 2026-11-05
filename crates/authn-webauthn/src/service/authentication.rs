@@ -159,7 +159,7 @@ fn failed() -> AuthError {
 }
 
 /// RFC 8176 references of a verified assertion (SES-08, SES-21).
-fn amr_for(backup_eligible: bool, user_verified: bool) -> Vec<AuthMethodRef> {
+pub(super) fn amr_for(backup_eligible: bool, user_verified: bool) -> Vec<AuthMethodRef> {
     let mut amr = vec![
         if backup_eligible {
             AuthMethodRef::Swk

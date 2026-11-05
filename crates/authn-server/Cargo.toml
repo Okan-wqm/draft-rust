@@ -89,6 +89,11 @@ required-features = ["passkey"]
 name = "admin_e2e"
 required-features = ["passkey"]
 
+# Passkey enrollment inside the login challenge (K-112).
+[[test]]
+name = "login_passkey_enrollment"
+required-features = ["passkey"]
+
 # K-70 hot-path latency benchmarks (`cargo bench -p authn-server`). With
 # `test = true` a plain `cargo test` also runs the target, without
 # `--bench`: every case then runs twice as a functional smoke test (CI).

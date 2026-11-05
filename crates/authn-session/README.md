@@ -26,7 +26,7 @@ Oturum çekirdeği (CSRF korumalı web oturumları, rotasyonlu ve yeniden kullan
 | SES-18 | Uygulandı | `login/passwordless.rs`, `POST /v1/login/magic-link[/verify]` |
 | SES-19 | Uygulandı | `login/passwordless.rs`, `POST /v1/login/email-code[/verify]` |
 | SES-20, SES-21 | Uygulandı | `login/passkey.rs`, `POST /v1/login/passkey[/options]`; tüm yöntemlerde `login/pipeline.rs` |
-| SES-22 | Uygulandı | `login/challenge.rs`, `POST /v1/login/challenge/step` |
+| SES-22 | Uygulandı | `login/challenge.rs`, `POST /v1/login/challenge/step`; passkey kaydı `login/challenge/passkey_enrollment.rs` (K-112) |
 | RSK-03, RSK-04 | Uygulandı (session tarafı) | `login/pipeline.rs` (risk tepkisi, yeni cihaz bildirimi), `login/not_me.rs` (`NotMeTokenIssuer`, `POST /v1/login/not-me`) |
 | MFA-09 | Uygulandı (session tarafı) | `login/pipeline.rs` (token kontrolü), `login/challenge.rs` (`trust_device`) |
 | DOC-05 | Sonraki aşama | `docs/integration/` |
@@ -81,10 +81,25 @@ Giriş uç noktaları (SES-01/02/18–22) yalnızca şu yapı taşlarını kulla
 | `POST /v1/login/challenge/verify` | SES-02 (`totp`, `recovery_code`, `email`, `sms`, `passkey`, `email_confirmation`; `trust_device`) |
 | `POST /v1/login/challenge/send-code` | SES-02, RSK-03 |
 | `POST /v1/login/challenge/passkey/options` | SES-02 |
+| `POST /v1/login/challenge/passkey/register/options` | SES-22, MFA-07 (K-112): `enroll_mfa` adımında passkey kaydı başlatma |
+| `POST /v1/login/challenge/passkey/register/verify` | SES-22, MFA-07 (K-112): passkey kaydını bitirme |
 | `POST /v1/login/challenge/step` | SES-22 (`change_password`, `accept_terms`, `enroll_totp`/`enroll_email`/`enroll_sms`, `confirm_enrollment`) |
 | `POST /v1/login/not-me` | RSK-04 (token gövdede; tüm oturumlar + güvenilir cihazlar + bekleyen girişler kapanır, şifre değişikliği zorunlu, sıfırlama e-postası) |
 
 Yeni bağımlılıklar (`SessionServiceDeps`): `protection: LoginProtection`, `risk: Arc<dyn RiskEvaluator>`, `risk_alerts: RiskAlerts`, `otp: OtpHasher`. Kapanışta `drain_background_jobs()` (şifresiz isteklerin arka plan işi). Yeni hata kodları: `magic_link_confirmation_required` (409), `challenge_step_not_allowed` (403).
+
+### Giriş challenge'ı içinde passkey kaydı (K-112, wave 9A)
+
+`enroll_mfa` bekleyen ve `allowed_factors` içinde `webauthn` olan bir challenge (platform adminleri: izinli tek faktör passkey; `webauthn` isteyen kuruluş politikası) passkey'i `POST /v1/login/challenge/passkey/register/options` + `/verify` ile kaydeder. Önceden passkey'i olmayan böyle bir hesabın girişi hiç tamamlanamıyordu (ör. şifreyle oluşturulmuş break-glass hesabı).
+
+- **Ne zaman:** challenge yalnızca birincil faktörden sonra vardır; `verify_mfa` (e-posta kodu, mevcut faktör, risk onayı) bekliyorsa uçlar `403 challenge_step_not_allowed` döner — şifre tek başına passkey kaydettiremez. Platform admini için (ör. `grant-admin` sonrası passkey'i olmayan mevcut hesap) risk düşük olsa bile önce e-posta kodu istenir (`verify_mfa`, `allowed_factors: ["email"]`); giriş zaten posta kutusu kanıtıysa (magic link, e-posta kodu) istenmez. Kuruluş politikasıyla kayıt SES-22'deki TOTP kaydıyla aynı kalır (birincil faktörden sonra).
+- **Bağlama:** seremoni kullanıcıya, bu challenge'a ve yeni bir 256 bit bağlama token'ına bağlıdır (`WebauthnService::start_challenge_registration` / `verify_challenge_registration`); web'de `__Host-authn_passkey` çerezi (`SameSite=Strict`), native'de gövde (`binding_token`). Başka challenge'ın (aynı kullanıcınınki dahil), başka kullanıcının seremonisi ya da yanlış token `passkey_ceremony_invalid`'dır ve seremoniyi tüketmez; seremoni doğrulamadan önce tüketilir (tek kullanım).
+- **Politika:** UV zorunlu passkey (`RegistrationIntent::Passwordless`), yapılandırılan RP kimliği ve origin'ler, kullanıcının tüm kuruluşlarının en katı AAGUID politikası (`PasskeyPolicySource`, `active_org = None`).
+- **Sayım:** passkey, challenge yeniden satır kilidiyle açıldıktan sonra challenge ilerlemesiyle (ya da oturumla) aynı transaction'da saklanır (`store_enrollment_in_tx`). Ancak bundan sonra `mfa_factors`'a `webauthn` (K-78) ve `amr`'ye `hwk`/`swk`, `user`, `mfa` eklenir; `enroll_mfa` kapanır. Yanıtın `data.passkey`'i yeni passkey'in özetidir.
+- **Sınırlar:** `webauthn.registration_per_user` (başlatma başına), `webauthn.max_credentials_per_user`, challenge deneme sınırı (`session.challenge_max_attempts`; başarısız doğrulamalar sayılır).
+- **Audit / bildirim:** `passkey.registered` (`enrollment: login_challenge`, `login_challenge_id`, aktör kullanıcı), `mfa_factor_added` e-postası.
+- **Varlık sızıntısı yok:** uçlar yalnızca geçerli bir challenge token'ıyla çalışır; yoksa tek tip `401 challenge_invalid`.
+- Testler: `authn-server/tests/login_passkey_enrollment.rs` (break-glass uçtan uca, native, bağlama/tekrar oynatma/sunulmama), `authn-webauthn/tests/registration.rs` (`pky_01_k112_…`, `pky_08_k112_…`).
 
 ### Giriş akışları — bağımsız güvenlik incelemesi
 
@@ -129,6 +144,8 @@ Yeni bağımlılıklar (`SessionServiceDeps`): `protection: LoginProtection`, `r
 | `GET /.well-known/jwks.json` | SES-09 | yok (`Cache-Control: public, max-age=<jwks_cache_ttl>`) |
 
 `GET /v1/me` session'ındır; `DELETE /v1/me` authn-account'undur (contracts §7). Tüm yanıtlar (JWKS hariç) `Cache-Control: no-store`.
+
+"Kimlik" sütunu OpenAPI'de her işlemin `security` bildirimidir (K-129): "oturum" = `session_cookie` | `bearer_jwt`, introspect = `api_key` | `api_key_bearer`, "yok" ve giriş uçları = `[]`. `authn-server/tests/openapi.rs` (`arc_09_k129_declared_security_matches_the_router`) bildirimi router'ın gerçek davranışıyla karşılaştırır; yeni bir korumalı uç `#[utoipa::path(security(...))]` olmadan eklenirse test kırmızıdır.
 
 ## Kimlik doğrulama ara katmanı
 

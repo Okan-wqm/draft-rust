@@ -43,6 +43,13 @@ impl AccountService {
         Ok(Some(view(&user, profile, Locale::default())))
     }
 
+    /// [`Self::profile_of`] for an account row the caller already read in
+    /// this request (K-128: one statement instead of two).
+    pub async fn profile_of_record(&self, user: &UserRecord) -> Result<ProfileView, AuthError> {
+        let profile = ProfileRepository::find(self.pool(), user.id).await?;
+        Ok(view(user, profile, Locale::default()))
+    }
+
     /// [`Self::profile_of`] through the caller's connection (inside its
     /// transaction): never waits for a second pooled connection while the
     /// caller holds one (K-58, pool pattern).

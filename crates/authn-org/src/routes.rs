@@ -324,7 +324,8 @@ fn no_content() -> Response {
         (status = 200, description = "Memberships, oldest first", body = MyOrganizationPage),
         (status = 401, description = "unauthenticated", body = ErrorEnvelope),
         (status = 403, description = "API keys cannot list memberships", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn list_my_organizations(
     State(service): State<OrgService>,
@@ -348,7 +349,8 @@ pub async fn list_my_organizations(
         (status = 409, description = "org_slug_taken", body = ErrorEnvelope),
         (status = 422, description = "validation_failed", body = ErrorEnvelope),
         (status = 429, description = "rate_limited", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn create_organization(
     State(service): State<OrgService>,
@@ -368,7 +370,8 @@ pub async fn create_organization(
     responses(
         (status = 200, description = "Catalog", body = PermissionCatalog),
         (status = 401, description = "unauthenticated", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn list_permissions(_principal: Principal) -> Response {
     no_store(
@@ -397,7 +400,8 @@ pub async fn list_permissions(_principal: Principal) -> Response {
         (status = 401, description = "unauthenticated / step_up_required (session lifetime cap)", body = ErrorEnvelope),
         (status = 403, description = "forbidden / org_policy_*", body = ErrorEnvelope),
         (status = 404, description = "not_found (unknown or other tenant)", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []), ("api_key" = []), ("api_key_bearer" = []))
 )]
 pub async fn get_organization(
     State(service): State<OrgService>,
@@ -422,7 +426,8 @@ pub async fn get_organization(
         (status = 404, description = "not_found", body = ErrorEnvelope),
         (status = 409, description = "org_slug_taken / org_pending_deletion", body = ErrorEnvelope),
         (status = 422, description = "validation_failed", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []), ("api_key" = []), ("api_key_bearer" = []))
 )]
 pub async fn update_organization(
     State(service): State<OrgService>,
@@ -449,7 +454,8 @@ pub async fn update_organization(
         (status = 403, description = "org_owner_required", body = ErrorEnvelope),
         (status = 404, description = "not_found", body = ErrorEnvelope),
         (status = 409, description = "org_pending_deletion", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []), ("api_key" = []), ("api_key_bearer" = []))
 )]
 pub async fn delete_organization(
     State(service): State<OrgService>,
@@ -474,7 +480,8 @@ pub async fn delete_organization(
         (status = 403, description = "org_owner_required", body = ErrorEnvelope),
         (status = 404, description = "not_found", body = ErrorEnvelope),
         (status = 409, description = "org_deletion_not_scheduled", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []), ("api_key" = []), ("api_key_bearer" = []))
 )]
 pub async fn cancel_deletion(
     State(service): State<OrgService>,
@@ -496,7 +503,8 @@ pub async fn cancel_deletion(
         (status = 204, description = "Left"),
         (status = 404, description = "not_found", body = ErrorEnvelope),
         (status = 409, description = "org_last_owner", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []), ("api_key" = []), ("api_key_bearer" = []))
 )]
 pub async fn leave_organization(
     State(service): State<OrgService>,
@@ -520,7 +528,8 @@ pub async fn leave_organization(
         (status = 200, description = "Members, oldest first", body = MemberPage),
         (status = 403, description = "forbidden", body = ErrorEnvelope),
         (status = 404, description = "not_found", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []), ("api_key" = []), ("api_key_bearer" = []))
 )]
 pub async fn list_members(
     State(service): State<OrgService>,
@@ -545,7 +554,8 @@ pub async fn list_members(
     responses(
         (status = 200, description = "Member", body = Member),
         (status = 404, description = "not_found", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []), ("api_key" = []), ("api_key_bearer" = []))
 )]
 pub async fn get_member(
     State(service): State<OrgService>,
@@ -574,7 +584,8 @@ pub async fn get_member(
         (status = 403, description = "forbidden / org_role_escalation", body = ErrorEnvelope),
         (status = 404, description = "not_found", body = ErrorEnvelope),
         (status = 409, description = "org_last_owner", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []), ("api_key" = []), ("api_key_bearer" = []))
 )]
 pub async fn update_member(
     State(service): State<OrgService>,
@@ -603,7 +614,8 @@ pub async fn update_member(
         (status = 403, description = "forbidden / org_role_escalation", body = ErrorEnvelope),
         (status = 404, description = "not_found", body = ErrorEnvelope),
         (status = 409, description = "org_last_owner", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []), ("api_key" = []), ("api_key_bearer" = []))
 )]
 pub async fn remove_member(
     State(service): State<OrgService>,
@@ -626,7 +638,8 @@ pub async fn remove_member(
     responses(
         (status = 200, description = "Roles", body = RoleList),
         (status = 404, description = "not_found", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []), ("api_key" = []), ("api_key_bearer" = []))
 )]
 pub async fn list_roles(
     State(service): State<OrgService>,
@@ -651,7 +664,8 @@ pub async fn list_roles(
         (status = 404, description = "not_found", body = ErrorEnvelope),
         (status = 409, description = "org_role_key_taken / org_limit_reached", body = ErrorEnvelope),
         (status = 422, description = "validation_failed", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []), ("api_key" = []), ("api_key_bearer" = []))
 )]
 pub async fn create_role(
     State(service): State<OrgService>,
@@ -679,7 +693,8 @@ pub async fn create_role(
         (status = 403, description = "forbidden / org_role_escalation", body = ErrorEnvelope),
         (status = 404, description = "not_found", body = ErrorEnvelope),
         (status = 409, description = "org_builtin_role_immutable", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []), ("api_key" = []), ("api_key_bearer" = []))
 )]
 pub async fn update_role(
     State(service): State<OrgService>,
@@ -707,7 +722,8 @@ pub async fn update_role(
         (status = 204, description = "Deleted"),
         (status = 404, description = "not_found", body = ErrorEnvelope),
         (status = 409, description = "org_role_in_use / org_builtin_role_immutable", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []), ("api_key" = []), ("api_key_bearer" = []))
 )]
 pub async fn delete_role(
     State(service): State<OrgService>,
@@ -730,7 +746,8 @@ pub async fn delete_role(
     responses(
         (status = 200, description = "Invitations, oldest first", body = InvitationPage),
         (status = 404, description = "not_found", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []), ("api_key" = []), ("api_key_bearer" = []))
 )]
 pub async fn list_invitations(
     State(service): State<OrgService>,
@@ -759,7 +776,8 @@ pub async fn list_invitations(
         (status = 409, description = "org_invitation_pending / org_already_member / org_limit_reached", body = ErrorEnvelope),
         (status = 422, description = "validation_failed", body = ErrorEnvelope),
         (status = 429, description = "rate_limited", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []), ("api_key" = []), ("api_key_bearer" = []))
 )]
 pub async fn create_invitation(
     State(service): State<OrgService>,
@@ -787,7 +805,8 @@ pub async fn create_invitation(
         (status = 204, description = "Revoked"),
         (status = 404, description = "not_found", body = ErrorEnvelope),
         (status = 409, description = "conflict (not pending)", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []), ("api_key" = []), ("api_key_bearer" = []))
 )]
 pub async fn revoke_invitation(
     State(service): State<OrgService>,
@@ -815,7 +834,8 @@ pub async fn revoke_invitation(
         (status = 404, description = "not_found", body = ErrorEnvelope),
         (status = 409, description = "conflict (not pending)", body = ErrorEnvelope),
         (status = 429, description = "rate_limited", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []), ("api_key" = []), ("api_key_bearer" = []))
 )]
 pub async fn resend_invitation(
     State(service): State<OrgService>,
@@ -839,7 +859,8 @@ pub async fn resend_invitation(
         (status = 200, description = "Preview", body = InvitationPreview),
         (status = 400, description = "invalid_or_expired_token", body = ErrorEnvelope),
         (status = 429, description = "rate_limited", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn preview_invitation(
     State(service): State<OrgService>,
@@ -862,7 +883,8 @@ pub async fn preview_invitation(
         (status = 403, description = "org_invitation_email_mismatch / org_email_verification_required", body = ErrorEnvelope),
         (status = 409, description = "org_already_member", body = ErrorEnvelope),
         (status = 429, description = "rate_limited", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn accept_invitation(
     State(service): State<OrgService>,
@@ -887,7 +909,8 @@ pub async fn accept_invitation(
     responses(
         (status = 200, description = "Domains", body = DomainList),
         (status = 404, description = "not_found", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []), ("api_key" = []), ("api_key_bearer" = []))
 )]
 pub async fn list_domains(
     State(service): State<OrgService>,
@@ -912,7 +935,8 @@ pub async fn list_domains(
         (status = 404, description = "not_found", body = ErrorEnvelope),
         (status = 409, description = "org_domain_exists / org_limit_reached", body = ErrorEnvelope),
         (status = 422, description = "validation_failed", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []), ("api_key" = []), ("api_key_bearer" = []))
 )]
 pub async fn add_domain(
     State(service): State<OrgService>,
@@ -939,7 +963,8 @@ pub async fn add_domain(
         (status = 200, description = "Updated", body = OrgDomain),
         (status = 404, description = "not_found", body = ErrorEnvelope),
         (status = 409, description = "org_domain_not_verified", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []), ("api_key" = []), ("api_key_bearer" = []))
 )]
 pub async fn update_domain(
     State(service): State<OrgService>,
@@ -966,7 +991,8 @@ pub async fn update_domain(
     responses(
         (status = 204, description = "Removed"),
         (status = 404, description = "not_found", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []), ("api_key" = []), ("api_key_bearer" = []))
 )]
 pub async fn delete_domain(
     State(service): State<OrgService>,
@@ -994,7 +1020,8 @@ pub async fn delete_domain(
         (status = 422, description = "org_domain_verification_failed", body = ErrorEnvelope),
         (status = 429, description = "rate_limited", body = ErrorEnvelope),
         (status = 503, description = "service_unavailable (DNS)", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []), ("api_key" = []), ("api_key_bearer" = []))
 )]
 pub async fn verify_domain(
     State(service): State<OrgService>,
@@ -1017,7 +1044,8 @@ pub async fn verify_domain(
     responses(
         (status = 200, description = "Policy", body = OrgPolicy),
         (status = 404, description = "not_found", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []), ("api_key" = []), ("api_key_bearer" = []))
 )]
 pub async fn get_policy(
     State(service): State<OrgService>,
@@ -1041,7 +1069,8 @@ pub async fn get_policy(
         (status = 401, description = "step_up_required", body = ErrorEnvelope),
         (status = 404, description = "not_found", body = ErrorEnvelope),
         (status = 422, description = "validation_failed / org_policy_lockout", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []), ("api_key" = []), ("api_key_bearer" = []))
 )]
 pub async fn update_policy(
     State(service): State<OrgService>,
@@ -1065,7 +1094,8 @@ pub async fn update_policy(
     responses(
         (status = 200, description = "Keys (metadata only)", body = ApiKeyPage),
         (status = 404, description = "not_found", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []), ("api_key" = []), ("api_key_bearer" = []))
 )]
 pub async fn list_api_keys(
     State(service): State<OrgService>,
@@ -1092,7 +1122,8 @@ pub async fn list_api_keys(
         (status = 404, description = "not_found", body = ErrorEnvelope),
         (status = 409, description = "org_limit_reached / service_account_disabled", body = ErrorEnvelope),
         (status = 422, description = "api_key_scope_invalid / api_key_expiry_invalid", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []), ("api_key" = []), ("api_key_bearer" = []))
 )]
 pub async fn create_api_key(
     State(service): State<OrgService>,
@@ -1117,7 +1148,8 @@ pub async fn create_api_key(
     responses(
         (status = 200, description = "Metadata", body = ApiKeySummary),
         (status = 404, description = "not_found", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []), ("api_key" = []), ("api_key_bearer" = []))
 )]
 pub async fn get_api_key(
     State(service): State<OrgService>,
@@ -1141,7 +1173,8 @@ pub async fn get_api_key(
     responses(
         (status = 200, description = "Revoked", body = ApiKeySummary),
         (status = 404, description = "not_found", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []), ("api_key" = []), ("api_key_bearer" = []))
 )]
 pub async fn revoke_api_key(
     State(service): State<OrgService>,
@@ -1170,7 +1203,8 @@ pub async fn revoke_api_key(
         (status = 403, description = "org_role_escalation", body = ErrorEnvelope),
         (status = 404, description = "not_found", body = ErrorEnvelope),
         (status = 409, description = "api_key_inactive", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []), ("api_key" = []), ("api_key_bearer" = []))
 )]
 pub async fn rotate_api_key(
     State(service): State<OrgService>,
@@ -1196,7 +1230,8 @@ pub async fn rotate_api_key(
     responses(
         (status = 200, description = "Service accounts", body = ServiceAccountPage),
         (status = 404, description = "not_found", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []), ("api_key" = []), ("api_key_bearer" = []))
 )]
 pub async fn list_service_accounts(
     State(service): State<OrgService>,
@@ -1224,7 +1259,8 @@ pub async fn list_service_accounts(
         (status = 404, description = "not_found", body = ErrorEnvelope),
         (status = 409, description = "service_account_name_taken / org_limit_reached", body = ErrorEnvelope),
         (status = 422, description = "validation_failed", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []), ("api_key" = []), ("api_key_bearer" = []))
 )]
 pub async fn create_service_account(
     State(service): State<OrgService>,
@@ -1251,7 +1287,8 @@ pub async fn create_service_account(
     responses(
         (status = 200, description = "Service account", body = ServiceAccount),
         (status = 404, description = "not_found", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []), ("api_key" = []), ("api_key_bearer" = []))
 )]
 pub async fn get_service_account(
     State(service): State<OrgService>,
@@ -1280,7 +1317,8 @@ pub async fn get_service_account(
         (status = 403, description = "org_role_escalation", body = ErrorEnvelope),
         (status = 404, description = "not_found", body = ErrorEnvelope),
         (status = 409, description = "service_account_name_taken", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []), ("api_key" = []), ("api_key_bearer" = []))
 )]
 pub async fn update_service_account(
     State(service): State<OrgService>,
@@ -1308,7 +1346,8 @@ pub async fn update_service_account(
         (status = 204, description = "Deleted"),
         (status = 403, description = "org_role_escalation", body = ErrorEnvelope),
         (status = 404, description = "not_found", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []), ("api_key" = []), ("api_key_bearer" = []))
 )]
 pub async fn delete_service_account(
     State(service): State<OrgService>,
@@ -1338,7 +1377,8 @@ pub async fn delete_service_account(
         (status = 404, description = "not_found", body = ErrorEnvelope),
         (status = 422, description = "org_transfer_target_invalid", body = ErrorEnvelope),
         (status = 429, description = "rate_limited", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []), ("api_key" = []), ("api_key_bearer" = []))
 )]
 pub async fn request_ownership_transfer(
     State(service): State<OrgService>,
@@ -1363,7 +1403,8 @@ pub async fn request_ownership_transfer(
         (status = 204, description = "Cancelled"),
         (status = 403, description = "org_owner_required", body = ErrorEnvelope),
         (status = 404, description = "not_found", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []), ("api_key" = []), ("api_key_bearer" = []))
 )]
 pub async fn cancel_ownership_transfer(
     State(service): State<OrgService>,
@@ -1388,7 +1429,8 @@ pub async fn cancel_ownership_transfer(
         (status = 400, description = "invalid_or_expired_token", body = ErrorEnvelope),
         (status = 401, description = "step_up_required", body = ErrorEnvelope),
         (status = 429, description = "rate_limited", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn accept_ownership_transfer(
     State(service): State<OrgService>,

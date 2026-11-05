@@ -322,7 +322,15 @@ fn is_transaction_control(statement: &str) -> bool {
 /// any runtime flavour and does not see other tests' statements.
 pub async fn count_queries<F: Future>(fut: F) -> (F::Output, QueryLog) {
     let log = Arc::new(Mutex::new(Vec::new()));
-    let counter = QueryCounter { log: log.clone() };
+    // `tracing-core` decides with the *global* dispatcher alone while at
+    // most one dispatcher is registered (`has_just_one`). In a test binary
+    // without a global subscriber, a callsite first hit by another test
+    // thread while this counter is the only registered dispatcher is
+    // therefore cached as `never`, and its statements vanish from the count
+    // when tests run in parallel. With the global test subscriber installed
+    // there are always at least two, so every interest includes the counter.
+    crate::init_tracing();
+    let counter = tracing::Dispatch::new(QueryCounter { log: log.clone() });
     let output = fut.with_subscriber(counter).await;
     let statements = std::mem::take(&mut *log.lock().unwrap());
     (output, QueryLog { statements })

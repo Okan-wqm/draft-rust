@@ -49,6 +49,56 @@ const FORGOTTEN_SETTING: &str = "authn.audit_forgotten";
 /// Lock wait limit of [`PgAuditSink::record`]: a writer never hangs forever
 /// behind a transaction that holds the chain head.
 const RECORD_LOCK_TIMEOUT: &str = "SET LOCAL lock_timeout = '10s'";
+/// `BEGIN` of [`AuditSink::record`]'s own transaction with its lock
+/// timeout, sent as one message (one round trip, K-128).
+const BEGIN_WITH_LOCK_TIMEOUT: &str = "BEGIN; SET LOCAL lock_timeout = '10s'";
+
+/// The chain head, locked until the transaction ends (serialises every
+/// append: no forks), and the event with id `$1` if it was already
+/// appended (idempotent retry).
+const LOCK_HEAD_SQL: &str = "\
+SELECT h.last_hash, h.key_version, e.seq AS duplicate_seq, e.hash AS duplicate_hash
+FROM audit_chain_head h
+LEFT JOIN audit_events e ON e.id = $1
+WHERE h.id
+FOR UPDATE OF h";
+
+/// Appends one event: the chained row, its off-chain personal data (when
+/// `$21`) and the new head, in one statement. The head update's trigger
+/// records a `chain_key_switch` checkpoint on a key-version change
+/// (migration 1703); the foreign key of `audit_event_pii` is checked at
+/// the end of the statement, after the event row exists. An event id that
+/// a concurrent writer committed while this one waited for the head lock
+/// (invisible to [`LOCK_HEAD_SQL`]'s snapshot: READ COMMITTED re-checks
+/// only the locked head row) inserts nothing and returns no row; nothing
+/// else is written then.
+const APPEND_SQL: &str = "\
+WITH event AS (
+    INSERT INTO audit_events (id, occurred_at, recorded_at, kind, outcome, reason,
+        actor_type, actor_pseudonym, actor_ref, impersonator_pseudonym, subject_pseudonym,
+        org_id, resource_type, resource_id, request_id, metadata, pii_digest, prev_hash, hash,
+        chain_key_version)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
+        $19, $20)
+    ON CONFLICT (id) DO NOTHING
+    RETURNING seq, id
+), pii AS (
+    INSERT INTO audit_event_pii (event_id, pseudonym, ip, user_agent, salt)
+    SELECT event.id, $22::uuid, $23::inet, $24::text, $25::bytea FROM event WHERE $21::bool
+), head AS (
+    UPDATE audit_chain_head SET last_seq = event.seq, last_hash = $19, updated_at = $26,
+        key_version = $20
+    FROM event WHERE audit_chain_head.id
+)
+SELECT seq FROM event";
+
+#[derive(sqlx::FromRow)]
+struct HeadRow {
+    last_hash: Vec<u8>,
+    key_version: Option<i16>,
+    duplicate_seq: Option<i64>,
+    duplicate_hash: Option<Vec<u8>>,
+}
 
 /// Maximum number of distinct UUIDs checked for being user ids per event.
 const MAX_UUID_CANDIDATES: usize = 128;
@@ -454,9 +504,10 @@ async fn resolve_pseudonyms(
     always: &[Uuid],
     now: OffsetDateTime,
 ) -> Result<Vec<(Uuid, Pseudonym)>, AuthError> {
-    if candidates.is_empty() {
-        return Ok(Vec::new());
-    }
+    // Runs also without candidates (K-128, CRY-05): an event about an
+    // unknown account (no subject) then costs the statements of one about
+    // an existing account, so e.g. a failed login for an unknown address
+    // takes the same database round trips as a wrong password.
     let rows: Vec<CandidateRow> = sqlx::query_as(
         "SELECT u.id AS user_id, u.status = 'deleted' AS deleted, \
          u.id::text = ANY(string_to_array(coalesce(current_setting('authn.audit_forgotten', true), ''), ',')) AS forgotten, \
@@ -583,17 +634,24 @@ async fn append_prepared(
     keys: Option<&ChainKeys>,
 ) -> Result<AppendedEvent, AuthError> {
     let Prepared { record, pii } = prepared;
-    let (last_hash, head_version) = lock_head(conn).await?;
-    let prev_hash = chain::hash_from_slice(&last_hash)
+    // K-128: the head lock and the duplicate check are one statement, and
+    // the event, its personal data and the new head are written by a
+    // second one — the head stays locked for two round trips (plus the
+    // caller's COMMIT) instead of five. The chain is computed exactly as
+    // before: the previous hash comes from the locked head.
+    let head: Option<HeadRow> = sqlx::query_as(LOCK_HEAD_SQL)
+        .bind(record.id)
+        .fetch_optional(&mut *conn)
+        .await?;
+    let Some(head) = head else {
+        return Err(AuthError::internal("audit chain head row is missing"));
+    };
+    let head_version = head.key_version;
+    let prev_hash = chain::hash_from_slice(&head.last_hash)
         .ok_or_else(|| AuthError::internal("audit chain head hash is malformed"))?;
 
     // Idempotent retry: an event id is appended at most once.
-    let existing: Option<(i64, Vec<u8>)> =
-        sqlx::query_as("SELECT seq, hash FROM audit_events WHERE id = $1")
-            .bind(record.id)
-            .fetch_optional(&mut *conn)
-            .await?;
-    if let Some((seq, hash)) = existing {
+    if let (Some(seq), Some(hash)) = (head.duplicate_seq, head.duplicate_hash) {
         tracing::warn!(event.id = %record.id, "audit event already recorded; ignoring duplicate");
         return Ok(AppendedEvent {
             seq,
@@ -624,63 +682,50 @@ async fn append_prepared(
             None,
         ),
     };
-    let seq: i64 = sqlx::query_scalar(
-        "INSERT INTO audit_events (id, occurred_at, recorded_at, kind, outcome, reason, \
-         actor_type, actor_pseudonym, actor_ref, impersonator_pseudonym, subject_pseudonym, \
-         org_id, resource_type, resource_id, request_id, metadata, pii_digest, prev_hash, hash, \
-         chain_key_version) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20) \
-         RETURNING seq",
-    )
-    .bind(record.id)
-    .bind(record.occurred_at)
-    .bind(record.recorded_at)
-    .bind(&record.kind)
-    .bind(&record.outcome)
-    .bind(&record.reason)
-    .bind(&record.actor_type)
-    .bind(record.actor_pseudonym)
-    .bind(record.actor_ref)
-    .bind(record.impersonator_pseudonym)
-    .bind(record.subject_pseudonym)
-    .bind(record.org_id)
-    .bind(&record.resource_type)
-    .bind(&record.resource_id)
-    .bind(record.request_id)
-    .bind(sqlx::types::Json(Value::Object(record.metadata.clone())))
-    .bind(record.pii_digest.as_ref().map(<[u8; 32]>::as_slice))
-    .bind(prev_hash.as_slice())
-    .bind(hash.as_slice())
-    .bind(version)
-    .fetch_one(&mut *conn)
-    .await?;
-
-    if let Some(pii) = pii {
-        sqlx::query(
-            "INSERT INTO audit_event_pii (event_id, pseudonym, ip, user_agent, salt) \
-             VALUES ($1, $2, $3, $4, $5)",
-        )
+    let appended: Option<i64> = sqlx::query_scalar(APPEND_SQL)
         .bind(record.id)
-        .bind(pii.pseudonym)
-        .bind(pii.ip)
-        .bind(&pii.user_agent)
-        .bind(pii.salt.as_slice())
-        .execute(&mut *conn)
+        .bind(record.occurred_at)
+        .bind(record.recorded_at)
+        .bind(&record.kind)
+        .bind(&record.outcome)
+        .bind(&record.reason)
+        .bind(&record.actor_type)
+        .bind(record.actor_pseudonym)
+        .bind(record.actor_ref)
+        .bind(record.impersonator_pseudonym)
+        .bind(record.subject_pseudonym)
+        .bind(record.org_id)
+        .bind(&record.resource_type)
+        .bind(&record.resource_id)
+        .bind(record.request_id)
+        .bind(sqlx::types::Json(Value::Object(record.metadata.clone())))
+        .bind(record.pii_digest.as_ref().map(<[u8; 32]>::as_slice))
+        .bind(prev_hash.as_slice())
+        .bind(hash.as_slice())
+        .bind(version)
+        .bind(pii.is_some())
+        .bind(pii.as_ref().and_then(|p| p.pseudonym))
+        .bind(pii.as_ref().and_then(|p| p.ip))
+        .bind(pii.as_ref().and_then(|p| p.user_agent.as_deref()))
+        .bind(pii.as_ref().map(|p| p.salt.as_slice()))
+        .bind(now)
+        .fetch_optional(&mut *conn)
         .await?;
-    }
-
-    // A change of the key version records a `chain_key_switch` checkpoint
-    // (trigger of migration 1703).
-    sqlx::query(
-        "UPDATE audit_chain_head SET last_seq = $1, last_hash = $2, updated_at = $3, \
-         key_version = $4 WHERE id",
-    )
-    .bind(seq)
-    .bind(hash.as_slice())
-    .bind(now)
-    .bind(version)
-    .execute(&mut *conn)
-    .await?;
+    let Some(seq) = appended else {
+        // Idempotent retry that raced the head lock (see `APPEND_SQL`).
+        let (seq, hash): (i64, Vec<u8>) =
+            sqlx::query_as("SELECT seq, hash FROM audit_events WHERE id = $1")
+                .bind(record.id)
+                .fetch_one(&mut *conn)
+                .await?;
+        tracing::warn!(event.id = %record.id, "audit event already recorded; ignoring duplicate");
+        return Ok(AppendedEvent {
+            seq,
+            hash: chain::hash_from_slice(&hash)
+                .ok_or_else(|| AuthError::internal("audit event hash is malformed"))?,
+            duplicate: true,
+        });
+    };
 
     Ok(AppendedEvent {
         seq,
@@ -695,8 +740,7 @@ impl AuditSink for PgAuditSink {
         let kind = event.kind;
         let mut retried = false;
         loop {
-            let mut tx = self.pool.begin().await?;
-            sqlx::query(RECORD_LOCK_TIMEOUT).execute(&mut *tx).await?;
+            let mut tx = self.pool.begin_with(BEGIN_WITH_LOCK_TIMEOUT).await?;
             match self.append(&mut tx, event.clone()).await {
                 Ok(_) => {
                     tx.commit().await?;

@@ -8,9 +8,15 @@
 //!   `components.securitySchemes`;
 //! * every `$ref` resolves;
 //! * every enum schema lists exactly the values serde reads and writes;
+//! * every operation declares the credentials it accepts (`security`), and
+//!   the declaration is exactly what the assembled router enforces (K-129:
+//!   every operation is probed with no credential, a session cookie, a
+//!   native access token and an organization API key in both headers);
 //! * `docs/api/openapi.json` is the freshly generated document. Regenerate
 //!   it with `UPDATE_OPENAPI=1 cargo test -p authn-server --test openapi`
 //!   (see `docs/api/README.md`).
+
+mod common;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -339,5 +345,362 @@ fn doc_04_committed_openapi_json_is_current() {
         committed, rendered,
         "docs/api/openapi.json is not in the canonical format: regenerate it \
          with `UPDATE_OPENAPI=1 cargo test -p authn-server --test openapi`"
+    );
+}
+
+// --- K-129: per-operation security matches the router -------------------------
+
+/// The security schemes in the order the document lists them.
+const SCHEMES: [&str; 4] = ["session_cookie", "bearer_jwt", "api_key", "api_key_bearer"];
+
+/// The schemes an operation declares (one scheme per requirement object;
+/// `[]` = no credential). `None` when the operation declares nothing.
+fn declared_schemes(op: &Value) -> Option<BTreeSet<String>> {
+    let security = op.get("security")?.as_array().unwrap();
+    let mut out = BTreeSet::new();
+    for requirement in security {
+        let requirement = requirement.as_object().unwrap();
+        assert_eq!(
+            requirement.len(),
+            1,
+            "one scheme per requirement (alternatives), not {requirement:?}"
+        );
+        out.extend(requirement.keys().cloned());
+    }
+    Some(out)
+}
+
+/// K-129: every operation declares `security`; `[]` exactly for the
+/// operations that need no credential.
+#[test]
+fn arc_09_k129_every_operation_declares_security() {
+    let doc = document();
+    let mut missing = Vec::new();
+    let mut public = 0;
+    for (method, path, op) in operations(&doc) {
+        match declared_schemes(op) {
+            None => missing.push(format!("{} {path}", method.to_ascii_uppercase())),
+            Some(schemes) if schemes.is_empty() => public += 1,
+            Some(_) => {}
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "operations without `security`: {missing:?}"
+    );
+    assert!(public > 0 && public < operations(&doc).len());
+}
+
+const ZERO: &str = "00000000-0000-0000-0000-000000000000";
+
+fn concrete(path: &str, org: &str) -> String {
+    path.split('/')
+        .map(|seg| match seg {
+            "{provider}" => "google",
+            "{org_id}" => org,
+            s if s.starts_with('{') => ZERO,
+            s => s,
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// A request body that satisfies the operation's documented schema
+/// (`{}` without one): every required property gets a well-formed sample
+/// value. Some handlers parse their body before they authenticate the
+/// caller (introspection, link confirmations taking an optional
+/// principal); an invalid body would answer `400`/`422` first and hide the
+/// authentication requirement from the probe.
+fn probe_body(doc: &Value, op: &Value) -> Value {
+    op["requestBody"]["content"]
+        .as_object()
+        .and_then(|content| content.values().next())
+        .map_or_else(
+            || serde_json::json!({}),
+            |media| sample(doc, &media["schema"], 0),
+        )
+}
+
+fn sample(doc: &Value, schema: &Value, depth: usize) -> Value {
+    use serde_json::json;
+    if depth > 8 {
+        return Value::Null;
+    }
+    if let Some(target) = schema["$ref"].as_str() {
+        let resolved = doc
+            .pointer(target.trim_start_matches('#'))
+            .unwrap_or(&Value::Null);
+        return sample(doc, resolved, depth + 1);
+    }
+    for key in ["oneOf", "anyOf", "allOf"] {
+        if let Some(first) = schema[key].as_array().and_then(|v| v.first()) {
+            if key != "allOf" {
+                return sample(doc, first, depth + 1);
+            }
+            // allOf: merge the objects.
+            let mut merged = serde_json::Map::new();
+            for part in schema[key].as_array().into_iter().flatten() {
+                if let Value::Object(map) = sample(doc, part, depth + 1) {
+                    merged.extend(map);
+                }
+            }
+            return Value::Object(merged);
+        }
+    }
+    if let Some(first) = schema["enum"].as_array().and_then(|v| v.first()) {
+        return first.clone();
+    }
+    let kind = match &schema["type"] {
+        Value::Array(kinds) => kinds
+            .iter()
+            .filter_map(Value::as_str)
+            .find(|k| *k != "null")
+            .unwrap_or("null")
+            .to_owned(),
+        Value::String(kind) => kind.clone(),
+        _ if schema.get("properties").is_some() => "object".to_owned(),
+        _ => "object".to_owned(),
+    };
+    match kind.as_str() {
+        "object" => {
+            let mut out = serde_json::Map::new();
+            let required: Vec<&str> = schema["required"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .collect();
+            for name in required {
+                out.insert(
+                    name.to_owned(),
+                    sample(doc, &schema["properties"][name], depth + 1),
+                );
+            }
+            Value::Object(out)
+        }
+        "array" => json!([]),
+        "string" => match schema["format"].as_str() {
+            Some("uuid") => json!(ZERO),
+            Some("email") => json!("probe@example.com"),
+            Some("date-time") => json!("2026-01-01T00:00:00Z"),
+            Some("uri") => json!("https://probe.example/"),
+            _ => json!("probe"),
+        },
+        "integer" | "number" => json!(1),
+        "boolean" => json!(false),
+        _ => Value::Null,
+    }
+}
+
+/// Whether `response` is the authentication layer's refusal (no accepted
+/// credential), as opposed to any answer of an authenticated handler.
+fn unauthenticated(response: &authn_testkit::http::TestResponse) -> bool {
+    response.status == axum::http::StatusCode::UNAUTHORIZED
+        && serde_json::from_slice::<Value>(&response.body)
+            .ok()
+            .and_then(|b| b["error"]["code"].as_str().map(str::to_owned))
+            .is_some_and(|code| code == "unauthenticated")
+}
+
+/// The credentials the router really accepts on each documented operation:
+/// `[]` when an anonymous caller is not refused as unauthenticated,
+/// otherwise every scheme whose (valid) credential gets past that refusal.
+async fn enforced_schemes(app: &common::App) -> BTreeMap<(String, String), BTreeSet<String>> {
+    use authn_testkit::http::TestRequest;
+    use common::{ORIGIN, PASSWORD};
+    use serde_json::json;
+
+    app.user("prober@example.com").await;
+    let web_login = || async {
+        let mut browser = app.browser();
+        let mut body = browser.login(app, "prober@example.com", PASSWORD).await;
+        if body["status"] == "challenge_required" {
+            // A new device (RSK-03): the e-mailed confirmation.
+            let r = browser
+                .send(
+                    app,
+                    browser.post(
+                        "/v1/login/challenge/send-code",
+                        &json!({"channel": "email_confirmation"}),
+                    ),
+                )
+                .await;
+            assert!(r.status.is_success(), "{}", r.text());
+            let authn_core::ports::NotificationKind::LoginCode { code, .. } =
+                app.last_notification("login_code")
+            else {
+                panic!("login code")
+            };
+            body = browser
+                .send(
+                    app,
+                    browser.post(
+                        "/v1/login/challenge/verify",
+                        &json!({"method": "email_confirmation", "code": code.expose()}),
+                    ),
+                )
+                .await
+                .json();
+        }
+        assert_eq!(body["status"], "authenticated", "{body}");
+        browser.csrf(app).await;
+        browser
+    };
+    let native_login = || async {
+        let mut native = app.native();
+        let r = app
+            .send(native.post(
+                "/v1/login/password",
+                &json!({"email": "prober@example.com", "password": PASSWORD}),
+            ))
+            .await;
+        let mut body: Value = r.json();
+        native.absorb(&body);
+        if body["status"] == "challenge_required" {
+            // A new device (RSK-03): the e-mailed confirmation.
+            let r = app
+                .send(native.post(
+                    "/v1/login/challenge/send-code",
+                    &json!({"channel": "email_confirmation"}),
+                ))
+                .await;
+            assert!(r.status.is_success(), "{}", r.text());
+            let authn_core::ports::NotificationKind::LoginCode { code, .. } =
+                app.last_notification("login_code")
+            else {
+                panic!("login code")
+            };
+            let r = app
+                .send(native.post(
+                    "/v1/login/challenge/verify",
+                    &json!({"method": "email_confirmation", "code": code.expose()}),
+                ))
+                .await;
+            body = r.json();
+            native.absorb(&body);
+        }
+        assert_eq!(body["status"], "authenticated", "{body}");
+        native.access.unwrap()
+    };
+    let mut browser = web_login().await;
+    let mut access = native_login().await;
+    let r = browser
+        .send(
+            app,
+            browser.post("/v1/orgs", &json!({"name": "Probe", "slug": "probe"})),
+        )
+        .await;
+    assert!(r.status.is_success(), "{}", r.text());
+    let org = r.json::<Value>()["id"].as_str().unwrap().to_owned();
+    let r = browser
+        .send(
+            app,
+            browser.post(
+                &format!("/v1/orgs/{org}/api-keys"),
+                &json!({"name": "probe", "scopes": ["org:read"]}),
+            ),
+        )
+        .await;
+    assert!(r.status.is_success(), "{}", r.text());
+    let key = r.json::<Value>()["key"].as_str().unwrap().to_owned();
+
+    let doc: Value = app.send(TestRequest::get("/openapi.json")).await.json();
+    let mut out = BTreeMap::new();
+    for (method, path, op) in operations(&doc) {
+        let body = probe_body(&doc, op);
+        let upper = method.to_ascii_uppercase();
+        let state_changing = matches!(upper.as_str(), "POST" | "PUT" | "PATCH" | "DELETE");
+        let request = |org: &str| {
+            let mut r = TestRequest::new(upper.parse().unwrap(), &concrete(&path, org))
+                .header("origin", ORIGIN);
+            if state_changing {
+                r = r.json(&body);
+            }
+            r
+        };
+        let mut accepted = BTreeSet::new();
+        if unauthenticated(&app.send(request(ZERO)).await) {
+            // Every probe starts with live credentials: an earlier probe
+            // (logout, revocation) may have ended them.
+            if app.send(browser.get("/v1/me")).await.status != axum::http::StatusCode::OK {
+                browser = web_login().await;
+            }
+            // Session cookie (+ CSRF token): a non-member org id, so no
+            // probe changes the probing organization.
+            let mut r = request(ZERO).header("x-csrf-token", browser.csrf.as_deref().unwrap());
+            for (name, value) in &browser.cookies {
+                r = r.cookie(name, value);
+            }
+            if !unauthenticated(&app.send(r).await) {
+                accepted.insert("session_cookie".to_owned());
+            }
+            // The cookie probe may have ended every session of the user.
+            let me = app.send(TestRequest::get("/v1/me").bearer(&access)).await;
+            if me.status != axum::http::StatusCode::OK {
+                access = native_login().await;
+            }
+            if !unauthenticated(&app.send(request(ZERO).bearer(&access)).await) {
+                accepted.insert("bearer_jwt".to_owned());
+            }
+            // API keys: the key's own organization (an org:read key).
+            if !unauthenticated(&app.send(request(&org).header("x-api-key", &key)).await) {
+                accepted.insert("api_key".to_owned());
+            }
+            if !unauthenticated(&app.send(request(&org).bearer(&key)).await) {
+                accepted.insert("api_key_bearer".to_owned());
+            }
+            assert!(
+                !accepted.is_empty(),
+                "{upper} {path}: refuses every credential"
+            );
+        }
+        out.insert((upper, path), accepted);
+    }
+    out
+}
+
+/// K-129: the `security` of every operation is exactly what the router
+/// enforces. Set `PRINT_ENFORCED_SECURITY=1` to print the enforced table.
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn arc_09_k129_declared_security_matches_the_router(pool: sqlx::PgPool) {
+    // No new-device confirmations: the probe signs in again whenever an
+    // operation (logout, revocation) ended its session. No per-IP budget:
+    // the probe sends every operation five times from one address.
+    let app = common::App::with(pool, |c| {
+        c.protect.risk.enabled = false;
+        // Hundreds of probes from one address.
+        c.protect.rate_limit.requests_per_ip =
+            authn_core::ports::RateLimitPolicy::new(100_000, std::time::Duration::from_secs(60));
+    })
+    .await;
+    let enforced = enforced_schemes(&app).await;
+    if std::env::var_os("PRINT_ENFORCED_SECURITY").is_some() {
+        for ((method, path), schemes) in &enforced {
+            println!(
+                "ENFORCED {method} {path} {}",
+                schemes.iter().cloned().collect::<Vec<_>>().join(",")
+            );
+        }
+    }
+    let doc = document();
+    let mut mismatches = Vec::new();
+    for (method, path, op) in operations(&doc) {
+        let key = (method.to_ascii_uppercase(), path.clone());
+        let enforced = enforced.get(&key).cloned().unwrap_or_default();
+        let declared = declared_schemes(op).unwrap_or_default();
+        if declared != enforced {
+            mismatches.push(format!(
+                "{} {path}: declared {declared:?}, enforced {enforced:?}",
+                key.0
+            ));
+        }
+        for scheme in &declared {
+            assert!(SCHEMES.contains(&scheme.as_str()), "{scheme}");
+        }
+    }
+    assert!(
+        mismatches.is_empty(),
+        "declared security differs from the router:\n{}",
+        mismatches.join("\n")
     );
 }

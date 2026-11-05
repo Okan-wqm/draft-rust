@@ -37,6 +37,114 @@ pub trait RateLimiter: Send + Sync {
 
     /// Forgets all state for a key (e.g. failure counter after success).
     async fn reset(&self, key: &RateLimitKey) -> Result<(), AuthError>;
+
+    /// Runs `steps` in order, as [`RateLimiter::check`] / [`RateLimiter::peek`]
+    /// would one after another, and returns one decision per step **that
+    /// ran**: after a step with [`RateLimitStep::stop_if_denied`] is denied,
+    /// the remaining steps do not run (nothing is consumed for them) and
+    /// the result is shorter than `steps`.
+    ///
+    /// Every step keeps the atomicity of `check` (concurrent chains never
+    /// admit more than a policy allows); the chain as a whole is not one
+    /// transaction across keys, exactly like the sequence of single calls
+    /// it replaces. Backends may run the chain in one round trip (K-128);
+    /// the default runs the single calls.
+    async fn check_chain(
+        &self,
+        steps: &[RateLimitStep<'_>],
+    ) -> Result<Vec<RateLimitDecision>, AuthError> {
+        let mut decisions = Vec::with_capacity(steps.len());
+        for step in steps {
+            let decision = match step.mode {
+                StepMode::Check { cost } => self.check(step.key, step.policy, cost).await?,
+                StepMode::Peek => self.peek(step.key, step.policy).await?,
+            };
+            let stop = step.stop_if_denied && !decision.allowed;
+            decisions.push(decision);
+            if stop {
+                break;
+            }
+        }
+        Ok(decisions)
+    }
+
+    /// [`RateLimiter::peek`] of several keys (one round trip where the
+    /// backend supports it). Decisions in the order of `keys`.
+    async fn peek_many(
+        &self,
+        keys: &[(&RateLimitKey, RateLimitPolicy)],
+    ) -> Result<Vec<RateLimitDecision>, AuthError> {
+        let mut decisions = Vec::with_capacity(keys.len());
+        for (key, policy) in keys {
+            decisions.push(self.peek(key, *policy).await?);
+        }
+        Ok(decisions)
+    }
+
+    /// [`RateLimiter::reset`] of several keys (one round trip where the
+    /// backend supports it).
+    async fn reset_many(&self, keys: &[&RateLimitKey]) -> Result<(), AuthError> {
+        for key in keys {
+            self.reset(key).await?;
+        }
+        Ok(())
+    }
+}
+
+/// What one [`RateLimitStep`] does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepMode {
+    /// [`RateLimiter::check`] with this cost.
+    Check {
+        /// Units to consume.
+        cost: u32,
+    },
+    /// [`RateLimiter::peek`] (consumes nothing).
+    Peek,
+}
+
+/// One step of [`RateLimiter::check_chain`].
+#[derive(Debug, Clone, Copy)]
+pub struct RateLimitStep<'a> {
+    /// The key.
+    pub key: &'a RateLimitKey,
+    /// The policy.
+    pub policy: RateLimitPolicy,
+    /// Check (consume) or peek.
+    pub mode: StepMode,
+    /// A denial of this step ends the chain: later steps do not run.
+    pub stop_if_denied: bool,
+}
+
+impl<'a> RateLimitStep<'a> {
+    /// A consuming step (cost 1) that ends the chain when denied.
+    #[must_use]
+    pub fn check(key: &'a RateLimitKey, policy: RateLimitPolicy) -> Self {
+        Self {
+            key,
+            policy,
+            mode: StepMode::Check { cost: 1 },
+            stop_if_denied: true,
+        }
+    }
+
+    /// A non-consuming step that ends the chain when denied.
+    #[must_use]
+    pub fn peek(key: &'a RateLimitKey, policy: RateLimitPolicy) -> Self {
+        Self {
+            key,
+            policy,
+            mode: StepMode::Peek,
+            stop_if_denied: true,
+        }
+    }
+
+    /// Sets whether a denial ends the chain.
+    #[must_use]
+    pub fn stop_if_denied(mut self, stop: bool) -> Self {
+        self.stop_if_denied = stop;
+        self
+    }
 }
 
 text_enum! {

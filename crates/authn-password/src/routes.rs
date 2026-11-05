@@ -337,7 +337,8 @@ pub async fn reset_password(
         (status = 409, description = "password_not_set", body = authn_core::error::ErrorEnvelope),
         (status = 422, description = "password_policy_violation / password_unchanged", body = authn_core::error::ErrorEnvelope),
         (status = 429, description = "Rate limited (Retry-After)", body = authn_core::error::ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn change_password(
     State(service): State<PasswordService>,
@@ -367,7 +368,8 @@ pub async fn change_password(
         (status = 401, description = "unauthenticated / step_up_required", body = authn_core::error::ErrorEnvelope),
         (status = 409, description = "password_already_set", body = authn_core::error::ErrorEnvelope),
         (status = 422, description = "password_policy_violation", body = authn_core::error::ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn add_password(
     State(service): State<PasswordService>,
@@ -391,7 +393,8 @@ pub async fn add_password(
         (status = 204, description = "Password removed"),
         (status = 401, description = "unauthenticated / step_up_required", body = authn_core::error::ErrorEnvelope),
         (status = 409, description = "password_not_set / password_removal_not_allowed", body = authn_core::error::ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn remove_password(
     State(service): State<PasswordService>,

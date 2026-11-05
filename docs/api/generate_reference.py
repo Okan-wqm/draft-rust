@@ -86,6 +86,8 @@ DESCRIPTIONS = {
     "POST /v1/invitations/accept": "Daveti kabul eder (ORG-05); hesabın doğrulanmış adresi davet adresiyle eşleşmeli.",
     "POST /v1/invitations/preview": "Davetin neyi verdiğini gösterir (organizasyon adı, rol, maskeli adres, adres eşleşiyor mu).",
     "POST /v1/login/challenge/passkey/options": "Bekleyen girişin ikinci faktör adımı için passkey seremonisi başlatır.",
+    "POST /v1/login/challenge/passkey/register/options": "Bekleyen girişin `enroll_mfa` adımında (izinli faktörler `webauthn` içeriyorsa, `verify_mfa` bittikten sonra) passkey kayıt seremonisi başlatır; seremoni bu challenge'a, kullanıcıya ve bağlama token'ına bağlıdır, kuruluşların en katı AAGUID politikası uygulanır (K-112).",
+    "POST /v1/login/challenge/passkey/register/verify": "Passkey kaydını bitirir; passkey challenge ilerlemesiyle aynı transaction'da saklanır ve bu girişin ikinci faktörü sayılır (`mfa_factors`: `webauthn`). Tek kullanımlık; başka challenge'ın seremonisi reddedilir (K-112).",
     "POST /v1/login/challenge/send-code": "Bekleyen girişte geçerli faktör adımı için kod gönderir (`email`, `sms`, `email_confirmation`).",
     "POST /v1/login/challenge/step": "Bekleyen girişin zorunlu adımını yapar (SES-22): `change_password`, `accept_terms`, `enroll_totp`/`enroll_email`/`enroll_sms`, `confirm_enrollment`.",
     "POST /v1/login/challenge/verify": "Bekleyen girişin ikinci faktörünü doğrular (`totp`, `recovery_code`, `email`, `sms`, `passkey`, `email_confirmation`; isteğe bağlı `trust_device`).",
@@ -272,29 +274,27 @@ CODE_RE = re.compile(
     r'\s*"((?:[^"\\]|\\.)*)",\s*"((?:[^"\\]|\\.)*)",?\s*\);')
 
 
-def auth_of(method, path):
-    if path.startswith(("/.well-known/", "/health/")):
+def auth_of(path, op):
+    """The "Kimlik" column, from the operation's declared `security` (K-129;
+    `crates/authn-server/tests/openapi.rs` checks it against the router)."""
+    schemes = frozenset(name for req in op.get("security", []) for name in req)
+    session = frozenset({"session_cookie", "bearer_jwt"})
+    api_key = frozenset({"api_key", "api_key_bearer"})
+    if "security" not in op:
+        sys.exit(f"operation without `security`: {path}")
+    if not schemes:
+        if path.startswith("/v1/login/challenge/"):
+            return "challenge token'ı"
+        if path.startswith("/v1/admin/enrollment/"):
+            return "kayıt bağlantısı"
         return "—"
-    if path.startswith("/v1/admin/enrollment/"):
-        return "kayıt bağlantısı"
-    if path.startswith("/v1/admin/"):
-        return "admin"
-    if path == "/v1/token/introspect":
-        return "API anahtarı"
-    if path.startswith("/v1/login/challenge/"):
-        return "challenge token'ı"
-    if path.startswith("/v1/orgs/"):
+    if schemes == session:
+        return "admin" if path.startswith("/v1/admin/") else "oturum"
+    if schemes == session | api_key:
         return "oturum / API anahtarı"
-    public = {
-        "/v1/signup", "/v1/csrf", "/v1/terms", "/v1/password/check", "/v1/password/forgot",
-        "/v1/password/reset", "/v1/email/verify", "/v1/email/verification/resend",
-        "/v1/email/change/revert", "/v1/account/deletion/cancel", "/v1/token/refresh",
-        "/v1/captcha/challenge", "/v1/oauth/providers", "/v1/oauth/nonce", "/v1/time",
-    }
-    if path in public or path.startswith("/v1/login/") or (
-            path.startswith("/v1/oauth/") and not path.startswith("/v1/oauth/nonce")):
-        return "—"
-    return "oturum"
+    if schemes == api_key:
+        return "API anahtarı"
+    sys.exit(f"unexpected security combination for {path}: {sorted(schemes)}")
 
 
 def schema_name(ref_holder):
@@ -338,7 +338,7 @@ def endpoints(doc):
         f"Toplam **{count}** işlem. İstek/yanıt şemalarının tamamı, alan açıklamaları ve "
         "her yanıt kodunun İngilizce açıklaması `openapi.json`'dadır.",
         "",
-        "**Kimlik sütunu:** `—` kimlik doğrulaması yok · `oturum` web oturum çerezi (+ durum değiştiren "
+        "**Kimlik sütunu** (her işlemin OpenAPI `security` bildiriminden üretilir; K-129): `—` kimlik doğrulaması yok · `oturum` web oturum çerezi (+ durum değiştiren "
         "yöntemlerde CSRF) veya `Authorization: Bearer <access token>` · `oturum / API anahtarı` ek olarak "
         "organizasyon API anahtarı (`Authorization: Bearer ak_…` / `X-API-Key`) · `admin` platform admini, "
         "passkey oturumu + step-up (+ `admin.ip_allow_list`) · `API anahtarı` yalnızca organizasyon API anahtarı · "
@@ -361,7 +361,7 @@ def endpoints(doc):
             q = ("<br>Sorgu: " + ", ".join(f"`{p}`" for p in params)) if params else ""
             responses = " ".join(f"`{c}`" for c in op.get("responses", {}))
             lines.append(
-                f"| `{method.upper()} {path}` | {auth_of(method, path)} | {DESCRIPTIONS[key]}{q} "
+                f"| `{method.upper()} {path}` | {auth_of(path, op)} | {DESCRIPTIONS[key]}{q} "
                 f"| {schema_name(op.get('requestBody')) or '—'} | {responses} |")
         lines.append("")
     return "\n".join(lines)

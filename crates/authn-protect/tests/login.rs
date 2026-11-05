@@ -20,7 +20,7 @@ use authn_crypto::kdf::KeyRing;
 use authn_protect::KeyHasher;
 use authn_protect::captcha::CaptchaService;
 use authn_protect::login::{LoginAttempt, LoginProtection};
-use authn_protect::rate_limit::MemoryRateLimiter;
+use authn_protect::rate_limit::{MemoryRateLimiter, PostgresRateLimiter};
 use authn_protect::risk::{DeviceObservation, RiskStore};
 use authn_store::{NewUser, UserRepository};
 use authn_testkit::TestPorts;
@@ -437,6 +437,31 @@ async fn prt_03_lock_response_does_not_reveal_account_existence(pool: PgPool) {
 #[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
 async fn prt_02_concurrent_attempts_cannot_outrun_the_failure_counters(pool: PgPool) {
     let f = fixture(&pool, &config()); // CAPTCHA after 3, soft lock after 5
+    concurrent_attempts_cannot_outrun_the_failure_counters(&f).await;
+}
+
+/// The PostgreSQL limiter (production default), whose `check_chain` runs
+/// all steps of an attempt in one statement (K-128): the per-identifier
+/// budgets stay exact under concurrency — no two concurrent attempts both
+/// take the last unit.
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn prt_02_k_128_concurrent_attempts_cannot_outrun_the_counters_on_postgres(pool: PgPool) {
+    let f = postgres_fixture(&pool);
+    concurrent_attempts_cannot_outrun_the_failure_counters(&f).await;
+}
+
+fn postgres_fixture(pool: &PgPool) -> Fixture {
+    let limiter_pool = pool.clone();
+    fixture_with(pool, &config(), move |_| {
+        Arc::new(PostgresRateLimiter::new(
+            limiter_pool,
+            Arc::new(authn_testkit::FakeClock::new()),
+            KeyHasher::new(&KeyRing::derive(&[5_u8; 32]).unwrap()).unwrap(),
+        ))
+    })
+}
+
+async fn concurrent_attempts_cannot_outrun_the_failure_counters(f: &Fixture) {
     let ctx = ctx("203.0.113.80", Some(ATTACKER_DEVICE));
     let target = "target@example.com";
 
@@ -470,7 +495,7 @@ async fn prt_02_concurrent_attempts_cannot_outrun_the_failure_counters(pool: PgP
     );
 
     // A success gives the reserved budget back (no lock yet for alice).
-    let user = create_user(&f, "alice@example.com").await;
+    let user = create_user(f, "alice@example.com").await;
     for _ in 0..3 {
         let a = attempt("alice@example.com", Some(user));
         f.protection.check_attempt(&a, &ctx).await.unwrap();
@@ -549,4 +574,63 @@ async fn prt_03_failure_path_does_the_same_work_for_unknown_accounts(pool: PgPoo
     }
     assert_eq!(ops[0], ops[1], "limiter work differs: {ops:?}");
     assert_eq!(ops[0].1, 2, "per-user and per-IP velocity counters");
+}
+
+/// K-128 (SES-01, CRY-05): with the PostgreSQL limiter an attempt costs
+/// two statements — the known-device lookup and one limiter chain (per-IP
+/// limit, soft-lock peek, CAPTCHA and soft-lock budgets) — and exactly the
+/// same statements for an existing and an unknown identifier, on the
+/// normal path and once the identifier is soft-locked.
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn prt_03_k_128_attempt_statements_do_not_reveal_account_existence(pool: PgPool) {
+    let f = postgres_fixture(&pool);
+    let user = create_user(&f, "exists@example.com").await;
+    let ctx = ctx("203.0.113.82", Some(ATTACKER_DEVICE));
+    let mut logs = Vec::new();
+    for (identifier, user) in [
+        ("exists@example.com", Some(user)),
+        ("ghost@example.com", None),
+    ] {
+        let a = attempt(identifier, user);
+        let (result, checked) =
+            authn_testkit::bench::count_queries(f.protection.check_attempt(&a, &ctx)).await;
+        result.unwrap();
+        assert_eq!(checked.count(), 2, "{checked}");
+        let (result, failed) =
+            authn_testkit::bench::count_queries(f.protection.record_failure(&a, &ctx)).await;
+        result.unwrap();
+        assert_eq!(failed.count(), 1, "{failed}");
+        logs.push((checked.statements, failed.statements));
+    }
+    assert_eq!(logs[0], logs[1]);
+
+    let locked_user = create_user(&f, "locked@example.com").await;
+    lock(&f, "locked@example.com", Some(locked_user)).await;
+    lock(&f, "locked-ghost@example.com", None).await;
+    let mut locked = Vec::new();
+    for (identifier, user) in [
+        ("locked@example.com", Some(locked_user)),
+        ("locked-ghost@example.com", None),
+    ] {
+        let (result, log) = authn_testkit::bench::count_queries(
+            f.protection.check_attempt(&attempt(identifier, user), &ctx),
+        )
+        .await;
+        assert_eq!(
+            result.unwrap_err().code(),
+            codes::protect::LOGIN_TEMPORARILY_BLOCKED
+        );
+        locked.push(log.statements);
+    }
+    assert_eq!(locked[0], locked[1]);
+    assert_eq!(locked[0].len(), 2, "{:?}", locked[0]);
+
+    // A success refunds both budgets in one statement.
+    let other = create_user(&f, "alice@example.com").await;
+    let a = attempt("alice@example.com", Some(other));
+    f.protection.check_attempt(&a, &ctx).await.unwrap();
+    let (result, log) =
+        authn_testkit::bench::count_queries(f.protection.record_success(&a, &ctx)).await;
+    result.unwrap();
+    assert_eq!(log.count(), 1, "{log}");
 }

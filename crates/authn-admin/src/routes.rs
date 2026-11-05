@@ -499,7 +499,8 @@ fn require_confirmation(confirm: Option<&str>, expected: &str) -> Result<(), Aut
         (status = 401, description = "unauthenticated / step_up_required", body = ErrorEnvelope),
         (status = 403, description = "forbidden / admin_phishing_resistant_mfa_required", body = ErrorEnvelope),
         (status = 422, description = "validation_failed", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn list_users(
     State(service): State<AdminService>,
@@ -524,7 +525,8 @@ pub async fn list_users(
         (status = 401, description = "unauthenticated / step_up_required", body = ErrorEnvelope),
         (status = 403, description = "forbidden / admin_phishing_resistant_mfa_required", body = ErrorEnvelope),
         (status = 404, description = "not_found", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn get_user(
     State(service): State<AdminService>,
@@ -553,7 +555,8 @@ macro_rules! reason_action {
                 (status = 404, description = "not_found", body = ErrorEnvelope),
                 (status = 409, description = "account_status_transition_not_allowed", body = ErrorEnvelope),
                 (status = 422, description = "admin_reason_required", body = ErrorEnvelope),
-            )
+            ),
+            security(("session_cookie" = []), ("bearer_jwt" = []))
         )]
         pub async fn $name(
             State(service): State<AdminService>,
@@ -585,7 +588,8 @@ macro_rules! reason_action {
                 (status = 404, description = "not_found", body = ErrorEnvelope),
                 (status = 409, description = "account_status_transition_not_allowed", body = ErrorEnvelope),
                 (status = 422, description = "admin_reason_required", body = ErrorEnvelope),
-            )
+            ),
+            security(("session_cookie" = []), ("bearer_jwt" = []))
         )]
         pub async fn $name(
             State(service): State<AdminService>,
@@ -658,7 +662,8 @@ reason_action!(
         (status = 404, description = "not_found", body = ErrorEnvelope),
         (status = 409, description = "password_not_set", body = ErrorEnvelope),
         (status = 422, description = "admin_reason_required", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn force_password_reset(
     State(service): State<AdminService>,
@@ -688,7 +693,8 @@ pub async fn force_password_reset(
         (status = 404, description = "not_found", body = ErrorEnvelope),
         (status = 409, description = "password_not_set", body = ErrorEnvelope),
         (status = 422, description = "admin_reason_required", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn set_must_change_password(
     State(service): State<AdminService>,
@@ -722,7 +728,8 @@ pub async fn set_must_change_password(
         (status = 403, description = "forbidden / admin_target_not_allowed / impersonation_not_allowed", body = ErrorEnvelope),
         (status = 404, description = "not_found", body = ErrorEnvelope),
         (status = 422, description = "admin_reason_required / validation_failed (ttl_minutes)", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn impersonate(
     State(service): State<AdminService>,
@@ -761,7 +768,8 @@ pub async fn impersonate(
         (status = 200, description = "Approval requests", body = [ApprovalView]),
         (status = 401, description = "unauthenticated / step_up_required", body = ErrorEnvelope),
         (status = 403, description = "forbidden / admin_phishing_resistant_mfa_required", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn list_approvals(
     State(service): State<AdminService>,
@@ -785,7 +793,8 @@ pub async fn list_approvals(
         (status = 404, description = "not_found (target)", body = ErrorEnvelope),
         (status = 422, description = "admin_reason_required / validation_failed", body = ErrorEnvelope),
         (status = 429, description = "rate_limited: more than 3 pending or 10 per hour requests of this admin (K-66)", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn request_approval(
     State(service): State<AdminService>,
@@ -815,7 +824,8 @@ macro_rules! decision {
                 (status = 403, description = "forbidden / admin_phishing_resistant_mfa_required / admin_self_approval_not_allowed / admin_target_not_allowed / admin_approval_invalid (decided or expired)", body = ErrorEnvelope),
                 (status = 404, description = "not_found", body = ErrorEnvelope),
                 (status = 422, description = "admin_reason_required", body = ErrorEnvelope),
-            )
+            ),
+            security(("session_cookie" = []), ("bearer_jwt" = []))
         )]
         pub async fn $name(
             State(service): State<AdminService>,
@@ -863,7 +873,8 @@ decision!(
         (status = 403, description = "forbidden / admin_approval_required / admin_approval_invalid (K-66)", body = ErrorEnvelope),
         (status = 422, description = "admin_reason_required / admin_confirmation_required", body = ErrorEnvelope),
         (status = 429, description = "rate_limited (K-08: per-admin / global budget, cool-down)", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn emergency_revoke_all_sessions(
     State(service): State<AdminService>,
@@ -896,7 +907,8 @@ pub async fn emergency_revoke_all_sessions(
         (status = 401, description = "unauthenticated / step_up_required", body = ErrorEnvelope),
         (status = 403, description = "forbidden / admin_approval_required / admin_approval_invalid (K-66)", body = ErrorEnvelope),
         (status = 422, description = "admin_reason_required / admin_confirmation_required", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn emergency_rotate_signing_key(
     State(service): State<AdminService>,
@@ -924,7 +936,8 @@ pub async fn emergency_rotate_signing_key(
         (status = 401, description = "unauthenticated / step_up_required", body = ErrorEnvelope),
         (status = 403, description = "forbidden / admin_approval_required / admin_approval_invalid (K-66)", body = ErrorEnvelope),
         (status = 422, description = "admin_reason_required / admin_confirmation_required / validation_failed", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn emergency_force_password_change(
     State(service): State<AdminService>,
@@ -969,7 +982,8 @@ pub async fn emergency_force_password_change(
         (status = 401, description = "unauthenticated / step_up_required", body = ErrorEnvelope),
         (status = 403, description = "forbidden", body = ErrorEnvelope),
         (status = 422, description = "validation_failed", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn list_audit_events(
     State(service): State<AdminService>,
@@ -995,7 +1009,8 @@ pub async fn list_audit_events(
         (status = 401, description = "unauthenticated / step_up_required", body = ErrorEnvelope),
         (status = 403, description = "forbidden", body = ErrorEnvelope),
         (status = 422, description = "admin_reason_required / validation_failed", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn export_audit_events(
     State(service): State<AdminService>,
@@ -1026,7 +1041,8 @@ pub async fn export_audit_events(
         (status = 401, description = "unauthenticated / step_up_required", body = ErrorEnvelope),
         (status = 403, description = "forbidden", body = ErrorEnvelope),
         (status = 422, description = "validation_failed (anchor)", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn verify_audit_chain(
     State(service): State<AdminService>,
@@ -1057,7 +1073,8 @@ pub async fn verify_audit_chain(
         (status = 403, description = "forbidden / admin_target_not_allowed", body = ErrorEnvelope),
         (status = 404, description = "not_found (no justification about a user)", body = ErrorEnvelope),
         (status = 422, description = "admin_reason_required / validation_failed (review_at)", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn restrict_justification(
     State(service): State<AdminService>,
@@ -1089,7 +1106,8 @@ pub async fn restrict_justification(
         (status = 404, description = "not_found", body = ErrorEnvelope),
         (status = 409, description = "conflict (no active restriction)", body = ErrorEnvelope),
         (status = 422, description = "admin_reason_required / validation_failed (review_at)", body = ErrorEnvelope),
-    )
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
 pub async fn extend_restriction(
     State(service): State<AdminService>,
