@@ -27,6 +27,7 @@ pub mod invitations;
 pub mod members;
 pub mod orgs;
 pub mod policies;
+pub mod reverify;
 pub mod roles;
 pub mod service_accounts;
 pub mod transfer;

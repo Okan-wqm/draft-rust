@@ -76,6 +76,17 @@ pub const SELF_APPROVAL_NOT_ALLOWED: ErrorCode = ErrorCode::new(
     "Bir istek farklı bir platform yöneticisi tarafından onaylanmalıdır.",
 );
 
+/// The caller is staff but its role lacks the permission of this admin
+/// endpoint (K-93, ADM-09). `details.permission` names the permission.
+/// Only answered after the full admin guard passed (a non-staff caller
+/// still gets the generic `forbidden`).
+pub const PERMISSION_DENIED: ErrorCode = ErrorCode::new(
+    "admin_permission_denied",
+    StatusCode::FORBIDDEN,
+    "Your staff role does not allow this operation.",
+    "Personel rolünüz bu işleme izin vermiyor.",
+);
+
 /// Every code declared in this file (registry, uniqueness test, catalogue).
 pub const ALL: &[ErrorCode] = &[
     PHISHING_RESISTANT_MFA_REQUIRED,
@@ -85,4 +96,5 @@ pub const ALL: &[ErrorCode] = &[
     APPROVAL_REQUIRED,
     APPROVAL_INVALID,
     SELF_APPROVAL_NOT_ALLOWED,
+    PERMISSION_DENIED,
 ];

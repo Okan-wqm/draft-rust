@@ -245,6 +245,22 @@ allowed_origins = ["http://localhost:8080"]  # exact match; rp_id or its subdoma
 # client_secret = "..."
 # trust_email_verified = false         # trust this IdP's email_verified claim; default false (non-verifying IdP)
 
+[oidc_provider]                        # OIDP-* (K-80): OAuth 2.1 / OIDC provider for registered clients
+enabled = false                        # off by default: no provider route is mounted
+# issuer = "https://auth.example.com"  # default: session.issuer or server.public_base_url; https in production
+# interaction_url = "https://app.example.com/oauth/consent"   # REQUIRED when enabled: your login / consent page (?interaction_id=…)
+# authorization_request_ttl = "10m"    # pending authorization request (1m … 30m)
+# authorization_code_ttl = "60s"       # single-use code (10s … 10m)
+# access_token_ttl = "5m"              # RFC 9068 JWT access token (1m … 1h)
+# id_token_ttl = "5m"                  # ID token (1m … 1h)
+# refresh_token_idle_ttl = "1d"        # rotating refresh token idle lifetime (1h … 90d)
+# refresh_token_absolute_ttl = "30d"   # grant lifetime (>= idle, <= 400d); also ends with the user session
+# custom_scopes = []                   # extra scopes clients may be registered for ([a-z][a-z0-9_.:-]{0,63})
+# authorize_per_ip = { limit = 60, period = "1m" }
+# token_per_ip = { limit = 120, period = "1m" }       # token, revoke, introspect
+# token_per_client = { limit = 600, period = "1m" }
+# userinfo_per_ip = { limit = 120, period = "1m" }
+
 [org]                                  # ORG-*
 # invitation_ttl = "7d"                # ORG-05, 1h-30d
 # invitation_sends_per_org = { limit = 50, period = "1h" }      # invitation e-mails (new + resend) per organization
@@ -260,6 +276,10 @@ allowed_origins = ["http://localhost:8080"]  # exact match; rp_id or its subdoma
 # deletion_grace_period = "30d"        # ORG-12; 0 = purged by the next cleanup run
 # limits = { custom_roles = 50, domains = 20, service_accounts = 100, api_keys = 500, pending_invitations = 1000 }
 # api_keys = { environment = "live", max_lifetime = "365d", default_lifetime = "90d", rotation_grace = "24h", last_used_update_interval = "1m", auth_failures_per_ip = { limit = 30, period = "15m" } }
+# ORG-13 (K-97): periodic re-verification of verified domains. Only a definitive absence of
+# the TXT record (NXDOMAIN, no TXT data, other values) counts towards losing the verification;
+# resolver errors / timeouts are counted apart (inconclusive_limit).
+# domain_reverification = { enabled = true, interval = "24h", failure_threshold = 3, inconclusive_limit = 14, batch_size = 100 }
 
 [protect]                              # PRT-*, RSK-*
 # allowed_hosts = []                   # "host" or "host:port"; default: host of public_base_url (PRT-09, 421 otherwise)
@@ -303,7 +323,10 @@ backend = "memory"                     # postgres (default) | redis | memory (si
 # failure_threshold = 5
 # medium_action = "step_up"            # step_up | allow
 # high_action = "block"                # block | step_up
-# impossible_travel_speed_kmh = 1000   # only with a GeoIP provider (none is bundled)
+# impossible_travel_speed_kmh = 1000   # only with a GeoIP database (geoip_database)
+# geoip_database = "/var/lib/authn/GeoLite2-City.mmdb" # RSK-05: City-level MaxMind DB file you license yourself
+                                       # (none is bundled; GeoLite2/DB-IP/... have their own data licences); bad file = start-up error
+# geoip_reload_interval = "1h"         # RSK-05: reload when the file changed, 1m-7d (a failed reload keeps the loaded one)
 
 [protect.outbound]                     # PRT-12 (SSRF-safe HTTP client)
 # timeout = "10s"                      # total
@@ -363,3 +386,16 @@ tls = "starttls"                       # starttls | tls (plain text is not suppo
 # four_eyes_approval_ttl = "30m"       # K-66: lifetime of an approval request, 5m-2h
 # four_eyes_max_pending_requests = 3   # K-74: pending approval requests per requesting admin, 1-10
 # four_eyes_max_requests_per_hour = 10 # K-74: approval requests per requesting admin per hour (denied ones count), 1-60, >= max pending
+
+[telemetry]                            # OPS-11 / K-92: OpenTelemetry traces (binary built with the `otel` cargo feature)
+# enabled = false                      # true without the `otel` feature is refused
+# endpoint = "http://127.0.0.1:4318/v1/traces" # OTLP/HTTP (protobuf) traces URL; no user info/query; collector API keys
+                                       # go in the OTEL_EXPORTER_OTLP_TRACES_HEADERS environment variable, never here
+# service_name = "rust-authentication"
+# sampling_ratio = 0.1                 # 0.0-1.0 of new traces
+# propagate_incoming = true            # continue W3C traceparent (the caller's tracestate is dropped)
+# respect_remote_sampling = false      # false: callers cannot force sampling with traceparent's sampled flag
+# export_timeout = "5s"                # 1s-30s per export; a dead collector never blocks requests
+# scheduled_delay = "5s"               # 100ms-60s between batches
+# max_queue_size = 2048                # 64-65536; spans beyond are dropped
+# max_export_batch_size = 512          # 1-max_queue_size

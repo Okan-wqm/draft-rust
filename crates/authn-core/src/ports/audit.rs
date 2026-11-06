@@ -190,6 +190,9 @@ text_enum! {
         OrgDomainAdded => "org.domain_added",
         /// Domain verified (ORG-06).
         OrgDomainVerified => "org.domain_verified",
+        /// A verified domain lost its verification: periodic re-verification
+        /// found the TXT record definitively absent too often (ORG-13, K-97).
+        OrgDomainUnverified => "org.domain_unverified",
         /// Domain removed.
         OrgDomainRemoved => "org.domain_removed",
         /// Member added.
@@ -279,6 +282,28 @@ text_enum! {
         RiskHighBlocked => "risk.high_blocked",
         /// Successful login from a new device (RSK-04).
         NewDeviceLogin => "risk.new_device_login",
+        /// OAuth / OIDC client registered (OIDP-01). Never carries the
+        /// client secret.
+        OAuthClientCreated => "oauth_client.created",
+        /// OAuth client registration changed (OIDP-01).
+        OAuthClientUpdated => "oauth_client.updated",
+        /// OAuth client secret rotated (OIDP-01).
+        OAuthClientSecretRotated => "oauth_client.secret_rotated",
+        /// OAuth client deleted (OIDP-01).
+        OAuthClientDeleted => "oauth_client.deleted",
+        /// The user granted a client access (consent, OIDP-05).
+        OAuthConsentGranted => "oauth_consent.granted",
+        /// The user revoked a client's access (OIDP-05).
+        OAuthConsentRevoked => "oauth_consent.revoked",
+        /// Tokens issued to a client (authorization code exchange;
+        /// OIDP-06). Never carries a token.
+        OAuthTokensIssued => "oauth.tokens_issued",
+        /// An authorization code was presented again; the grant it created
+        /// was revoked (RFC 6749 §4.1.2, OIDP-06).
+        OAuthCodeReplayDetected => "oauth.code_replayed",
+        /// A rotated provider refresh token was presented again; the grant
+        /// was revoked (OIDP-07).
+        OAuthRefreshTokenReplayDetected => "oauth.refresh_token_replayed",
     }
 }
 

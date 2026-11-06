@@ -312,9 +312,13 @@ fn doc_08_every_crate_readme_names_its_requirements() {
         let ids: Vec<&str> = cells[2]
             .split(", ")
             .filter(|id| {
-                id.len() == 6
-                    && id.as_bytes()[3] == b'-'
-                    && id.bytes().take(3).all(|b| b.is_ascii_uppercase())
+                // `SOC-01` and, since K-80, four-letter prefixes (`OIDP-01`).
+                id.split_once('-').is_some_and(|(prefix, number)| {
+                    (3..=4).contains(&prefix.len())
+                        && prefix.bytes().all(|b| b.is_ascii_uppercase())
+                        && number.len() == 2
+                        && number.bytes().all(|b| b.is_ascii_digit())
+                })
             })
             .collect();
         if ids.is_empty() {
@@ -330,7 +334,7 @@ fn doc_08_every_crate_readme_names_its_requirements() {
             }
         }
     }
-    assert_eq!(owners, 16, "ownership table rows");
+    assert_eq!(owners, 17, "ownership table rows");
     assert!(missing.is_empty(), "{missing:?}");
 }
 

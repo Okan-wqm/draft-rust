@@ -1,0 +1,11 @@
+{% extends "en/email/layout.txt" %}
+{% block content %}
+The domain {{ domain }} of the organization “{{ org_name }}” on {{ app_name }} is no longer verified: its verification TXT record was not found in DNS at several consecutive checks. Automatic joining by e-mail domain stopped for it.
+{% endblock %}
+{% block details %}
+Domain: {{ domain }}
+Time: {{ at }}
+{% endblock %}
+{% block closing %}
+If the organization still owns the domain, publish the TXT record shown in the organization settings again and verify the domain. If it does not, remove the domain.
+{% endblock %}

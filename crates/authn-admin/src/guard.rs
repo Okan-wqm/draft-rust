@@ -6,9 +6,11 @@
 //!    impersonating admin acts *as the user* there, never as an admin);
 //! 2. the credential is a session of a human user (no API key, no service
 //!    account);
-//! 3. the principal is a platform admin **and** the database still says so
-//!    for an `active` account (the flag is re-read on every request, so a
-//!    demoted or suspended admin is refused at once);
+//! 3. the principal is staff (`is_platform_admin`) **and** the database
+//!    still says so for an `active` account **with a staff role** (K-93:
+//!    the flag and the role are re-read on every request, so a demoted,
+//!    suspended or re-roled staff member is judged by its new state at
+//!    once; an account without a role row is refused — no default role);
 //! 4. the client IP is in `admin.ip_allow_list` when one is configured;
 //! 5. the session was established with phishing-resistant MFA: a passkey
 //!    (`amr` `hwk` or `swk`) that counted as multi-factor (`mfa`);
@@ -19,7 +21,11 @@
 //! about the admin API or its allow-list); 5 answers
 //! `admin_phishing_resistant_mfa_required`, 6 `401 step_up_required`.
 //! The checks are a pure function ([`authorize`]) applied by the
-//! [`AdminCaller`] extractor that every admin handler takes.
+//! [`AdminCaller`] extractor that every admin handler takes. The extractor
+//! then requires the permission the route declares in
+//! [`crate::routes::ROUTE_PERMISSIONS`] (K-93): a route without an entry is
+//! refused for everyone, a role without the permission answers
+//! `403 admin_permission_denied` (audited).
 
 use std::net::IpAddr;
 
@@ -28,10 +34,11 @@ use authn_core::error::{AuthError, codes};
 use authn_core::http::RequestContext;
 use authn_core::id::{SessionId, UserId};
 use authn_store::UserRecord;
-use axum::extract::{FromRef, FromRequestParts};
+use axum::extract::{FromRef, FromRequestParts, MatchedPath};
 use axum::http::request::Parts;
 use time::OffsetDateTime;
 
+use crate::roles::{AdminPermission, StaffRole};
 use crate::service::AdminService;
 use crate::settings::AdminSettings;
 
@@ -43,6 +50,7 @@ pub struct AdminCaller {
     user_id: UserId,
     session_id: SessionId,
     is_break_glass: bool,
+    role: StaffRole,
 }
 
 impl AdminCaller {
@@ -62,6 +70,27 @@ impl AdminCaller {
     #[must_use]
     pub fn is_break_glass(&self) -> bool {
         self.is_break_glass
+    }
+
+    /// The staff role read from the database on this request (K-93).
+    #[must_use]
+    pub fn role(&self) -> StaffRole {
+        self.role
+    }
+
+    /// Whether the caller's role holds `permission` (K-93).
+    #[must_use]
+    pub fn has(&self, permission: AdminPermission) -> bool {
+        self.role.grants(permission)
+    }
+
+    /// `403 admin_permission_denied` unless the role holds `permission`.
+    pub fn require(&self, permission: AdminPermission) -> Result<(), AuthError> {
+        if self.has(permission) {
+            Ok(())
+        } else {
+            Err(permission.denied())
+        }
     }
 }
 
@@ -123,11 +152,13 @@ pub fn is_phishing_resistant_mfa(amr: &[AuthMethodRef]) -> bool {
     passkey && amr.contains(&AuthMethodRef::Mfa)
 }
 
-/// The ADM-01 decision. `live` is the caller's `users` row read on this
-/// request (`None` if the account no longer exists).
+/// The ADM-01 decision. `live` is the caller's `users` row and `role` its
+/// staff role (K-93), both read on this request (`None` if the account or
+/// the role no longer exists).
 pub fn authorize(
     principal: &Principal,
     live: Option<&UserRecord>,
+    role: Option<StaffRole>,
     client_ip: IpAddr,
     now: OffsetDateTime,
     settings: &AdminSettings,
@@ -140,7 +171,7 @@ pub fn authorize(
     };
     let live = live
         .filter(|u| u.id == user_id && u.is_platform_admin && u.status == AccountStatus::Active);
-    let Some(live) = live else {
+    let (Some(live), Some(role)) = (live, role) else {
         return Err(Denial::NotAdmin);
     };
     if !principal.is_platform_admin {
@@ -166,6 +197,7 @@ pub fn authorize(
         user_id,
         session_id,
         is_break_glass: live.is_break_glass,
+        role,
     })
 }
 
@@ -179,9 +211,32 @@ where
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let ctx = RequestContext::from_request_parts(parts, state).await?;
         let principal = Principal::from_request_parts(parts, state).await?;
-        AdminService::from_ref(state)
-            .authorize(&principal, &ctx)
-            .await
+        // K-93: the route's declared permission; none declared = refused
+        // for everyone (no default allow). Looked up before the guard so a
+        // missing declaration never depends on who asks.
+        let permission = parts
+            .extensions
+            .get::<MatchedPath>()
+            .and_then(|path| crate::routes::route_permission(parts.method.as_str(), path.as_str()));
+        let service = AdminService::from_ref(state);
+        match permission {
+            Some(permission) => {
+                service
+                    .authorize_permission(&principal, &ctx, permission)
+                    .await
+            }
+            None => {
+                tracing::error!(
+                    method = %parts.method,
+                    "admin route without a declared permission refused"
+                );
+                // Still run the guard (and its audit) first: the answer to
+                // a non-admin stays the generic one.
+                service.authorize(&principal, &ctx).await?;
+                Err(AuthError::new(codes::common::FORBIDDEN)
+                    .with_context("admin route without a declared permission"))
+            }
+        }
     }
 }
 
@@ -234,6 +289,8 @@ mod tests {
         }
     }
 
+    const R: Option<StaffRole> = Some(StaffRole::PlatformAdmin);
+
     fn ip() -> IpAddr {
         "198.51.100.7".parse().unwrap()
     }
@@ -244,32 +301,42 @@ mod tests {
         let user = UserId::generate();
         let live = record(user, true, AccountStatus::Active);
         let ok = admin_principal(user);
-        let caller = authorize(&ok, Some(&live), ip(), now(), &settings).unwrap();
+        let caller = authorize(&ok, Some(&live), R, ip(), now(), &settings).unwrap();
         assert_eq!(caller.user_id(), user);
+        assert_eq!(caller.role(), StaffRole::PlatformAdmin);
+        // K-93: staff flag without a role row = no admin access.
+        assert_eq!(
+            authorize(&ok, Some(&live), None, ip(), now(), &settings),
+            Err(Denial::NotAdmin)
+        );
+        for role in StaffRole::ALL {
+            let caller = authorize(&ok, Some(&live), Some(role), ip(), now(), &settings).unwrap();
+            assert_eq!(caller.role(), role);
+        }
 
         let mut p = ok.clone();
         p.is_platform_admin = false;
         assert_eq!(
-            authorize(&p, Some(&live), ip(), now(), &settings),
+            authorize(&p, Some(&live), R, ip(), now(), &settings),
             Err(Denial::NotAdmin)
         );
         let demoted = record(user, false, AccountStatus::Active);
         assert_eq!(
-            authorize(&ok, Some(&demoted), ip(), now(), &settings),
+            authorize(&ok, Some(&demoted), R, ip(), now(), &settings),
             Err(Denial::NotAdmin)
         );
         let suspended = record(user, true, AccountStatus::Suspended);
         assert_eq!(
-            authorize(&ok, Some(&suspended), ip(), now(), &settings),
+            authorize(&ok, Some(&suspended), R, ip(), now(), &settings),
             Err(Denial::NotAdmin)
         );
         assert_eq!(
-            authorize(&ok, None, ip(), now(), &settings),
+            authorize(&ok, None, R, ip(), now(), &settings),
             Err(Denial::NotAdmin)
         );
         let other = record(UserId::generate(), true, AccountStatus::Active);
         assert_eq!(
-            authorize(&ok, Some(&other), ip(), now(), &settings),
+            authorize(&ok, Some(&other), R, ip(), now(), &settings),
             Err(Denial::NotAdmin)
         );
 
@@ -281,23 +348,23 @@ mod tests {
             let mut p = ok.clone();
             p.amr = amr;
             assert_eq!(
-                authorize(&p, Some(&live), ip(), now(), &settings),
+                authorize(&p, Some(&live), R, ip(), now(), &settings),
                 Err(Denial::PhishingResistantMfaMissing)
             );
         }
         let mut synced = ok.clone();
         synced.amr = vec![AuthMethodRef::Swk, AuthMethodRef::Mfa];
-        assert!(authorize(&synced, Some(&live), ip(), now(), &settings).is_ok());
+        assert!(authorize(&synced, Some(&live), R, ip(), now(), &settings).is_ok());
 
         let mut stale = ok.clone();
         stale.auth_time = Some(now() - Duration::from_secs(601));
         assert_eq!(
-            authorize(&stale, Some(&live), ip(), now(), &settings),
+            authorize(&stale, Some(&live), R, ip(), now(), &settings),
             Err(Denial::StepUpRequired)
         );
         stale.auth_time = None;
         assert_eq!(
-            authorize(&stale, Some(&live), ip(), now(), &settings),
+            authorize(&stale, Some(&live), R, ip(), now(), &settings),
             Err(Denial::StepUpRequired)
         );
 
@@ -309,7 +376,7 @@ mod tests {
                 expires_at: now(),
             });
             assert_eq!(
-                authorize(&p, Some(&live), ip(), now(), &settings),
+                authorize(&p, Some(&live), R, ip(), now(), &settings),
                 Err(Denial::Impersonated)
             );
         }
@@ -319,7 +386,7 @@ mod tests {
             api_key_id: ApiKeyId::generate(),
         };
         assert_eq!(
-            authorize(&key, Some(&live), ip(), now(), &settings),
+            authorize(&key, Some(&live), R, ip(), now(), &settings),
             Err(Denial::NotASession)
         );
         let mut service = ok.clone();
@@ -328,7 +395,7 @@ mod tests {
             org_id: OrgId::generate(),
         };
         assert_eq!(
-            authorize(&service, Some(&live), ip(), now(), &settings),
+            authorize(&service, Some(&live), R, ip(), now(), &settings),
             Err(Denial::NotASession)
         );
 
@@ -337,13 +404,14 @@ mod tests {
             ..AdminSettings::default()
         };
         assert_eq!(
-            authorize(&ok, Some(&live), ip(), now(), &restricted),
+            authorize(&ok, Some(&live), R, ip(), now(), &restricted),
             Err(Denial::IpNotAllowed)
         );
         assert!(
             authorize(
                 &ok,
                 Some(&live),
+                R,
                 "10.1.2.3".parse().unwrap(),
                 now(),
                 &restricted

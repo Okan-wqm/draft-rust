@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 
 use authn_testkit::http::TestRequest;
 use axum::http::{Method, StatusCode};
-use common::{App, ORIGIN, PASSWORD};
+use common::{App, ORIGIN, PASSWORD, enable_oidc_provider};
 use serde_json::{Value, json};
 use sqlx::PgPool;
 
@@ -29,9 +29,19 @@ use sqlx::PgPool;
 /// (`app.rs::session_less_routes`, contracts §15.3): the break-glass
 /// passkey enrollment link (K-11), authenticated by the link token in the
 /// body.
+///
+/// K-80: the OAuth provider's protocol endpoints (token, revocation,
+/// introspection, userinfo) are also outside: they authenticate the client
+/// or the provider access token themselves, read no cookie, and the
+/// session middleware would consume a provider access token as a native
+/// one (`app.rs::provider_protocol_routes`).
 const SESSION_LESS: &[(&str, &str)] = &[
     ("POST", "/v1/admin/enrollment/options"),
     ("POST", "/v1/admin/enrollment/verify"),
+    ("POST", "/v1/oauth2/introspect"),
+    ("POST", "/v1/oauth2/revoke"),
+    ("POST", "/v1/oauth2/token"),
+    ("POST", "/v1/oauth2/userinfo"),
 ];
 
 const ZERO: &str = "00000000-0000-0000-0000-000000000000";
@@ -66,7 +76,7 @@ fn is_state_changing(method: &str) -> bool {
 
 #[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
 async fn ops_02_every_state_changing_route_is_behind_authentication_and_csrf(pool: PgPool) {
-    let app = App::new(pool).await;
+    let app = App::with(pool, enable_oidc_provider).await;
     app.user("alice@example.com").await;
     let mut browser = app.browser();
     let body = browser.login(&app, "alice@example.com", PASSWORD).await;
@@ -102,7 +112,7 @@ async fn ops_02_every_state_changing_route_is_behind_authentication_and_csrf(poo
 
 #[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
 async fn ops_02_account_admin_and_org_routes_refuse_anonymous_callers(pool: PgPool) {
-    let app = App::new(pool).await;
+    let app = App::with(pool, enable_oidc_provider).await;
     let mut anonymous_ok = Vec::new();
     for (method, path) in documented(&app).await {
         let protected = path.starts_with("/v1/me")
@@ -177,7 +187,7 @@ fn erase(path: &str) -> String {
 
 #[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
 async fn ops_09_every_routed_path_is_documented(pool: PgPool) {
-    let app = App::new(pool).await;
+    let app = App::with(pool, enable_oidc_provider).await;
     let documented: BTreeSet<String> = documented(&app)
         .await
         .into_iter()

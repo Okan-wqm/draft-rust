@@ -92,6 +92,33 @@ async fn arc_11_passkey_routes_follow_the_passkey_feature(pool: PgPool) {
     assert_eq!(r.status, expected, "{}", r.text());
 }
 
+/// K-80: the provider endpoints exist exactly when the `oidc-provider`
+/// feature is compiled in **and** `oidc_provider.enabled` is set; the
+/// feature is on by default, the switch off by default.
+#[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
+async fn oidp_13_provider_routes_follow_the_feature_and_the_switch(pool: PgPool) {
+    let (_, default_features) = server_features()
+        .into_iter()
+        .find(|(name, _)| name == "default")
+        .unwrap();
+    assert!(
+        default_features.contains(&"oidc-provider".to_owned()),
+        "{default_features:?}"
+    );
+    let app = App::with(pool, common::enable_oidc_provider).await;
+    let r = app
+        .send(authn_testkit::http::TestRequest::get(
+            "/.well-known/openid-configuration",
+        ))
+        .await;
+    let expected = if cfg!(feature = "oidc-provider") {
+        StatusCode::OK
+    } else {
+        StatusCode::NOT_FOUND
+    };
+    assert_eq!(r.status, expected, "{}", r.text());
+}
+
 /// Enrolls an SMS factor through HTTP with the notification module built
 /// from the configuration (not the recording fake).
 async fn begin_sms(pool: PgPool, provider: SmsProviderKind) -> (StatusCode, serde_json::Value) {

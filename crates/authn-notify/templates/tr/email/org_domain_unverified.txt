@@ -1,0 +1,11 @@
+{% extends "tr/email/layout.txt" %}
+{% block content %}
+{{ app_name }} üzerindeki “{{ org_name }}” organizasyonunun {{ domain }} domain'i artık doğrulanmış değil: doğrulama TXT kaydı art arda birkaç kontrolde DNS'te bulunamadı. Bu domain için e-posta domain'iyle otomatik katılım durduruldu.
+{% endblock %}
+{% block details %}
+Domain: {{ domain }}
+Zaman: {{ at }}
+{% endblock %}
+{% block closing %}
+Domain hâlâ organizasyonunuza aitse, organizasyon ayarlarında gösterilen TXT kaydını yeniden yayımlayıp domain'i doğrulayın. Değilse domain'i kaldırın.
+{% endblock %}

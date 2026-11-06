@@ -2,7 +2,7 @@
 
 > **Üretilmiş dosya — elle düzenlemeyin.** Kaynak: [`openapi.json`](openapi.json) (sunucunun birleşik OpenAPI belgesi) ve `generate_reference.py` içindeki Türkçe açıklamalar. Yeniden üretmek için [README](README.md#openapi-belgesini-yenilemek).
 
-Toplam **163** işlem. İstek/yanıt şemalarının tamamı, alan açıklamaları ve her yanıt kodunun İngilizce açıklaması `openapi.json`'dadır.
+Toplam **184** işlem. İstek/yanıt şemalarının tamamı, alan açıklamaları ve her yanıt kodunun İngilizce açıklaması `openapi.json`'dadır.
 
 **Kimlik sütunu** (her işlemin OpenAPI `security` bildiriminden üretilir; K-129): `—` kimlik doğrulaması yok · `oturum` web oturum çerezi (+ durum değiştiren yöntemlerde CSRF) veya `Authorization: Bearer <access token>` · `oturum / API anahtarı` ek olarak organizasyon API anahtarı (`Authorization: Bearer ak_…` / `X-API-Key`) · `admin` platform admini, passkey oturumu + step-up (+ `admin.ip_allow_list`) · `API anahtarı` yalnızca organizasyon API anahtarı · `challenge token'ı` bekleyen girişin token'ı (web: `__Host-authn_challenge` çerezi, native: `X-Authn-Challenge` başlığı). Ayrıntı: [authentication.md](authentication.md). "step-up" = son `session.step_up_max_age` içinde yeniden doğrulama, yoksa `401 step_up_required`.
 
@@ -208,7 +208,7 @@ Toplam **163** işlem. İstek/yanıt şemalarının tamamı, alan açıklamalar�
 | Yöntem ve yol | Kimlik | Açıklama | İstek gövdesi | Yanıtlar |
 |---------------|--------|----------|---------------|----------|
 | `GET /v1/admin/approvals` | admin | Son 7 günün dört göz onay istekleri (en yeni önce). | — | `200` `401` `403` |
-| `POST /v1/admin/approvals` | admin | Kritik bir işlem için ikinci bir platform admininin onayını ister (K-66); `admin.four_eyes_approval_ttl` sonra düşer. | `ApprovalRequest` | `200` `401` `403` `404` `422` `429` |
+| `POST /v1/admin/approvals` | admin | Kritik bir işlem için onay yetkisine sahip (`security` / `platform_admin`) ikinci bir personelin onayını ister (K-66, K-93); `admin.four_eyes_approval_ttl` sonra düşer. | `ApprovalRequest` | `200` `401` `403` `404` `422` `429` |
 | `POST /v1/admin/approvals/{approval_id}/approve` | admin | Başka bir adminin bekleyen isteğini onaylar; onaylayan istekte bulunan veya hedef olamaz. | `DecisionRequest` | `200` `401` `403` `404` `422` |
 | `POST /v1/admin/approvals/{approval_id}/deny` | admin | Başka bir adminin bekleyen isteğini reddeder (kesin). | `DecisionRequest` | `200` `401` `403` `404` `422` |
 | `GET /v1/admin/audit-events` | admin | Platform genelinde audit olayları, admin işlemlerinin gerekçeleriyle (ADM-07); sayfalı.<br>Sorgu: `limit`, `cursor`, `kind`, `category`, `outcome`, `actor_user_id`, `subject_user_id`, `org_id`, `resource_type`, `since`, `until` | — | `200` `401` `403` `422` |
@@ -221,6 +221,8 @@ Toplam **163** işlem. İstek/yanıt şemalarının tamamı, alan açıklamalar�
 | `POST /v1/admin/emergency/rotate-signing-key` | admin | Acil imza anahtarı rotasyonu: etkin anahtar iptal edilir, yenisi etkinleşir; `"confirm": "rotate_signing_key"`. | `EmergencyRequest` | `200` `401` `403` `422` |
 | `POST /v1/admin/enrollment/options` | kayıt bağlantısı | Break-glass kayıt bağlantısının hesabı için passkey kayıt seçenekleri (K-11). Oturumsuz; bağlantı token'ı gövdede. | `EnrollmentOptionsRequest` | `200` `400` `403` `429` |
 | `POST /v1/admin/enrollment/verify` | kayıt bağlantısı | Passkey'i kaydeder ve kayıt bağlantısını tüketir (K-11). Oturumsuz. | `EnrollmentVerifyRequest` | `200` `400` `403` `429` |
+| `GET /v1/admin/staff` | admin | Personel hesapları ve rolleri (K-93, `staff:read`: `security`, `platform_admin`). | — | `200` `401` `403` |
+| `POST /v1/admin/staff/{user_id}/role` | admin | Başka, break-glass olmayan bir personelin rolünü değiştirir (K-93, yalnızca `platform_admin`, her zaman çift onay `change_staff_role`); hedefin oturumları kapanır, eski ve yeni rol audit'lenir. | `StaffRoleRequest` | `200` `401` `403` `404` `409` `422` `429` |
 | `GET /v1/admin/users` | admin | Hesap arama (ADM-02): keyset sayfalı, en yeni önce, sır yok.<br>Sorgu: `limit`, `cursor`, `email`, `status`, `platform_admin`, `email_verified`, `created_after`, `created_before` | — | `200` `401` `403` `422` |
 | `GET /v1/admin/users/{user_id}` | admin | Tek hesabın ayrıntıları (ADM-02); erişim audit'lenir. | — | `200` `401` `403` `404` |
 | `POST /v1/admin/users/{user_id}/force-password-reset` | admin | Şifre sıfırlamayı zorlar: şifre çalışmaz, oturumlar kapanır, sıfırlama linki gönderilir (yalnızca normal kullanıcılar). | `ForcePasswordResetRequest` | `200` `401` `403` `404` `409` `422` |
@@ -232,6 +234,30 @@ Toplam **163** işlem. İstek/yanıt şemalarının tamamı, alan açıklamalar�
 | `POST /v1/admin/users/{user_id}/suspend` | admin | Hesabı askıya alır; oturumlar ve güvenilir cihazlar kapanır. | `ReasonRequest` | `200` `401` `403` `404` `409` `422` |
 | `POST /v1/admin/users/{user_id}/unlock` | admin | Geçici kilidi ve giriş yumuşak kilidini kaldırır. | `ReasonRequest` | `200` `401` `403` `404` `409` `422` |
 | `POST /v1/admin/users/{user_id}/unsuspend` | admin | Askıyı kaldırır (yalnızca normal kullanıcılar). | `ReasonRequest` | `200` `401` `403` `404` `409` `422` |
+
+## OAuth 2.1 / OIDC sağlayıcısı (`oauth2-provider`)
+
+| Yöntem ve yol | Kimlik | Açıklama | İstek gövdesi | Yanıtlar |
+|---------------|--------|----------|---------------|----------|
+| `GET /.well-known/oauth-authorization-server` | — | OAuth 2.0 yetkilendirme sunucusu meta verisi (RFC 8414, OIDP-09). | — | `200` |
+| `GET /.well-known/openid-configuration` | — | OpenID Provider meta verisi (OIDC Discovery, OIDP-09). | — | `200` |
+| `GET /v1/admin/oauth2/clients` | admin | Kayıtlı OAuth / OIDC istemcileri (OIDP-01, `oauth_clients:read`: `security`, `platform_admin`). | — | `200` `401` `403` |
+| `POST /v1/admin/oauth2/clients` | admin | İstemci kaydeder (OIDP-01, yalnızca `platform_admin`); gizli istemcinin sırrı bir kez döner, yalnızca SHA-256'sı saklanır. | `ClientInput` | `201` `401` `403` `422` |
+| `GET /v1/admin/oauth2/clients/{client_id}` | admin | Bir istemci kaydı (`oauth_clients:read`). | — | `200` `401` `403` `404` |
+| `PATCH /v1/admin/oauth2/clients/{client_id}` | admin | İstemci kaydını değiştirir (`oauth_clients:manage`); devre dışı bırakma veya yetkiyi daraltma istemcinin tüm grant'lerini iptal eder. | `ClientPatch` | `200` `401` `403` `404` `422` |
+| `DELETE /v1/admin/oauth2/clients/{client_id}` | admin | İstemciyi ve ona verilmiş her şeyi siler (`oauth_clients:manage`). | — | `204` `401` `403` `404` |
+| `POST /v1/admin/oauth2/clients/{client_id}/secret` | admin | Gizli istemcinin sırrını döndürür; eski sır hemen geçersizdir, yenisi bir kez gösterilir (`oauth_clients:manage`). | — | `200` `401` `403` `404` `422` |
+| `GET /v1/me/oauth2/consents` | oturum | Kullanıcının erişim verdiği uygulamalar ve kapsamlar (OIDP-05). | — | `200` `401` |
+| `DELETE /v1/me/oauth2/consents/{client_id}` | oturum | Bir uygulamanın erişimini geri alır: onay ve o uygulamanın kullanıcıya ait tüm token'ları iptal edilir (OIDP-05). | — | `204` `401` `404` |
+| `GET /v1/oauth2/authorize` | — | Yetkilendirme uç noktası (OIDP-02 … OIDP-04): yalnızca `code` + PKCE `S256`; istemciye (kod / hata, her zaman `iss`) veya etkileşim sayfasına `303`. İstemcisi / `redirect_uri`'si doğrulanamayan istek yönlendirilmez (`400 invalid_authorization_request`).<br>Sorgu: `client_id`, `redirect_uri`, `response_type`, `scope`, `code_challenge`, `code_challenge_method`, `state`, `nonce`, `prompt`, `max_age`, `acr_values`, `resource` | — | `303` `400` `429` |
+| `GET /v1/oauth2/interactions/{interaction_id}` | — | Bekleyen yetkilendirme isteği (giriş / onay sayfası için; yalnızca isteği başlatan tarayıcı, `__Host-authn_oidc_browser`): istemci, kapsamlar, `login_required`, `consent_required` (OIDP-04). | — | `200` `400` |
+| `POST /v1/oauth2/interactions/{interaction_id}/accept` | tarayıcı oturumu | Oturum açmış kullanıcı isteği onaylar; onay kaydedilir, yanıt `redirect_to` (kodlu istemci adresi). `prompt=login` / `max_age` / `acr_values` karşılanmıyorsa `401 step_up_required` (OIDP-04, OIDP-05). | — | `200` `400` `401` `403` |
+| `POST /v1/oauth2/interactions/{interaction_id}/deny` | — | Kullanıcı isteği reddeder; istemci `access_denied` alır (`redirect_to`). | — | `200` `400` |
+| `POST /v1/oauth2/introspect` | OAuth istemcisi | RFC 7662 introspection (OIDP-11), yalnızca gizli istemci; token yalnızca kendi istemcisine veya `aud`'unda adı geçen istemciye aktif görünür. | `TokenTypeRequest` (application/x-www-form-urlencoded) | `200` `400` `401` |
+| `POST /v1/oauth2/revoke` | OAuth istemcisi | RFC 7009 iptal (OIDP-11): refresh token grant'in tamamını, access token kendisini iptal eder; bilinmeyen token da `200`. | `TokenTypeRequest` (application/x-www-form-urlencoded) | `200` `400` `401` |
+| `POST /v1/oauth2/token` | OAuth istemcisi | Token uç noktası (OIDP-06 … OIDP-08): `authorization_code` (PKCE doğrulayıcısı, tek kullanımlık kod; tekrar grant'i iptal eder) ve `refresh_token` (rotasyon, tekrar kullanım grant'i iptal eder). Hatalar RFC 6749 biçiminde. | `TokenRequest` (application/x-www-form-urlencoded) | `200` `400` `401` `429` |
+| `GET /v1/oauth2/userinfo` | sağlayıcı access token'ı | UserInfo (OIDP-10): `sub`; `profile` → `name`, `locale`, `zoneinfo`; `email` → `email`, `email_verified`. Yalnızca `openid` kapsamlı sağlayıcı access token'ı. | — | `200` `401` `403` |
+| `POST /v1/oauth2/userinfo` | sağlayıcı access token'ı | UserInfo'nun `POST` biçimi (token yalnızca `Authorization` başlığından). | — | `200` `401` `403` |
 
 ## Sağlık (`health`)
 

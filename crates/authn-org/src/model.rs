@@ -264,6 +264,18 @@ pub struct OrgDomain {
     #[serde(with = "time::serde::rfc3339")]
     #[schema(value_type = String, format = DateTime)]
     pub created_at: OffsetDateTime,
+    /// Consecutive checks that found the TXT record definitively absent
+    /// (periodic re-verification, ORG-13); reset by a successful check.
+    pub consecutive_absent_checks: u32,
+    /// Consecutive inconclusive checks (resolver error, timeout; ORG-13).
+    pub consecutive_inconclusive_checks: u32,
+    /// Outcome of the last check: `present`, `absent` or `inconclusive`.
+    pub last_check_outcome: Option<String>,
+    /// When periodic re-verification took the verification away (ORG-13);
+    /// cleared by verifying again.
+    #[serde(with = "time::serde::rfc3339::option")]
+    #[schema(value_type = Option<String>, format = DateTime)]
+    pub unverified_at: Option<OffsetDateTime>,
 }
 
 /// Owner of an API key.

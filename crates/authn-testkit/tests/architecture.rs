@@ -19,7 +19,13 @@ const WAVE_A: &[&str] = &[
     "authn-audit",
     "authn-notify",
 ];
-const WAVE_B: &[&str] = &["authn-session", "authn-oidc-client", "authn-admin"];
+const WAVE_B: &[&str] = &[
+    "authn-session",
+    "authn-oidc-client",
+    "authn-admin",
+    // Phase 2 (K-80): same layer rules as wave B.
+    "authn-oidc-provider",
+];
 const SERVER: &str = "authn-server";
 
 fn crates_dir() -> PathBuf {

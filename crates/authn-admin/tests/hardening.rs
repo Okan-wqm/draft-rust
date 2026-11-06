@@ -1513,7 +1513,12 @@ async fn adm_05_k76_grant_admin_offline(pool: sqlx::PgPool) {
 
     let out = h
         .service
-        .grant_admin_offline(&operator, &OfflineTarget::parse("Alice@example.com"), &why)
+        .grant_admin_offline(
+            &operator,
+            &OfflineTarget::parse("Alice@example.com"),
+            authn_admin::StaffRole::PlatformAdmin,
+            &why,
+        )
         .await
         .unwrap();
     assert_eq!(out.action, "offline_grant_admin");
@@ -1554,7 +1559,12 @@ async fn adm_05_k76_grant_admin_offline(pool: sqlx::PgPool) {
     // Already an admin; break-glass accounts too.
     let err = h
         .service
-        .grant_admin_offline(&operator, &OfflineTarget::Id(alice), &why)
+        .grant_admin_offline(
+            &operator,
+            &OfflineTarget::Id(alice),
+            authn_admin::StaffRole::PlatformAdmin,
+            &why,
+        )
         .await
         .unwrap_err();
     assert_eq!(err.code().code(), "conflict");
@@ -1565,7 +1575,12 @@ async fn adm_05_k76_grant_admin_offline(pool: sqlx::PgPool) {
             .await;
         let err = h
             .service
-            .grant_admin_offline(&operator, &OfflineTarget::Id(other), &why)
+            .grant_admin_offline(
+                &operator,
+                &OfflineTarget::Id(other),
+                authn_admin::StaffRole::PlatformAdmin,
+                &why,
+            )
             .await
             .unwrap_err();
         assert_eq!(err.code().code(), "admin_target_not_allowed", "{status:?}");
@@ -1573,7 +1588,12 @@ async fn adm_05_k76_grant_admin_offline(pool: sqlx::PgPool) {
     }
     let err = h
         .service
-        .grant_admin_offline(&operator, &OfflineTarget::parse("nobody@example.com"), &why)
+        .grant_admin_offline(
+            &operator,
+            &OfflineTarget::parse("nobody@example.com"),
+            authn_admin::StaffRole::PlatformAdmin,
+            &why,
+        )
         .await
         .unwrap_err();
     assert_eq!(err.code().code(), "not_found");

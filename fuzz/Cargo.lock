@@ -177,6 +177,36 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
+name = "authn-account"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "authn-core",
+ "authn-crypto",
+ "authn-store",
+ "axum",
+ "http",
+ "idna",
+ "metrics",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "subtle",
+ "thiserror 2.0.21",
+ "time",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "unicode-normalization",
+ "unicode-security",
+ "url",
+ "utoipa",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
 name = "authn-audit"
 version = "0.1.0"
 dependencies = [
@@ -274,6 +304,7 @@ dependencies = [
  "authn-core",
  "authn-crypto",
  "authn-mfa",
+ "authn-oidc-provider",
  "authn-org",
  "authn-password",
  "authn-protect",
@@ -314,6 +345,30 @@ dependencies = [
  "utoipa",
  "uuid",
  "zeroize",
+]
+
+[[package]]
+name = "authn-oidc-provider"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "authn-account",
+ "authn-core",
+ "authn-crypto",
+ "authn-store",
+ "axum",
+ "base64 0.23.1",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
+ "sha2 0.11.1",
+ "sqlx",
+ "time",
+ "tokio",
+ "tracing",
+ "url",
+ "utoipa",
+ "uuid",
 ]
 
 [[package]]
@@ -390,6 +445,7 @@ dependencies = [
  "hickory-resolver",
  "http",
  "ipnet",
+ "maxminddb",
  "metrics",
  "reqwest",
  "serde",
@@ -2120,6 +2176,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "ipnetwork"
+version = "0.21.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf370abdafd54d13e54a620e8c3e1145f28e46cc9d704bc6d94414559df41763"
+
+[[package]]
 name = "itertools"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2325,6 +2387,18 @@ name = "matchit"
 version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
+
+[[package]]
+name = "maxminddb"
+version = "0.32.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9b43d2458d977b610b04a3858e6504f06133663d303a1a0606601b530bfc9bc6"
+dependencies = [
+ "ipnetwork",
+ "memchr",
+ "serde",
+ "thiserror 2.0.21",
+]
 
 [[package]]
 name = "md-5"

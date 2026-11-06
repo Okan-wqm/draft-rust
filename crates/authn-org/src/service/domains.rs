@@ -20,6 +20,10 @@
 //!   only by accepting an invitation).
 //! * `sso_required` is stored for Phase 2 (enterprise SSO) and not enforced
 //!   yet.
+//! * Verified domains are re-checked periodically (ORG-13, K-97,
+//!   [`OrgService::reverify_due_domains`]): only a **definitive absence**
+//!   of the record counts towards losing the verification; resolver errors
+//!   are counted separately.
 
 use authn_core::domain::Principal;
 use authn_core::error::{AuthError, codes};
@@ -73,12 +77,17 @@ struct DomainRow {
     last_checked_at: Option<OffsetDateTime>,
     verified_at: Option<OffsetDateTime>,
     created_at: OffsetDateTime,
+    check_failures: i32,
+    check_inconclusive: i32,
+    last_check_outcome: Option<String>,
+    unverified_at: Option<OffsetDateTime>,
 }
 
 macro_rules! domain_columns {
     () => {
         "id, domain, verification_value, status, auto_join, sso_required, last_checked_at, \
-         verified_at, created_at"
+         verified_at, created_at, check_failures, check_inconclusive, last_check_outcome, \
+         unverified_at"
     };
 }
 
@@ -95,6 +104,10 @@ impl OrgService {
             last_checked_at: row.last_checked_at,
             verified_at: row.verified_at,
             created_at: row.created_at,
+            consecutive_absent_checks: u32::try_from(row.check_failures).unwrap_or(0),
+            consecutive_inconclusive_checks: u32::try_from(row.check_inconclusive).unwrap_or(0),
+            last_check_outcome: row.last_check_outcome,
+            unverified_at: row.unverified_at,
         }
     }
 
@@ -247,7 +260,10 @@ impl OrgService {
         };
         let verified_at = (status == DomainStatus::Verified).then_some(now);
         let sql = concat!(
-            "UPDATE org_domains SET status = $3, last_checked_at = $4, verified_at = $5 \
+            "UPDATE org_domains SET status = $3, last_checked_at = $4, verified_at = $5, \
+               check_failures = 0, check_inconclusive = 0, \
+               last_check_outcome = CASE WHEN $3 = 'verified' THEN 'present' ELSE 'absent' END, \
+               unverified_at = CASE WHEN $3 = 'verified' THEN NULL ELSE unverified_at END \
              WHERE org_id = $1 AND id = $2 RETURNING ",
             domain_columns!()
         );
@@ -475,8 +491,15 @@ impl OrgService {
                 AuthError::new(codes::common::SERVICE_UNAVAILABLE)
                     .with_context("dns lookup timed out")
             })??;
-        Ok(records.iter().take(MAX_TXT_RECORDS).any(|r| {
-            authn_core::secret::constant_time_eq(r.trim().as_bytes(), expected.as_bytes())
-        }))
+        Ok(contains_value(&records, expected))
     }
+}
+
+/// Whether one of the (first [`MAX_TXT_RECORDS`]) TXT strings is exactly
+/// `expected` (constant time per comparison).
+pub(crate) fn contains_value(records: &[String], expected: &str) -> bool {
+    records
+        .iter()
+        .take(MAX_TXT_RECORDS)
+        .any(|r| authn_core::secret::constant_time_eq(r.trim().as_bytes(), expected.as_bytes()))
 }

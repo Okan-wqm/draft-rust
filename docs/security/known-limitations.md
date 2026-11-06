@@ -87,7 +87,7 @@
 |---|-----------|------|-----|
 | K-1 | **KMS/HSM yok** | KEK, pepper ve HMAC kökü süreç belleğinde ve yapılandırmada; süreç ele geçirilirse hepsi açığa çıkar | `KeyProvider` trait'i hazır; uygulama Faz 2 (K-96) |
 | K-2 | **`hmac_root_key` rotasyonu yıkıcıdır** | Kök tek sürümlüdür. Değiştirmek; bekleyen OTP/kodları, kurtarma kodlarını, güvenilir cihaz token'larını, CSRF token'larını, PoW görevlerini, hız sınırı anahtarlarını (bütçeler sıfırlanır), bilinen cihaz kayıtlarını (herkes için bir kez "yeni cihaz") ve eski anahtarlı audit olaylarının doğrulanabilirliğini (AU-5) etkiler | Rotasyon prosedürü DOC-06 runbook'larındadır ([`docs/operations/`](../operations/)) |
-| K-3 | Yalnızca EdDSA | RS256/ES256 bekleyen kaynak sunucusu kütüphaneleri access token'ı doğrulayamayabilir | ES256 Faz 2 (K-80); [ADR 0001](../architecture/adr/0001-jwt-implementation.md) |
+| K-3 | Yalnızca EdDSA | RS256/ES256 bekleyen kaynak sunucusu ve RP (OIDC sağlayıcısı, K-80) kütüphaneleri access / ID token'ı doğrulayamayabilir | ES256 K-80'in kalan işi; [ADR 0001](../architecture/adr/0001-jwt-implementation.md) |
 | K-4 | Bellekte sıfırlanmayan üçüncü taraf kopyaları | zxcvbn şifrenin ilk 100 karakterini, serde/axum gövde tamponları istekleri, lettre/minijinja e-posta gövdelerini ve SMTP parolasını sıfırlamadan tutar | Bellek dökümü tehdidi kapsam dışı |
 | K-5 | FIPS 140 doğrulanmış modül yok | RustCrypto crate'leri FIPS doğrulamalı değildir | [roadmap](../roadmap.md) G18 |
 | K-6 | Bilinçle yok sayılan iki RustSec uyarısı | `RUSTSEC-2023-0071` (`rsa`), `RUSTSEC-2026-0387` (`crypto-bigint` 0.5) | Yalnızca `openidconnect` içinde açık anahtarla imza doğrulamasında; gizli anahtarlı EC işlemleri `p256` 0.14 ile. Gerekçe `deny.toml`, `.cargo/audit.toml` |
@@ -113,12 +113,12 @@
 | G-1 | Kişisel API anahtarları org MFA ve ömür politikasından muaf | Politika sıkılaştırması oturumları kapatır ama mevcut anahtarları iptal etmez | Makine kimlik bilgileri MFA taşıyamaz; yöneticiler `api_keys:manage` ile iptal eder. IP izin listesi uygulanır |
 | G-2 | Introspection org'un herhangi bir API anahtarıyla yapılabilir | Ayrı bir `tokens:introspect` kapsamı yok; anahtar yalnızca kendi org'unun token'larını görür | Davranış değişikliği Faz 2 OAuth sağlayıcısına (K-80) bırakıldı (K-57 §4) |
 | G-3 | Passkey kaydı aktif org'un AAGUID politikasına göre | En katı politika girişte ve step-up'ta uygulandığı için izinsiz passkey kullanılamaz; yalnızca kaydedilebilir ve faktör sayısına girer | Kullanılabilirlik etkisi (K-57 §4) |
-| G-4 | Doğrulanmış domain'ler yeniden doğrulanmaz | Domain el değiştirirse otomatik katılım sürer | Faz 2 (K-97) |
+| G-4 | ~~Doğrulanmış domain'ler yeniden doğrulanmaz~~ — **kapatıldı (wave 11, ORG-13, K-97)** | Periyodik TXT kontrolü (`[org.domain_reverification]`, varsayılan 24 saatte bir); ardışık 3 kesin yoklukta domain doğrulanmamış olur, otomatik katılım durur. Kalan: el değiştiren domain en çok `interval × failure_threshold` (varsayılan ~3 gün) boyunca otomatik katılımı sürdürür; DNS'i hiç yanıt vermeyen bir domain `inconclusive_limit` (varsayılan 14) kontrol sürer. **Tasarım sınırı:** TXT değeri DNS'te herkese açıktır; süresi dolmuş bir domain'i satın alan kişi aynı değeri yeniden yayımlarsa eski org'un doğrulaması ve otomatik katılımı sürer — yeniden doğrulama yalnızca değeri yayımlamayan yeni sahipleri yakalar | Eşik ve aralık işletmeci ayarıdır; bildirim domain yöneticilerine gider |
 | G-5 | `org_domains.sso_required` saklanır ama uygulanmaz | Kurumsal SSO yok | Faz 2 (K-82) |
 | G-6 | Servis hesabının gönderdiği davetler SA devre dışı kalınca iptal edilmez | `invited_by` boştur | `members:invite` ile elle iptal |
 | G-7 | Başlatanı düşürülen bekleyen sahiplik devri iptal edilmez | Kabulde başlatanın hâlâ aktif sahip olması zorunludur | — |
 | G-8 | Org adı davet/devir e-postalarında görünür | İçerik (marka taklidi) denetlenmez | Kontrol/bidi/görünmez karakterler reddedilir; davetler hız sınırlıdır |
-| G-9 | Tek "platform admin" rolü | Destek ekibine en az yetki verilemez | Faz 2 (K-93) |
+| G-9 | ~~Tek "platform admin" rolü~~ — **kapatıldı (wave 11, ADM-09/ADM-10, K-93)** | Dört personel rolü (`support_readonly`, `support`, `security`, `platform_admin`); her admin ucu bir izin bildirir. Kalan: roller sabittir (özel personel rolü yok); personel yetkisi verme/alma yalnızca CLI'dadır, API yalnızca var olan personelin rolünü değiştirir | Bilinçli: ele geçirilmiş konsol oturumu yeni personel yaratamaz |
 | G-10 | Admin yetkisi yalnızca CLI'dan | İki adminli kurulumda adminler birbirine API'den işlem yapamaz | Bilinçli; kurtarma prosedürü [`docs/operations/admin-recovery.md`](../operations/admin-recovery.md) |
 | G-11 | Break-glass passkey kayıt bağlantısını ele geçiren ilk kişi passkey'i kaydeder | Bağlantı güvenli kanalla iletilmelidir | Kayıt yüksek öncelikli `break_glass_passkey_enrolled` olayı üretir; şüphede `suspend-admin` + yeni bağlantı |
 
@@ -156,7 +156,7 @@ Bunlar kodda **yoktur**; ayrıntı ve öncelik [roadmap](../roadmap.md)'te.
 
 | Kalem | Eksik |
 |-------|-------|
-| K-80 | OAuth 2.1 / OIDC sağlayıcısı (Authorization Code + PKCE, discovery, RFC 7009 revocation ucu, consent) |
+| K-80 | Çekirdek wave 11A'da yazıldı (varsayılan kapalı, bağımsız denetim bekliyor). Eksik: ES256, org tarafından yönetilen istemciler, `offline_access` (grant'ler tarayıcı oturumuna bağlı), istemci başına CORS, sır rotasyonunda geçiş süresi, `claims` / `id_token_hint` parametreleri, pairwise `sub`, OpenID uyumluluk paketi koşusu ([README](../../crates/authn-oidc-provider/README.md)) |
 | K-81 | DPoP (gönderene bağlı token) |
 | K-82 | Org başına kurumsal OIDC SSO, `sso_required` uygulaması, JIT üyelik |
 | K-83 | SCIM 2.0 |
@@ -168,13 +168,13 @@ Bunlar kodda **yoktur**; ayrıntı ve öncelik [roadmap](../roadmap.md)'te.
 | K-89 | Device Authorization Grant |
 | K-90 | Token Exchange |
 | K-91 | Dinamik istemci kaydı |
-| K-92 | OpenTelemetry dışa aktarıcısı |
-| K-93 | Personel rolleri |
+| K-92 | ~~OpenTelemetry dışa aktarıcısı~~ — **kapatıldı (wave 11, OPS-11/OPS-12):** opsiyonel OTLP/HTTP (`otel` özelliği, `[telemetry]`); span'lerde kişisel veri yok. Kalan: kayıp span'ler için yerleşik metrik yok (toplayıcı metrikleri izlenir), log dışa aktarımı (OTLP logs) yok, yalnızca HTTP span'i var (modül içi alt span'ler yok) |
+| K-93 | ~~Personel rolleri~~ — **kapatıldı (wave 11, ADM-09/ADM-10)**: bkz. G-9 |
 | K-94 | Toplu kullanıcı içe aktarma, scrypt |
 | K-95 | FIDO MDS3, WebAuthn Level 3 |
 | K-96 | KMS/HSM `KeyProvider` |
-| K-97 | Domain'in periyodik yeniden doğrulanması |
-| K-98 | GeoIP uygulaması (imkânsız seyahat) |
+| K-97 | ~~Domain'in periyodik yeniden doğrulanması~~ — **kapatıldı (wave 11, ORG-13)**: bkz. G-4 |
+| K-98 | ~~GeoIP uygulaması (imkânsız seyahat)~~ — **kapatıldı (wave 11, RSK-05):** `MmdbGeoIp` işletmecinin MaxMind DB dosyasını okur. Kalan: veri gömülmez (işletmeci kendi lisansıyla sağlar/günceller); konum doğruluğu sağlayıcıya bağlıdır — mobil operatör, VPN ve kurumsal çıkışlar yanlış konum (yanlış pozitif blok) üretebilir, `high_action = "step_up"` ile yumuşatılabilir; özel/ayrılmış adreslerden gelen girişlerde (iç ağ, güvenilmeyen vekil arkası) sinyal yoktur |
 | K-99 | HA referans dağıtımı (Helm, PostgreSQL HA, yedek) |
 | Faz 3 | SAML 2.0, push MFA, telefonla giriş, kullanıcı adı tanımlayıcı, yönetim UI'ı, barındırılan giriş arayüzü |
 

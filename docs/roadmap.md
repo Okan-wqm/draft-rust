@@ -100,9 +100,9 @@ Kısaca: B2C ve B2B'nin "uygulama içi" kimlik doğrulama çekirdeği (faktörle
 
 | # | Özellik (standart) | Barındırılan IdP'ler | Açık kaynak sunucular | Biz | Kanıt / not |
 |---|--------------------|----------------------|-----------------------|-----|-------------|
-| C1 | Authorization Code + PKCE (OAuth 2.1 taslağı, RFC 7636) | genel olarak sunulur | genel olarak sunulur | ❌ | Faz 2 K-80 |
-| C2 | OIDC Core + Discovery: ID token, `userinfo`, `/.well-known/openid-configuration` | genel olarak sunulur | genel olarak sunulur | ❌ | Faz 2 K-80 |
-| C3 | Native uygulamalar için OAuth (RFC 8252), üçüncü taraf istemciler | genel olarak sunulur | genel olarak sunulur | ❌ | Faz 2 K-80. Birinci taraf mobil uygulamalar C17 ile bugün çalışır |
+| C1 | Authorization Code + PKCE (OAuth 2.1 taslağı, RFC 7636) | genel olarak sunulur | genel olarak sunulur | ✅ | K-80 çekirdeği (wave 11A, varsayılan kapalı): yalnızca `code` + PKCE `S256` (OIDP-03, OIDP-06), `authn-oidc-provider`. Bağımsız denetim ve uyumluluk paketi koşusu bekliyor |
+| C2 | OIDC Core + Discovery: ID token, `userinfo`, `/.well-known/openid-configuration` | genel olarak sunulur | genel olarak sunulur | ✅ | K-80 (OIDP-08 … OIDP-10); RFC 8414 meta verisi de var |
+| C3 | Native uygulamalar için OAuth (RFC 8252), üçüncü taraf istemciler | genel olarak sunulur | genel olarak sunulur | ✅ | K-80: loopback (port serbest) ve özel şema `redirect_uri`, açık istemci + PKCE (OIDP-02). Org tarafından yönetilen istemciler kalan iş |
 | C4 | Client Credentials (makineden makineye) | genel olarak sunulur | genel olarak sunulur | ❌ | Bugünkü alternatif: org API anahtarları + servis hesapları (ORG-08/09). Faz 2 K-84 |
 | C5 | Device Authorization Grant (RFC 8628) | genel olarak sunulur | genel olarak sunulur | ❌ | Faz 2 K-89 (spesifikasyon §0 Faz 2'de sayar) |
 | C6 | Token Exchange (RFC 8693) | bazılarında | genel olarak sunulur | ❌ | `act` claim'i impersonation'da kullanılıyor (ADM-04). Uç nokta Faz 2 K-90 |
@@ -111,14 +111,14 @@ Kısaca: B2C ve B2B'nin "uygulama içi" kimlik doğrulama çekirdeği (faktörle
 | C9 | RAR (RFC 9396) | nadiren | bazılarında | ❌ | Faz 3 |
 | C10 | CIBA (OpenID Connect Client-Initiated Backchannel Authentication) | nadiren | bazılarında | ❌ | Faz 3 |
 | C11 | Dinamik istemci kaydı (RFC 7591/7592) | bazılarında | genel olarak sunulur | ❌ | Faz 2 K-91 |
-| C12 | Onay (consent) ekranı ve onay kayıtları | genel olarak sunulur | genel olarak sunulur | ❌ | Faz 2 K-80. Kullanım şartı onayları (ACC-11) ayrı bir şey |
-| C13 | Token introspection (RFC 7662) | genel olarak sunulur | genel olarak sunulur | 🟡 | SES-10: yalnızca kendi access token'larımız için, istemci kimliği org API anahtarı. OAuth istemci kimlik doğrulaması yok |
-| C14 | Token revocation (RFC 7009) | genel olarak sunulur | genel olarak sunulur | 🟡 | Oturum/refresh iptali uçları var (SES-11/12), ama RFC 7009 uç noktası değil |
+| C12 | Onay (consent) ekranı ve onay kayıtları | genel olarak sunulur | genel olarak sunulur | ✅ | K-80 (OIDP-05): onay kayıtları, kullanıcının geri alması; ekran işletmecinin önyüzünde (headless). Kullanım şartı onayları (ACC-11) ayrı bir şey |
+| C13 | Token introspection (RFC 7662) | genel olarak sunulur | genel olarak sunulur | ✅ | SES-10 (native token'lar, org API anahtarı) + K-80 OIDP-11 (sağlayıcı token'ları, OAuth istemci kimlik doğrulaması) |
+| C14 | Token revocation (RFC 7009) | genel olarak sunulur | genel olarak sunulur | ✅ | K-80 OIDP-11: `/v1/oauth2/revoke` (sağlayıcı token'ları); native oturumlar için SES-11/12 |
 | C15 | Back-channel / front-channel / RP-initiated logout (OIDC) | genel olarak sunulur | genel olarak sunulur | ❌ | Faz 2 K-86 (spesifikasyondaki "Single Logout") |
 | C16 | JWT access token (RFC 9068), JWKS, anahtar rotasyonu | genel olarak sunulur | genel olarak sunulur | ✅ | SES-08/09, CRY-09/10: `pending → active → retired → revoked`, acil iptal (ADM-06) |
 | C17 | Birinci taraf native token modu (rotasyonlu refresh, yeniden kullanım tespiti) | genel olarak sunulur | genel olarak sunulur | ✅ | SES-05: aile iptali, eşzamanlı refresh yeniden kullanım sayılır (`ses_05_concurrent_refresh_of_one_token_is_a_replay`) |
 | C18 | mTLS istemci kimlik doğrulaması / sertifikaya bağlı token (RFC 8705) | bazılarında | bazılarında | ❌ | Faz 3 |
-| C19 | Birlikte çalışabilir imza algoritmaları (RS256 / ES256) | genel olarak sunulur | genel olarak sunulur | 🟡 | Yalnızca EdDSA (ADR 0001). Birçok RP kütüphanesi EdDSA'yı desteklemeyebilir. K-80'de ES256 eklenecek, RS256 için bkz. §11 |
+| C19 | Birlikte çalışabilir imza algoritmaları (RS256 / ES256) | genel olarak sunulur | genel olarak sunulur | 🟡 | Yalnızca EdDSA (ADR 0001); K-80 çekirdeği de EdDSA ile çıktı. Birçok RP kütüphanesi EdDSA'yı desteklemeyebilir. ES256 K-80'in kalan işi, RS256 için bkz. §11 |
 
 ### D. Oturum yönetimi
 
@@ -134,7 +134,7 @@ Kısaca: B2C ve B2B'nin "uygulama içi" kimlik doğrulama çekirdeği (faktörle
 | D8 | Step-up, `auth_time` / `amr` (RFC 8176) / `acr` | genel olarak sunulur | genel olarak sunulur | ✅ | SES-08/13. Step-up tüm üyeliklerin en katı politikasını uygular |
 | D9 | Aktif organizasyon değiştirme ve org politikaları | genel olarak sunulur | bazılarında | ✅ | SES-17 |
 | D10 | Cihaza bağlı oturum / token (DPoP, Device Bound Session Credentials) | bazılarında | bazılarında | ❌ | DPoP Faz 2 K-81. DBSC taslak, §9 |
-| D11 | Uygulamalar arası tek oturum (SSO oturumu) | genel olarak sunulur | genel olarak sunulur | ❌ | OIDC sağlayıcısı gerektirir (K-80) |
+| D11 | Uygulamalar arası tek oturum (SSO oturumu) | genel olarak sunulur | genel olarak sunulur | 🟡 | K-80: tarayıcı oturumu ve verilmiş onayla `/authorize` ekransız kod döner; Single Logout (K-86) yok |
 
 ### E. B2B
 
@@ -145,7 +145,7 @@ Kısaca: B2C ve B2B'nin "uygulama içi" kimlik doğrulama çekirdeği (faktörle
 | E3 | ABAC / ilişki tabanlı (ReBAC) / kaynak düzeyinde ince taneli yetkilendirme | bazılarında | bazılarında | ❌ | Faz 3 |
 | E4 | Davetler | genel olarak sunulur | genel olarak sunulur | ✅ | ORG-05: doğrulanmış e-postaya bağlı, eşzamanlı kabulde tek üyelik |
 | E5 | Domain doğrulama (DNS TXT) + otomatik katılım | genel olarak sunulur | bazılarında | ✅ | ORG-06 |
-| E6 | Domain'in periyodik yeniden doğrulanması | bazılarında | nadiren | ❌ | `authn-org` README "kabul edilen riskler". Faz 2 K-97 |
+| E6 | Domain'in periyodik yeniden doğrulanması | bazılarında | nadiren | ✅ | ORG-13 (K-97, wave 11): periyodik TXT kontrolü, yalnızca kesin yokluk sayılır, eşikte doğrulama kalkar, otomatik katılım durur, domain yöneticilerine bildirim |
 | E7 | Org başına MFA / phishing'e dayanıklı MFA / yöntem / IP / oturum ömrü politikası | genel olarak sunulur | bazılarında | ✅ | ORG-07, SES-21, MFA-08 |
 | E8 | Org başına SSO bağlantısı ve SSO zorunluluğu | genel olarak sunulur | bazılarında | ❌ | `org_domains.sso_required` saklanıyor ama uygulanmıyor. Faz 2 K-82 |
 | E9 | API anahtarları (kapsam, son kullanma, rotasyon, tarayıcıya uygun biçim) | genel olarak sunulur | bazılarında | ✅ | ORG-08: `ak_<env>_…_<crc32>`, rotasyon zinciri iptali |
@@ -166,7 +166,7 @@ Kısaca: B2C ve B2B'nin "uygulama içi" kimlik doğrulama çekirdeği (faktörle
 | F4 | Kritik admin işlemlerinde çift onay (four-eyes) | nadiren | nadiren | ✅ | K-66: `/v1/admin/approvals`, `crates/authn-admin/tests/four_eyes.rs` |
 | F5 | Break-glass hesabı ve acil durum işlemleri | bazılarında | bazılarında | ✅ | ADM-05/06, K-07/K-11 |
 | F6 | Her admin işleminde gerekçe kaydı | bazılarında | nadiren | ✅ | ADM-08, K-39/K-62 (gerekçeler kullanıcı dışa aktarımında) |
-| F7 | Personel için ayrıntılı roller (destek / güvenlik / salt-okunur) | genel olarak sunulur | genel olarak sunulur | ❌ | Tek "platform admin" rolü var. Faz 2 K-93 |
+| F7 | Personel için ayrıntılı roller (destek / güvenlik / salt-okunur) | genel olarak sunulur | genel olarak sunulur | ✅ | ADM-09/ADM-10 (K-93, wave 11): `support_readonly`, `support`, `security`, `platform_admin`; her admin ucu bir izin bildirir, çift onay yetkisi yalnızca `security` + `platform_admin`. Özel personel rolü yok |
 | F8 | Yönetim konsolu (UI) | genel olarak sunulur | genel olarak sunulur | ❌ | Yalnızca API. Faz 3 |
 | F9 | Audit/olay akışının SIEM'e aktarımı | genel olarak sunulur | bazılarında | 🟡 | Org webhook'ları ve outbox var. Platform geneli SIEM akışı (syslog/OTLP/nesne depolama) yok. Faz 3 |
 
@@ -179,7 +179,7 @@ Kısaca: B2C ve B2B'nin "uygulama içi" kimlik doğrulama çekirdeği (faktörle
 | G3 | Rate limit (dağıtık) | genel olarak sunulur | genel olarak sunulur | ✅ | PRT-01/02/04: GCRA, PostgreSQL/Redis/bellek, atomik |
 | G4 | Hesap kilitleme saldırganın DoS aracına dönüşmeden (yumuşak kilit) | genel olarak sunulur | bazılarında | ✅ | PRT-03: passkey, magic link ve bilinen cihaz geçer. Bütçeler atomik olarak önceden tüketilir |
 | G5 | Davranışsal / ML tabanlı anomali tespiti | genel olarak sunulur | nadiren | ❌ | Yalnızca kural tabanlı puanlama (RSK-02). Faz 3 |
-| G6 | İmkânsız seyahat (GeoIP) | genel olarak sunulur | bazılarında | 🟡 | `GeoIpLookup` portu ve mantığı var, üretim uygulaması yok (yalnızca testkit sahtesi). Faz 2 K-98 |
+| G6 | İmkânsız seyahat (GeoIP) | genel olarak sunulur | bazılarında | ✅ | RSK-05 (K-98, wave 11): `MmdbGeoIp` işletmecinin MaxMind DB dosyasını okur (veri gömülmez), periyodik yeniden yükleme, kaba konum (0,1°) |
 | G7 | Anonimleştirici ağ (TOR/proxy) sinyali | genel olarak sunulur | nadiren | ✅ | RSK-02: `anonymizing_networks_file`. Otomatik yenileme yok |
 | G8 | Yeni cihaz bildirimi + "bu ben değilim" | genel olarak sunulur | bazılarında | ✅ | RSK-04 |
 | G9 | Shared Signals Framework: CAEP / RISC (sürekli erişim değerlendirmesi) | bazılarında | nadiren | ❌ | Faz 2 K-88 |
@@ -239,7 +239,7 @@ Step-up G kategorisinde ayrıca sayılmadı (D8).
 | J2 | HA referans mimarisi (PostgreSQL HA, yük dengeleyici, yedek) | uygulanamaz | bazılarında | ❌ | Faz 2 K-99 |
 | J3 | Yapılandırılmış log, kişisel veri maskeleme | uygulanamaz | genel olarak sunulur | ✅ | OPS-03 |
 | J4 | Prometheus metrikleri | uygulanamaz | genel olarak sunulur | ✅ | OPS-04 (ayrı port) |
-| J5 | Dağıtık izleme (OpenTelemetry) | uygulanamaz | bazılarında | 🟡 | `tracing` span'leri ve `request_id` var, OTLP dışa aktarıcı yok. Faz 2 K-92 |
+| J5 | Dağıtık izleme (OpenTelemetry) | uygulanamaz | bazılarında | ✅ | OPS-11/OPS-12 (K-92, wave 11): opsiyonel OTLP/HTTP (`otel` özelliği), W3C Trace Context, span'lerde kişisel veri yok (testle zorlanır). Yalnızca HTTP span'i |
 | J6 | Sağlık uçları | uygulanamaz | genel olarak sunulur | ✅ | OPS-05 |
 | J7 | Zarif kapanış | uygulanamaz | genel olarak sunulur | ✅ | OPS-07 |
 | J8 | Şema migration'ları (expand/contract, sürüm aralıkları) | uygulanamaz | genel olarak sunulur | ✅ | OPS-10, contracts §6 |
@@ -281,10 +281,10 @@ Dürüst liste, etkisi büyükten küçüğe:
 3. **SDK, barındırılan UI ve bileşen yok (I2–I8).** Mobil ve web entegrasyonu bugün yalnızca HTTP API ve belgeyle yapılıyor. Rakipler genellikle hazır SDK ve ekran sunar. Güvenli token saklama gibi işler entegratöre kalıyor.
 4. **İmza algoritması birlikte çalışabilirliği zayıf (C19).** Yalnızca EdDSA destekliyoruz. Kaynak sunucuları ve RP kütüphanelerinin bir kısmı EdDSA desteklemeyebilir.
 5. **Gönderene bağlı token (DPoP/mTLS) yok (C7, C18, D10).** Mobil access/refresh token'ı çalınırsa taşıyıcı (bearer) olarak kullanılabilir. Refresh yeniden kullanım tespiti bunu yalnızca kısmen azaltır.
-6. **Risk motoru kural tabanlı (G5, G6).** İmkânsız seyahat için üretim GeoIP uygulaması yok. Davranışsal/ML sinyali ve paylaşılan sinyal (CAEP/RISC) yok.
+6. **Risk motoru kural tabanlı (G5).** İmkânsız seyahat artık işletmecinin GeoIP veritabanıyla çalışıyor (K-98); davranışsal/ML sinyali ve paylaşılan sinyal (CAEP/RISC) yok.
 7. **Push MFA, telefonla giriş ve kullanıcı adı yok (A15–A17).** B2C'de dönüşüm oranını etkileyebilir. Güvenlik açısından ise bilinçli bir tercih (SMS zayıf faktör).
-8. **Yönetimde ayrıntılı personel rolü ve UI yok (F7, F8).** Destek ekibine en az yetki verilemiyor: herkes tam platform admini.
-9. **Operasyon olgunluğu doğrulanmadı.** Docker imajı hiç çalıştırılmadı (K-55). Helm/HA referansı (K-99) ve OpenTelemetry yok. Runbook'lar (DOC-06, wave 7) ve performans bütçeleri (K-70, wave 5B) artık var, ama bütçeler paylaşımlı bir geliştirme ortamındaki release ölçümüne dayanır (`performance.md` "Ölçüm ortamı"); üretim benzeri donanımda doğrulanmadı. Bağımsız dış pentest yapılmadı (K-72).
+8. **Yönetim UI'ı yok (F8).** Personel rolleri K-93 ile eklendi (F7); özel (kuruluşa göre tanımlanan) personel rolü yok.
+9. **Operasyon olgunluğu doğrulanmadı.** Docker imajı hiç çalıştırılmadı (K-55). Helm/HA referansı (K-99) yok (OpenTelemetry K-92 ile eklendi). Runbook'lar (DOC-06, wave 7) ve performans bütçeleri (K-70, wave 5B) artık var, ama bütçeler paylaşımlı bir geliştirme ortamındaki release ölçümüne dayanır (`performance.md` "Ölçüm ortamı"); üretim benzeri donanımda doğrulanmadı. Bağımsız dış pentest yapılmadı (K-72).
 10. **Başka IdP'den göç aracı sınırlı (J10, J11).** bcrypt/PBKDF2/MD5/SHA-1 hash'leri doğrulanıyor, ama toplu kullanıcı içe aktarma ve scrypt türevi biçimler yok. Eski bcrypt/PBKDF2 hash'li hesaplarda giriş süresi farklı olduğu için göç tamamlanana kadar kısmi bir hesap varlığı sinyali kalıyor (`authn-crypto` README).
 11. **Yalnızca iki dil (I13), kiracı başına marka yok (E15), çok bölgeli dağıtım yok (I16, H8).**
 
@@ -393,7 +393,7 @@ SDK'lar (K-85): K-80 ve K-81 API'leri dondurulunca başlar (ayrı depolar)
 
 **K-91 — Dinamik istemci kaydı:** Varsayılan **kapalı**. Açıkken ilk erişim token'ı (initial access token) zorunlu, `redirect_uri` kuralları K-80 ile aynı ve kayıt yönetimi RFC 7592'ye uygun olur. Ajan/araç ekosistemlerindeki (ör. MCP yetkilendirmesi) talep nedeniyle B2B önemi artıyor. İlgili yeni taslaklar (istemci meta veri belgeleri) izlenir.
 
-**K-92 — OpenTelemetry:** `tracing-opentelemetry` + OTLP dışa aktarıcı (varsayılan kapalı). Span özniteliklerinde kişisel veri ve sır bulunmaz (OPS-03 maskeleme kuralları). Bir test, bilinen sır alanlarının span'lere girmediğini zorlar.
+**K-92 — OpenTelemetry** (✅ wave 11, OPS-11/OPS-12): `tracing-opentelemetry` + OTLP dışa aktarıcı (varsayılan kapalı). Span özniteliklerinde kişisel veri ve sır bulunmaz (OPS-03 maskeleme kuralları). Bir test, bilinen sır alanlarının span'lere girmediğini zorlar.
 
 **K-93 — Personel rolleri** (`authn-admin`): `support_readonly`, `support`, `security`, `platform_admin` rolleri ve her admin ucu için izin tablosu. Four-eyes (K-66) yalnızca `platform_admin` ve `security` için onay yetkisi verir. Break-glass değişmez.
 
@@ -405,7 +405,7 @@ SDK'lar (K-85): K-80 ve K-81 API'leri dondurulunca başlar (ayrı depolar)
 
 **K-97 — Domain yeniden doğrulama** (`authn-org`): Periyodik TXT kontrolü yapılır. Ardışık başarısızlıkta domain `unverified` olur, otomatik katılım ve `sso_required` durur, org sahiplerine bildirim gider.
 
-**K-98 — GeoIP** (`authn-protect`): MMDB biçimli bir veritabanını okuyan `GeoIpLookup` uygulaması. Veritabanı **gömülmez** (RSK-02), işletmeci kendi lisansıyla sağlar.
+**K-98 — GeoIP** (`authn-protect`; ✅ wave 11, RSK-05): MMDB biçimli bir veritabanını okuyan `GeoIpLookup` uygulaması. Veritabanı **gömülmez** (RSK-02), işletmeci kendi lisansıyla sağlar.
 
 **K-99 — HA referansı:** Helm chart (uygulama durumsuz, işler çoklu instance güvenli), PostgreSQL HA ve yedek/geri yükleme rehberi, Redis'in opsiyonel olduğu yapılandırma. K-55 (Docker'ın gerçekten çalıştırılması) önkoşuldur.
 
@@ -475,10 +475,10 @@ Kural (LIC-01, `CLAUDE.md`): yalnızca izin verici lisanslar. Tek kalıcı istis
 | K-80 RS256 | RSA özel anahtar işlemleri için `rsa` crate'inin zamanlama açığı var (RUSTSEC-2023-0071; şu an yalnızca `openidconnect` içinde **açık anahtarla** doğrulamada kabul edilmiş, bkz. HANDOFF §7). Bu crate ile imzalama yapılmamalı | Önce EdDSA + ES256 (`p256 0.14`). RS256 gerçekten gerekiyorsa sabit zamanlı, denetlenmiş bir arka uç (ör. `aws-lc-rs`) değerlendirilmeli. Lisans bileşenleri (ISC / Apache-2.0 / OpenSSL türevi kısımlar olabilir) ve C derleme bağımlılığı ayrıca doğrulanıp proje sahibine sunulmalı |
 | K-81 DPoP | Kanıtlar yalnızca açık anahtarla doğrulanır | ES256 + EdDSA ile başlanmalı. RS256 kanıtları kabul edilecekse yukarıdaki advisory istisnasının kapsamı yeniden değerlendirilmeli |
 | K-83 SCIM | Yeni kriptografi yok | `serde` yeterli. Filtre ayrıştırıcısı kendi kodumuz (fuzz) |
-| K-92 OpenTelemetry | `opentelemetry*` crate'leri Apache-2.0. gRPC taşıyıcısı ek geçişli bağımlılık getirir | OTLP/HTTP tercih edilebilir. `cargo deny` ile geçişli bağımlılıklar kontrol edilmeli |
+| K-92 OpenTelemetry | `opentelemetry*` crate'leri Apache-2.0. gRPC taşıyıcısı ek geçişli bağımlılık getirir | **Uygulandı (wave 11):** yalnızca OTLP/HTTP (protobuf); tonic/gRPC yok, reqwest 0.12 yok (authn-protect'in mevcut reqwest 0.13 tabanlı `HttpClient` portu). Yeni crate'ler: `opentelemetry`, `opentelemetry_sdk`, `opentelemetry-otlp`, `opentelemetry-http`, `opentelemetry-proto`, `prost`, `prost-derive` (Apache-2.0), `tracing-opentelemetry` (MIT), `web-time` (MIT/Apache-2.0); `cargo deny` geçer |
 | K-95 FIDO MDS | X.509 zinciri doğrulaması | `rustls-webpki` / `x509-parser` gibi izin verici crate'ler (lisanslar doğrulanmalı) |
 | K-96 KMS | Bulut SDK'ları ağır olabilir | HTTP API'leri mevcut `HttpClient` ile çağırılabilir. İmzalama (ör. SigV4) HMAC birleşimidir, kendi algoritma değildir; varsa denetlenmiş bir izin verici crate tercih edilir |
-| K-98 GeoIP | Okuyucu crate'ler izin verici olabilir. **Veritabanlarının** kendi lisansları/EULA'ları var, bazıları izin verici değil (ör. paylaşımlı-benzer lisanslar) | Veritabanı gömülmez, işletmeci sağlar (RSK-02). Belgede bu açıkça yazılır |
+| K-98 GeoIP | Okuyucu crate'ler izin verici olabilir. **Veritabanlarının** kendi lisansları/EULA'ları var, bazıları izin verici değil (ör. paylaşımlı-benzer lisanslar) | Veritabanı gömülmez, işletmeci sağlar (RSK-02). Belgede bu açıkça yazılır. **Uygulandı (wave 11):** okuyucu `maxminddb` (ISC) + `ipnetwork` (MIT/Apache-2.0), `mmap` kapalı; depoda GeoIP verisi yok, test fikstürleri `authn_testkit::mmdb` ile üretilir |
 | SAML (Faz 3) | Olgun XML-DSig yığınları çoğunlukla C kütüphanelerine (libxml2, xmlsec) FFI ile bağlıdır; saf Rust seçenekler daha az olgun. XML kanonikleştirme güvenlik açısından kritik | Lisanslar ve C bağımlılıkları doğrulanmalı. Kanonikleştirme ve imza doğrulamasını kendimiz yazmayız. Denetlenmiş bir yığın yoksa SAML'ı ayrı, izole bir süreç olarak tasarlamak değerlendirilir |
 | Push MFA (Faz 3) | Bazı push servislerinin sunucu kimlik doğrulaması RSA özel anahtarla JWT imzalamayı gerektirir (K-80 RS256 notu) | ES256 kullanan servisler doğrudan desteklenir. Diğerleri için RS256 kararı K-80 ile birlikte verilir |
 | Terraform sağlayıcısı (Faz 3) | Sağlayıcı geliştirme çerçevesinin MPL-2.0 olduğu biliniyor (doğrulanmalı). MPL yalnızca `webauthn-rs` için onaylı | Proje sahibinin ayrı bir istisna kararı gerekir. Ayrı depoda, ayrı lisans politikasıyla yürütülebilir |

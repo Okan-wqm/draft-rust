@@ -20,6 +20,7 @@ Kötüye kullanım koruması ve HTTP sertleştirmesi: rate limit (bellek / Postg
 | RSK-02 | yeni cihaz / ağ (/24, /48), hata hızı, TOR/proxy listesi, imkânsız seyahat (yalnızca `GeoIpLookup` ile) | `rsk_02_new_device_new_network_and_failures_raise_the_level`, `rsk_02_impossible_travel_requires_a_geoip_provider` |
 | RSK-03 | `risk::decide`, `RiskAlerts::on_blocked_login` | `rsk_03_policy_mapping_is_configurable`, `rsk_03_blocked_login_is_audited_and_notified_without_mail_bombing` |
 | RSK-04 | `RiskAlerts::on_successful_login` + `NotMeTokenIssuer` | `rsk_04_new_device_login_sends_notification_with_not_me_token`, `rsk_04_alert_and_device_record_commit_together`, `aud_03_new_device_audit_metadata_holds_no_free_text` |
+| RSK-05 | `risk::MmdbGeoIp` (`GeoIpLookup` uygulaması, MaxMind DB okuyucu; K-98) | `rsk_05_mmdb_lookup_returns_only_a_coarse_location`, `rsk_05_unknown_private_and_reserved_addresses_have_no_location`, `rsk_05_reload_swaps_a_changed_file_and_keeps_the_old_one_on_failure`, `rsk_05_impossible_travel_through_the_mmdb_reader`, `rsk_05_login_from_a_private_address_keeps_the_last_public_fix` |
 
 DOC-03 (`docs/security/`) dokümantasyon aşamasında üretilecek; bu crate'in güvenlik notları aşağıdadır. PRT-06 (istemci IP'si) `authn-core`'da, PRT-11 (gövde/zaman aşımı/eşzamanlılık) `authn-server`'dadır.
 
@@ -76,6 +77,8 @@ Proof-of-work yanıtı: `SHA-256(challenge ":" solution)` en az `difficulty` sı
 | `cors.allowed_origins` / `max_age` | `[]` / `10m` | Boş = CORS kapalı; en fazla 2 sa |
 | `risk.enabled`, `anonymizing_networks_file`, `failure_window`, `failure_threshold`, `medium_action`, `high_action` | `true`, —, `1h`, 5, `step_up`, `block` | Dosya bozuksa başlangıçta hata (satır numarası, içerik loglanmaz) |
 | `risk.impossible_travel_speed_kmh` | 1000 | Yalnızca `GeoIpLookup` takılıysa (yeni) |
+| `risk.geoip_database` | — | MaxMind DB (`.mmdb`) yolu (RSK-05). Ayarlıysa sunucu `MmdbGeoIp`'i takar; okunamaz, 512 MiB'tan büyük ya da doğrulamadan geçmeyen dosyada başlangıç başarısız |
+| `risk.geoip_reload_interval` | `1h` | 1 dk – 7 gün; değişen dosya bu aralıkla yeniden yüklenir |
 | `outbound.timeout` / `connect_timeout` | `10s` / `5s` | `connect_timeout` (yeni) ≤ `timeout` |
 | `outbound.max_response_bytes` | 1 MiB | |
 | `outbound.allow_private_networks` | `false` | **Yalnızca test/geliştirme**: özel ağlar *ve* düz `http`; üretimde reddedilir |
@@ -104,9 +107,17 @@ Proof-of-work yanıtı: `SHA-256(challenge ":" solution)` en az `difficulty` sı
 - Proof-of-work: görev **durumsuz** üretilir (`base64url(payload).base64url(HMAC)`; id, nonce, zorluk, zamanlar, eylem). Doğrulama sırası: boyut/karakter seti → kanonik kodlama → sabit zamanlı HMAC → eylem → süre → iş → **tek kullanım** (`captcha_pow_challenges`'a `INSERT … ON CONFLICT DO NOTHING`; eşzamanlı 16 denemede tam bir başarı). Görev uç noktasını spamlamak veritabanı yazması üretmez. Tüketilmiş görev kayıtları süreleri dolduktan `captcha::PURGE_GRACE` (15 dk) sonra silinir: süre her instance'ın kendi saatiyle denetlendiği için kayıt, saati geride kalan bir instance görevi hâlâ geçerli sayarken silinirse aynı çözüm tekrar kullanılabilirdi.
 - Sağlayıcı `disabled` iken CAPTCHA hiçbir zaman zorunlu tutulmaz (`always` + `disabled` konfigürasyonda reddedilir).
 
-### Risk (RSK-01…04)
+### Risk (RSK-01…05)
 - Puan: yeni cihaz 1, yeni ağ 1, son hatalar 1, anonimleştirici ağ 2, imkânsız seyahat 3; 0 → low, 1–2 → medium, ≥3 → high. Geçmişi olmayan kullanıcıda (kayıttan sonraki ilk giriş) yenilik sinyali üretilmez. Passkey girişlerinde yenilik ve hata sinyalleri sayılmaz.
 - İmkânsız seyahat yalnızca bir `GeoIpLookup` takılırsa; doğruluk yarıçapları mesafeden düşülür, süre en az 1 dk kabul edilir. GeoIP hatası girişi düşürmez (sinyal atlanır, loglanır).
+### GeoIP (RSK-05, K-98) — `risk::MmdbGeoIp`
+- **Veritabanı gömülmez.** İşletmeci City düzeyinde bir MaxMind DB dosyası sağlar (`protect.risk.geoip_database`): MaxMind GeoLite2-City / GeoIP2-City, DB-IP City Lite, IPinfo vb. **Okuyucu crate'i** `maxminddb` ISC lisanslıdır (izin verici, `cargo deny` geçer); **verinin lisansı ayrıdır ve bu projenin sorumluluğunda değildir:** GeoLite2 MaxMind'ın GeoLite EULA'sıyla (hesap ve lisans anahtarı; EULA'daki atıf ve eski sürümleri güncelleme/silme yükümlülükleri), DB-IP Lite CC BY 4.0 ile (atıf zorunlu), ticari GeoIP2 ise ücretli lisansla gelir. Bazıları izin verici değildir; seçmeden önce şartları okuyun. Depoda üçüncü taraf GeoIP verisi **yoktur**: test fikstürleri `authn_testkit::mmdb` ile deterministik olarak üretilir.
+- **Dosya bellek içine okunur** (`mmap` yok: `memmap2` `unsafe` gerektirir; `maxminddb` varsayılan özellikleri kapalı). Açılışta `Reader::verify` tüm arama ağacını ve veri bölümünü bir kez dolaşır: kesik/bozuk dosya başlangıçta reddedilir, aramalar sırasında değil.
+- **Yeniden yükleme: periyodik, değişince.** Sunucu her `geoip_reload_interval`'da dosyanın değişme zamanı/boyutuna bakar; değiştiyse yeni dosyayı okuyup doğrular ve **atomik** olarak değiştirir. Bozuk ya da silinmiş yeni dosya eskisini korur (hata loglanır). Güncelleyiciler dosyayı yerinde yazmak yerine `rename` ile değiştirmelidir (yarım dosya zaten reddedilir, ama gereksiz hata logu üretir).
+- **Konum yok = sinyal yok:** özel (RFC 1918), loopback, CGNAT, link-local, belge, ayrılmış, ULA vb. adresler (`outbound::is_public` sınıflandırıcısı, IPv4-eşlemeli IPv6 dahil) veritabanına **sorulmaz**; bilinmeyen adres, koordinatsız (ülke düzeyi) kayıt ve IPv4-only veritabanında IPv6 da konumsuzdur. Böyle bir giriş imkânsız seyahat üretmez ve son bilinen konumu silmez (`COALESCE`; VPN'den sonra gerçek bir sıçrama yine yakalanır).
+- **Veri en aza indirme (KVKK/GDPR):** sonuçta yalnızca ülke kodu, İngilizce şehir adı (64 karakter, kontrol karakterleri atılır) ve **0,1°'ye yuvarlanmış** koordinatlar (≈ 11 km; şehir veritabanlarından daha kaba) bulunur. Posta kodu, bölge, ISS/ASN, saat dilimi çözülmez. Doğruluk yarıçapına yuvarlama payı (8 km) eklenir; böylece seyahat testi temkinli kalır. `known_devices.last_latitude/last_longitude` yalnızca bu kaba değerleri tutar.
+- GeoIP hatası (bozuk kayıt) girişi düşürmez: sinyal atlanır, loglanır.
+
 - `RiskAlerts::on_successful_login`: cihaz/ağ kaydı, "bu ben değilim" token'ı (session'ın `NotMeTokenIssuer`'ı), `NewDeviceLogin` bildirimi ve `risk.new_device_login` audit'i **tek transaction**'da (biri başarısızsa hiçbiri). Bildirimde IP maskeli, cihaz adı woothee'nin sabit sözlüğünden. Audit olayının metadata'sında cihaz açıklaması ("Firefox on Linux") **yok** (wave 6B): AUD-03 serbest metni reddettiği için her yeni cihaz girişi bir sansür uyarısı loglanıyor ve değer `[REDACTED]` saklanıyordu. Açıklama user agent'tan türetilir; user agent kişisel veridir ve yalnızca silinebilir `audit_event_pii` tablosunda tutulur (`with_context`, AUD-05), değişmez zincire girmez. Metadata yalnızca `new_network` taşır.
 - `on_blocked_login`: her blok audit'lenir; kullanıcıya bildirim 15 dk'da en fazla bir (şifreyi bilen saldırgan kurbanı e-postaya boğamaz). `suspicious_login_blocked` yalnızca kimlik bilgisi doğrulandıktan **sonra** döner (SES-01).
 
@@ -171,6 +182,7 @@ let limiter = authn_protect::rate_limit::build_rate_limiter(&cfg.protect.rate_li
 let http: Arc<dyn HttpClient> = Arc::new(authn_protect::outbound::SsrfSafeHttpClient::new(&cfg.protect.outbound)?);
 let verifier = authn_protect::captcha::build_captcha_verifier(&cfg.protect.captcha, http.clone(), pool.clone(), clock.clone(), &keys)?;
 let captcha = authn_protect::CaptchaService::new(verifier, limiter.clone(), audit.clone(), clock.clone(), &cfg.protect.captcha);
+// RSK-05: Some(Arc::new(MmdbGeoIp::open(path)?)) when protect.risk.geoip_database is set
 let risk = authn_protect::DefaultRiskEvaluator::new(pool.clone(), hasher.clone(), limiter.clone(), &cfg.protect.risk, geoip /* Option<Arc<dyn GeoIpLookup>> */)?;
 let alerts = authn_protect::RiskAlerts::new(risk.clone(), notifier.clone(), audit.clone(), limiter.clone(), clock.clone());
 let login = authn_protect::LoginProtection::new(pool.clone(), clock.clone(), limiter.clone(), audit.clone(), captcha.clone(), risk.store().clone(), &cfg.protect);
@@ -210,12 +222,13 @@ let redirects = authn_protect::RedirectValidator::from_config(&cfg.protect, &cfg
 - ~~Cihaz hash'i için ayrı bir `KeyPurpose` yok~~ — **kapatıldı (K-21):** `known_devices.device_hash` kendi `KeyPurpose::KnownDevice` alt anahtarını kullanır (`src/keys.rs`).
 - ~~CAPTCHA sağlayıcılarının `hostname` alanı doğrulanmıyor~~ — **kapatıldı (K-58):** Turnstile/hCaptcha yanıtının `hostname`'i `protect.captcha.hostnames` listesine karşı denetlenir (`captcha/siteverify.rs`); liste production ve staging'de zorunludur. Turnstile `action` da doğrulanır.
 - Anonimleştirici ağ listesi başlangıçta okunur; yenilemek için `DefaultRiskEvaluator::with_anonymizing_networks` ile yeni bir değerlendirici kurulmalı (otomatik yenileme yok).
+- GeoIP veritabanının doğruluğu (özellikle mobil operatör ve VPN çıkışları) veri sağlayıcısına bağlıdır; yanlış konum yanlış imkânsız seyahat (yüksek risk → blok) üretebilir. Etki `high_action = "step_up"` ile yumuşatılabilir. Hız eşiği `impossible_travel_speed_kmh` (varsayılan 1000 km/sa) ve iki tarafın doğruluk yarıçapı mesafeden düşülerek yanlış pozitifler azaltılır.
 - Kullanıcı tarafından verilen URL'lerde port kısıtı yok (adres sınıflandırması iç ağları zaten dışlar).
 
 ## Testler
 
 - Birim + proptest (`src/**`): GCRA değişmezleri, IP sınıflandırıcı (tablo + proptest), yönlendirme doğrulayıcı (saldırı listesi + proptest), başlıklar, CORS, host, PoW yük biçimi, ağ listesi, coğrafya, konfigürasyon.
-- Entegrasyon (`tests/`): `rate_limit.rs` (PostgreSQL + Redis, eşzamanlılık), `outbound.rs` (wiremock: sabitleme, yönlendirme, boyut, zaman aşımı, engellenen hedefe hiç bağlantı yok), `captcha.rs` (PoW tek kullanım/eşzamanlı çift harcama/sahtecilik/saat sapmasında tekrar, uç nokta, Turnstile), `login.rs` (CAPTCHA yükseltme, eşzamanlı denemeler, yumuşak kilit, hesap varlığı sızıntısı + zamanlama + eşit iş), `risk.rs` (RSK-01…04), `web_stack.rs` (OPS-02 sırasında katmanlar).
+- Entegrasyon (`tests/`): `geoip.rs` (RSK-05: üretilen MMDB fikstürüyle kaba konum, özel/ayrılmış/bilinmeyen adres, yeniden yükleme ve bozuk dosya, gerçek değerlendiriciyle imkânsız seyahat), `rate_limit.rs` (PostgreSQL + Redis, eşzamanlılık), `outbound.rs` (wiremock: sabitleme, yönlendirme, boyut, zaman aşımı, engellenen hedefe hiç bağlantı yok), `captcha.rs` (PoW tek kullanım/eşzamanlı çift harcama/sahtecilik/saat sapmasında tekrar, uç nokta, Turnstile), `login.rs` (CAPTCHA yükseltme, eşzamanlı denemeler, yumuşak kilit, hesap varlığı sızıntısı + zamanlama + eşit iş), `risk.rs` (RSK-01…04), `web_stack.rs` (OPS-02 sırasında katmanlar).
 - Fuzz: `fuzz/fuzz_targets/return_to.rs` (`cargo +nightly fuzz run return_to`).
 - Redis testleri Redis'e (`REDIS_URL`, varsayılan `redis://127.0.0.1:6379`) erişemezse not düşerek atlanır.
 

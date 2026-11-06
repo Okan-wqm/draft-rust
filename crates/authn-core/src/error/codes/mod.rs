@@ -15,6 +15,7 @@
 //! | `notify.rs` | authn-notify |
 //! | `session.rs` | authn-session |
 //! | `oidc_client.rs` | authn-oidc-client |
+//! | `oidc_provider.rs` | authn-oidc-provider |
 //! | `admin.rs` | authn-admin |
 //! | `server.rs` | authn-server |
 //!
@@ -31,6 +32,7 @@ pub mod crypto;
 pub mod mfa;
 pub mod notify;
 pub mod oidc_client;
+pub mod oidc_provider;
 pub mod org;
 pub mod password;
 pub mod protect;
@@ -54,6 +56,7 @@ const REGISTRIES: &[&[ErrorCode]] = &[
     notify::ALL,
     session::ALL,
     oidc_client::ALL,
+    oidc_provider::ALL,
     admin::ALL,
     server::ALL,
 ];

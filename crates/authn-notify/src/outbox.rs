@@ -174,6 +174,9 @@ fn limit_action(kind: &NotificationKind) -> Option<&'static str> {
         | NotificationKind::IdentityLinked { .. }
         | NotificationKind::IdentityUnlinked { .. }
         | NotificationKind::EmailChangeReverted { .. } => None,
+        // One notice per domain and administrator when the domain loses its
+        // verification; bounded by the organization's domains (ORG-13).
+        NotificationKind::OrgDomainUnverified { .. } => None,
     }
 }
 

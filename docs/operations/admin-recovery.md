@@ -9,6 +9,7 @@ Belgedeki her `rust-authentication` komut satırı, her bayrak, her API yolu (y�
 | Kavram | Ne demek |
 |--------|----------|
 | **Platform admini** | `users.is_platform_admin = true` olan hesap. Admin API'si yalnızca passkey ile (UV dahil, `hwk`/`swk` + `mfa`) açılmış, son `admin.step_up_max_age` (varsayılan 10 dk) içinde step-up yapmış bir oturumla ve (ayarlıysa) IP izin listesinden çalışır. Yetki her istekte veritabanından yeniden okunur: askıya alınan admin bir sonraki istekte reddedilir. |
+| **Personel rolü (K-93)** | Her personelin (`is_platform_admin = true`) `admin_staff_roles`'ta bir rolü vardır: `support_readonly` (yalnızca okuma), `support` (kurtarma, kilit açma, oturum kapatma, impersonation), `security` (askıya alma, başka personele müdahale, acil durum, audit, çift onay kararı), `platform_admin` (hepsi + rol değişikliği). Rol her istekte veritabanından okunur. Rolü olmayan personel hiçbir admin işlemi yapamaz. Bu rehberde "admin" aksi söylenmedikçe `platform_admin` rolündeki personel demektir; çift onayı `security` ya da `platform_admin` verir. Tam izin tablosu: `crates/authn-admin/README.md` "Personel rolleri". |
 | **Break-glass hesabı** | `is_break_glass = true` olan platform admini; **yalnızca CLI ile** oluşturulur ve yönetilir. Son çare kurtarma yoludur: çift onaya ve paylaşılan (küresel, soğuma) limitlerine takılmaz, API'den askıya alınamaz, oturumları API'den kapatılamaz. Her kullanımı yüksek öncelikli `admin.break_glass_used` olayıdır. IP izin listesini **atlamaz** (K-13). |
 | **Çift onay (four-eyes, K-66)** | Acil durum işlemleri ve başka bir platform adminini hedefleyen işlemler ikinci bir platform admininin onayını ister. `production`/`staging`'de varsayılan açık, `production`'da kapatılamaz. |
 | **Çevrimdışı CLI komutları (K-07)** | Veritabanına doğrudan bağlanan, sunucu çalışmasa da çalışan komutlar. Onay istemez (veritabanına erişen operatör onayı zaten atlayabilir); `--operator` ve `--reason` zorunludur ve yüksek öncelikli audit'lenir (`surface: cli`). |
@@ -90,15 +91,15 @@ Hepsi sunucunun yapılandırmasıyla (`--config <dosya>` ya da `AUTHN_CONFIG`, `
 | `suspend-admin` | `--target`, `--reason`, `--operator` | Platform adminini (break-glass dahil) askıya alır; oturumları, güvenilir cihazları ve başlattığı impersonation oturumları biter |
 | `unsuspend-admin` | `--target`, `--reason`, `--operator` | Askıyı kaldırır (doğrulanmış adres → `active`) |
 | `revoke-admin-sessions` | `--target`, `--reason`, `--operator` | Yalnızca oturumları (ve güvenilir cihazları) kapatır |
-| `grant-admin` | `--target`, `--reason`, `--operator` | Var olan, `active` bir hesabı **normal** platform admini yapar (K-76). Hesabın tüm oturumları ve güvenilir cihazları kapanır: yetkiden önce açılmış bir oturum (ya da çalınmış bir çerez) admin oturumuna dönüşmez. Zaten admin olan hesapta `conflict`, aktif olmayan hesapta `admin_target_not_allowed` |
-| `revoke-admin` | `--target`, `--reason`, `--operator` | Platform admini (ve break-glass) yetkisini kalıcı olarak alır (K-76). Hesap kalır; askıdaysa askıda kalır. Oturumlar, güvenilir cihazlar, başlattığı impersonation oturumları ve açık kayıt bağlantıları biter. Bekleyen istekleri kullanılamaz olur; verdiği onaylar kullanım anında yeniden denetlendiği için geçersizleşir. Geriye **başka aktif bir platform admini** (break-glass dahil) kalmayacaksa reddedilir (`admin_target_not_allowed`, "last admin"). Eşzamanlı `grant-admin` / `revoke-admin` komutları sıraya girer |
+| `grant-admin` | `--target`, `--reason`, `--operator`, `--role <support_readonly\|support\|security\|platform_admin>` | Var olan, `active` bir hesabı verilen rolle **normal** (break-glass olmayan) personel yapar (K-76, K-93); hesap zaten personelse rolünü değiştirir (`offline_change_staff_role`). Hesabın tüm oturumları ve güvenilir cihazları kapanır: yetkiden önce açılmış bir oturum (ya da çalınmış bir çerez) admin oturumuna dönüşmez. Aynı rolde `conflict`, aktif olmayan hesaba yeni yetkide `admin_target_not_allowed`; break-glass hesabına başka rol ve son aktif `platform_admin`'i düşürmek `admin_target_not_allowed` |
+| `revoke-admin` | `--target`, `--reason`, `--operator` | Personel (ve break-glass) yetkisini ve rolünü kalıcı olarak alır (K-76, K-93). Hesap kalır; askıdaysa askıda kalır. Oturumlar, güvenilir cihazlar, başlattığı impersonation oturumları ve açık kayıt bağlantıları biter. Bekleyen istekleri kullanılamaz olur; verdiği onaylar kullanım anında yeniden denetlendiği için geçersizleşir. Geriye **başka aktif bir personel** kalmayacaksa (`admin_target_not_allowed`, "last admin") ya da hedef son aktif `platform_admin` ise (break-glass dahil; "last platform admin") reddedilir. Eşzamanlı `grant-admin` / `revoke-admin` komutları sıraya girer |
 | `rotate-signing-key` | `--emergency` | Etkin JWT imza anahtarını hemen iptal edip yenisini etkinleştirir (anahtar sızıntısı); bayraksız: bekleyen anahtar planlanır |
 | `verify-audit-chain` | — | Audit hash zincirini doğrular; bozuksa çıkış kodu 1 |
 | `check-config` | — | Yapılandırmayı `serve`'ün açılışta uyguladığı tüm kurallarla doğrular; veritabanına bağlanmaz |
 
 Girdi kuralları: `--operator` 1–64 karakter `[A-Za-z0-9._@-]`, `$USER`'a geri düşülmez; `--reason` 1–1000 yazdırılabilir karakter (kontrol ve görünmez biçim karakterleri reddedilir). Hatalı değer veritabanına dokunmadan önce reddedilir; hata bayrağı adlandırır, değeri yankılamaz. Hedef yalnızca platform admini olabilir (normal kullanıcıya `admin_target_not_allowed`); tek istisna `grant-admin`'dir. `--target` e-posta adresi ya da kullanıcı id'si alır. Olay sırasında **kullanıcı id'sini** tercih edin: ele geçirilmiş bir hesabın adresi saldırgan tarafından değiştirilmiş olabilir.
 
-API platform admini yetkisini bilinçli olarak hiçbir zaman vermez ya da geri almaz (çift onayla bile). Ele geçirilmiş bir konsol oturumu ve ikna edilmiş ikinci bir admin yeni admin yaratamaz. Yetki değişikliği için veritabanına erişimi olan operatör gerekir.
+API personel yetkisini bilinçli olarak hiçbir zaman vermez ya da geri almaz (çift onayla bile). Ele geçirilmiş bir konsol oturumu ve ikna edilmiş ikinci bir admin yeni personel yaratamaz. Yetki vermek ve almak için veritabanına erişimi olan operatör gerekir. API yalnızca **var olan** personelin rolünü değiştirir (`POST /v1/admin/staff/{user_id}/role`, yalnızca `platform_admin`, her zaman çift onay; onayı yalnızca başka bir `platform_admin` verebilir).
 
 | Çıkış kodu | Anlamı |
 |------------|--------|
@@ -129,7 +130,7 @@ API platform admini yetkisini bilinçli olarak hiçbir zaman vermez ya da geri a
    Hesap askıda kalır ve artık normal bir kullanıcıdır. Bu yüzden konsoldan başka bir admin, çift onaysız ve normal hedef kurallarıyla, şunları yapabilir: `POST /v1/admin/users/{user_id}/reset-mfa` (tüm MFA faktörleri, kurtarma kodları, güvenilir cihazlar ve **tüm passkey'ler**), `POST /v1/admin/users/{user_id}/force-password-reset`, ardından `POST /v1/admin/users/{user_id}/unsuspend`. Sıfırlama bağlı sosyal kimlikleri **kaldırmaz** (bölüm 10). Kişi kendi kimliğini doğrulayıp yeni passkey'ini kaydettikten sonra, ve yalnızca hâlâ admin olması gerekiyorsa, yetkiyi yeniden verin:
 
    ```bash
-   rust-authentication --config /etc/authn/config.toml grant-admin --target 0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b --reason "INC-123 closed, credentials replaced" --operator alice.ops
+   rust-authentication --config /etc/authn/config.toml grant-admin --target 0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b --role platform_admin --reason "INC-123 closed, credentials replaced" --operator alice.ops
    ```
 
    `revoke-admin`, geride başka aktif bir admin kalmıyorsa reddedilir. Bu durumda önce yeni bir admin yaratın (`create-admin` ya da başka bir hesaba `grant-admin`).
@@ -215,7 +216,8 @@ Kritik işlemler: `POST /v1/admin/emergency/revoke-all-sessions`, `POST /v1/admi
 | Herhangi bir admini askıdan çıkarma | `unsuspend-admin` |
 | Break-glass kimlik bilgilerini değiştirme | `admin-enrollment-link` |
 | İki adminli kurulumda diğer admini kaldırma | break-glass (API) ya da `suspend-admin` |
-| Normal platform admini yetkisi verme / geri alma | `grant-admin` / `revoke-admin` |
+| Personel yetkisi verme / geri alma | `grant-admin --role` / `revoke-admin` |
+| Personelin rolünü değiştirme | konsoldan `POST /v1/admin/staff/{user_id}/role` (çift onay) ya da `grant-admin --role` |
 | Ele geçirilmiş bir adminin faktörlerini temizleme | `revoke-admin`, sonra konsoldan normal kullanıcı olarak `reset-mfa` |
 | API'ye ulaşılamıyorken anahtar sızıntısı | `rotate-signing-key --emergency` |
 
@@ -235,7 +237,8 @@ Her CLI işleminin `--reason` metni `admin_action_reasons` tablosuna (hash zinci
 
 ## 10. Bilinen sınırlamalar
 
-- Admin yetkisi yalnızca CLI ile verilir ve geri alınır (`grant-admin` / `revoke-admin`, K-76). API'de bilinçli olarak böyle bir uç yoktur. Veritabanını elle değiştirmeyin: elle yapılan değişiklik audit'lenmez, oturumları kapatmaz ve son admin kuralını atlar.
+- Personel yetkisi yalnızca CLI ile verilir ve geri alınır (`grant-admin --role` / `revoke-admin`, K-76, K-93). API'de bilinçli olarak böyle bir uç yoktur; API yalnızca var olan personelin rolünü çift onayla değiştirir. Veritabanını elle değiştirmeyin: elle yapılan değişiklik audit'lenmez, oturumları kapatmaz ve son admin kuralını atlar. `users.is_platform_admin`'i elle `true` yapmak artık yetki de vermez (rol satırı yoksa hesap admin API'sine giremez).
+- Tek bir `platform_admin` ve `security` üyelerinin olduğu kurulumda rol değişikliği API'den yapılamaz: onu yalnızca başka bir `platform_admin` onaylayabilir ve `security` üyeleri "ikinci admin" sayıldığı için `no_second_admin` istisnası uygulanmaz (ele geçirilmiş tek `platform_admin`'in güvenlik ekibini düşürmesini önler). `grant-admin --role` ya da break-glass kullanın.
 - Admin hesaplarının şifresini ya da MFA'sını doğrudan sıfırlayan bir komut yoktur. Yol, bölüm 6.1'deki gibi `revoke-admin` → konsoldan normal kullanıcı olarak sıfırlama → `grant-admin`'dir.
 - `reset-mfa` bağlı sosyal kimlikleri kaldırmaz. Saldırgan kendi sağlayıcı hesabını bağlamış olabilir: kişi `/v1/me/identities` listesini gözden geçirip tanımadığı kimliği ayırmalıdır. Sosyal girişle açılan bir oturum admin API'sine erişemez (passkey zorunlu), ama normal hesaba erişir.
 - IP izin listesi değişikliği yeniden başlatma ister.

@@ -177,6 +177,16 @@ pub async fn run_maintenance_once(services: &Services) -> MaintenanceTotals {
         s.oidc.purge_expired_states(BATCH).await,
         |n| *n,
     );
+    // K-80: expired interactions / access-token records, ended grants
+    // (their codes and refresh tokens cascade). Runs even while the
+    // provider is disabled, so turning it off leaves nothing behind.
+    #[cfg(feature = "oidc-provider")]
+    tally(
+        &mut t,
+        "oidc_provider",
+        s.oidc_provider.purge_expired(i64::from(BATCH)).await,
+        |n| *n,
+    );
     tally(
         &mut t,
         "soft_locks",
@@ -243,6 +253,19 @@ pub async fn create_audit_checkpoint(
     .await
 }
 
+/// Tick of the domain re-verification job (ORG-13); each domain is checked
+/// once per `org.domain_reverification.interval`, whatever the tick.
+const DOMAIN_REVERIFICATION_TICK: Duration = Duration::from_secs(300);
+
+/// Re-checks the TXT records of due verified domains (ORG-13, K-97). Safe
+/// on several instances: authn-org claims each due domain with `FOR UPDATE
+/// SKIP LOCKED` and holds no connection during the DNS lookups.
+pub async fn reverify_domains(
+    services: &Services,
+) -> Result<authn_org::service::reverify::ReverificationReport, AuthError> {
+    services.orgs.reverify_due_domains().await
+}
+
 /// Queued provider tokens revoked per run (K-35).
 const REVOCATIONS_PER_RUN: u32 = 100;
 
@@ -264,6 +287,39 @@ pub async fn process_token_revocations(services: &Services) -> Result<u64, AuthE
         );
     }
     Ok(report.revoked + report.abandoned)
+}
+
+/// RSK-05: reloads the GeoIP database when its file changed. A failed
+/// reload keeps the loaded database (logged). Returns whether a new one is
+/// in use.
+pub async fn reload_geoip(services: &Services) -> bool {
+    let Some(geoip) = services.geoip.clone() else {
+        return false;
+    };
+    let reloaded = tokio::task::spawn_blocking(move || {
+        let result = geoip.reload_if_changed();
+        (result, geoip.info())
+    })
+    .await;
+    match reloaded {
+        Ok((Ok(true), info)) => {
+            tracing::info!(
+                database_type = %info.database_type,
+                build_epoch = info.build_epoch,
+                "GeoIP database reloaded"
+            );
+            true
+        }
+        Ok((Ok(false), _)) => false,
+        Ok((Err(err), _)) => {
+            tracing::error!(error = %err, "GeoIP database reload failed; keeping the loaded one");
+            false
+        }
+        Err(err) => {
+            tracing::error!(error = %err, "GeoIP reload task failed");
+            false
+        }
+    }
 }
 
 /// Starts every background job; they stop when `shutdown` is cancelled.
@@ -330,6 +386,22 @@ pub fn spawn(services: Services, shutdown: CancellationToken) -> Result<JoinSet<
         .await;
     });
 
+    // GeoIP database reload (RSK-05, K-98): only when one is configured.
+    if services.geoip.is_some() {
+        let s = services.clone();
+        let stop = shutdown.clone();
+        let period = services.config.protect.risk.geoip_reload_interval;
+        jobs.spawn(async move {
+            every(period, stop, || {
+                let s = s.clone();
+                async move {
+                    reload_geoip(&s).await;
+                }
+            })
+            .await;
+        });
+    }
+
     // External audit anchors (K-107): checked hourly, created once per
     // `audit.checkpoint_interval` across all instances, so a restart never
     // postpones or duplicates the anchor.
@@ -341,6 +413,22 @@ pub fn spawn(services: Services, shutdown: CancellationToken) -> Result<JoinSet<
             async move {
                 if let Err(err) = create_audit_checkpoint(&s).await {
                     tracing::error!(error = %err, "audit chain checkpoint failed");
+                }
+            }
+        })
+        .await;
+    });
+
+    // Periodic domain re-verification (ORG-13, K-97): DNS lookups, own
+    // task; each domain is claimed by one instance per interval.
+    let s = services.clone();
+    let stop = shutdown.clone();
+    jobs.spawn(async move {
+        every(DOMAIN_REVERIFICATION_TICK, stop, || {
+            let s = s.clone();
+            async move {
+                if let Err(err) = reverify_domains(&s).await {
+                    tracing::error!(error = %err, "domain re-verification run failed");
                 }
             }
         })

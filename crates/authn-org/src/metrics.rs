@@ -28,3 +28,19 @@ pub(crate) fn domain_check(verified: bool) {
     let result = if verified { "verified" } else { "failed" };
     metrics::counter!(DOMAIN_CHECKS, "result" => result).increment(1);
 }
+
+/// Periodic domain re-verification checks (ORG-13), labelled by `outcome`
+/// (`present`, `absent`, `inconclusive`).
+pub const DOMAIN_REVERIFICATIONS: &str = "authn_org_domain_reverifications_total";
+/// Verified domains that lost their verification (ORG-13), labelled by
+/// `reason` (`absent`, `inconclusive`). Alert on `inconclusive`: the
+/// resolver may be failing for every domain.
+pub const DOMAINS_UNVERIFIED: &str = "authn_org_domains_unverified_total";
+
+pub(crate) fn domain_reverification(outcome: &'static str) {
+    metrics::counter!(DOMAIN_REVERIFICATIONS, "outcome" => outcome).increment(1);
+}
+
+pub(crate) fn domain_unverified(reason: &'static str) {
+    metrics::counter!(DOMAINS_UNVERIFIED, "reason" => reason).increment(1);
+}

@@ -40,6 +40,7 @@ TAG_TITLES = {
     "webhooks": "Webhook'lar",
     "social-login": "Sosyal giriş",
     "admin": "Platform admin",
+    "oauth2-provider": "OAuth 2.1 / OIDC sağlayıcısı",
 }
 
 # Turkish descriptions, keyed by "METHOD path" (verified against the
@@ -53,9 +54,30 @@ DESCRIPTIONS = {
     "GET /health/ready": "Hazır olma: veritabanı erişilebilir ve şema bu ikiliyle güncel; değilse `503` + `not_ready`.",
     "POST /v1/account/deletion/cancel": "E-postadaki linkin token'ıyla planlanmış hesap silmesini iptal eder (ACC-09).",
     "GET /v1/admin/approvals": "Son 7 günün dört göz onay istekleri (en yeni önce).",
-    "POST /v1/admin/approvals": "Kritik bir işlem için ikinci bir platform admininin onayını ister (K-66); `admin.four_eyes_approval_ttl` sonra düşer.",
+    "POST /v1/admin/approvals": "Kritik bir işlem için onay yetkisine sahip (`security` / `platform_admin`) ikinci bir personelin onayını ister (K-66, K-93); `admin.four_eyes_approval_ttl` sonra düşer.",
     "POST /v1/admin/approvals/{approval_id}/approve": "Başka bir adminin bekleyen isteğini onaylar; onaylayan istekte bulunan veya hedef olamaz.",
     "POST /v1/admin/approvals/{approval_id}/deny": "Başka bir adminin bekleyen isteğini reddeder (kesin).",
+    "GET /v1/oauth2/authorize": "Yetkilendirme uç noktası (OIDP-02 … OIDP-04): yalnızca `code` + PKCE `S256`; istemciye (kod / hata, her zaman `iss`) veya etkileşim sayfasına `303`. İstemcisi / `redirect_uri`'si doğrulanamayan istek yönlendirilmez (`400 invalid_authorization_request`).",
+    "GET /v1/oauth2/interactions/{interaction_id}": "Bekleyen yetkilendirme isteği (giriş / onay sayfası için; yalnızca isteği başlatan tarayıcı, `__Host-authn_oidc_browser`): istemci, kapsamlar, `login_required`, `consent_required` (OIDP-04).",
+    "POST /v1/oauth2/interactions/{interaction_id}/accept": "Oturum açmış kullanıcı isteği onaylar; onay kaydedilir, yanıt `redirect_to` (kodlu istemci adresi). `prompt=login` / `max_age` / `acr_values` karşılanmıyorsa `401 step_up_required` (OIDP-04, OIDP-05).",
+    "POST /v1/oauth2/interactions/{interaction_id}/deny": "Kullanıcı isteği reddeder; istemci `access_denied` alır (`redirect_to`).",
+    "GET /v1/me/oauth2/consents": "Kullanıcının erişim verdiği uygulamalar ve kapsamlar (OIDP-05).",
+    "DELETE /v1/me/oauth2/consents/{client_id}": "Bir uygulamanın erişimini geri alır: onay ve o uygulamanın kullanıcıya ait tüm token'ları iptal edilir (OIDP-05).",
+    "GET /v1/admin/oauth2/clients": "Kayıtlı OAuth / OIDC istemcileri (OIDP-01, `oauth_clients:read`: `security`, `platform_admin`).",
+    "POST /v1/admin/oauth2/clients": "İstemci kaydeder (OIDP-01, yalnızca `platform_admin`); gizli istemcinin sırrı bir kez döner, yalnızca SHA-256'sı saklanır.",
+    "GET /v1/admin/oauth2/clients/{client_id}": "Bir istemci kaydı (`oauth_clients:read`).",
+    "PATCH /v1/admin/oauth2/clients/{client_id}": "İstemci kaydını değiştirir (`oauth_clients:manage`); devre dışı bırakma veya yetkiyi daraltma istemcinin tüm grant'lerini iptal eder.",
+    "DELETE /v1/admin/oauth2/clients/{client_id}": "İstemciyi ve ona verilmiş her şeyi siler (`oauth_clients:manage`).",
+    "POST /v1/admin/oauth2/clients/{client_id}/secret": "Gizli istemcinin sırrını döndürür; eski sır hemen geçersizdir, yenisi bir kez gösterilir (`oauth_clients:manage`).",
+    "POST /v1/oauth2/token": "Token uç noktası (OIDP-06 … OIDP-08): `authorization_code` (PKCE doğrulayıcısı, tek kullanımlık kod; tekrar grant'i iptal eder) ve `refresh_token` (rotasyon, tekrar kullanım grant'i iptal eder). Hatalar RFC 6749 biçiminde.",
+    "POST /v1/oauth2/revoke": "RFC 7009 iptal (OIDP-11): refresh token grant'in tamamını, access token kendisini iptal eder; bilinmeyen token da `200`.",
+    "POST /v1/oauth2/introspect": "RFC 7662 introspection (OIDP-11), yalnızca gizli istemci; token yalnızca kendi istemcisine veya `aud`'unda adı geçen istemciye aktif görünür.",
+    "GET /v1/oauth2/userinfo": "UserInfo (OIDP-10): `sub`; `profile` → `name`, `locale`, `zoneinfo`; `email` → `email`, `email_verified`. Yalnızca `openid` kapsamlı sağlayıcı access token'ı.",
+    "POST /v1/oauth2/userinfo": "UserInfo'nun `POST` biçimi (token yalnızca `Authorization` başlığından).",
+    "GET /.well-known/openid-configuration": "OpenID Provider meta verisi (OIDC Discovery, OIDP-09).",
+    "GET /.well-known/oauth-authorization-server": "OAuth 2.0 yetkilendirme sunucusu meta verisi (RFC 8414, OIDP-09).",
+    "GET /v1/admin/staff": "Personel hesapları ve rolleri (K-93, `staff:read`: `security`, `platform_admin`).",
+    "POST /v1/admin/staff/{user_id}/role": "Başka, break-glass olmayan bir personelin rolünü değiştirir (K-93, yalnızca `platform_admin`, her zaman çift onay `change_staff_role`); hedefin oturumları kapanır, eski ve yeni rol audit'lenir.",
     "GET /v1/admin/audit-events": "Platform genelinde audit olayları, admin işlemlerinin gerekçeleriyle (ADM-07); sayfalı.",
     "POST /v1/admin/audit-events/export": "Filtreye uyan audit olaylarını dışa aktarır (sınırlı; `next_cursor` ile devam). Gerekçe zorunlu, dışa aktarma audit'lenir.",
     "POST /v1/admin/audit-events/verify": "Audit hash zincirini doğrular (AUD-02, ADM-07); yanıtta `legacy_events`, `keyed_from_seq`, `head_key_version`.",
@@ -213,6 +235,10 @@ DESCRIPTIONS = {
 # Turkish notes for error codes whose meaning needs more than the localized
 # message (the message itself comes from the code).
 NOTES = {
+    "invalid_authorization_request": "`GET /v1/oauth2/authorize` istemcisi bilinmeyen / devre dışı ya da `redirect_uri`'si kayıtlı olmayan isteğe döner (OIDP-02); tarayıcı asla yönlendirilmez. Diğer yetkilendirme hataları RFC 6749 kodlarıyla (`invalid_request`, `invalid_scope`, `login_required` …) istemciye yönlendirilir. Token / iptal / introspection / userinfo uçları RFC 6749 §5.2 / RFC 6750 biçimini (`{\"error\": …}`) kullanır, bu katalogda değildir.",
+    "oauth_interaction_invalid": "Bekleyen istek bilinmiyor, süresi dolmuş, tamamlanmış veya başka bir tarayıcıya ait (OIDP-04); bilinçli olarak tek tip.",
+    "invalid_client_metadata": "`details.field` geçersiz alanı adlandırır (`redirect_uris`, `allowed_scopes`, `allowed_grant_types`, `allowed_resources` …).",
+    "admin_permission_denied": "Yalnızca admin guard'ını geçmiş personele döner (K-93); `details.permission` gereken izni adlandırır (ör. `users:suspend`). Personel olmayan çağıran genel `forbidden` alır.",
     "internal_error": "İç ayrıntı yalnızca loglanır (`request_id` ile eşleştirin).",
     "bad_request": "Bozuk JSON, yol parametresi, tekrarlanan başlık vb. Gövde içeriği yankılanmaz.",
     "validation_failed": "`details` alan adlarını taşıyabilir. Bozuk sayfalama `cursor`'ı da bu koddur.",
@@ -262,12 +288,13 @@ MODULE_TITLES = {
     "admin": "Platform admin (`codes::admin`)", "audit": "Audit ve webhook (`codes::audit`)",
     "mfa": "MFA (`codes::mfa`)", "notify": "Bildirim (`codes::notify`)",
     "oidc_client": "Sosyal giriş (`codes::oidc_client`)", "org": "Organizasyon (`codes::org`)",
+    "oidc_provider": "OAuth 2.1 / OIDC sağlayıcısı (`codes::oidc_provider`)",
     "password": "Şifre (`codes::password`)", "protect": "Koruma (`codes::protect`)",
     "session": "Oturum ve giriş (`codes::session`)", "webauthn": "Passkey (`codes::webauthn`)",
     "crypto": "Kripto", "server": "Sunucu", "store": "Depo",
 }
 MODULE_ORDER = ["common", "session", "account", "password", "mfa", "webauthn", "org",
-                "oidc_client", "protect", "audit", "notify", "admin"]
+                "oidc_client", "oidc_provider", "protect", "audit", "notify", "admin"]
 
 CODE_RE = re.compile(
     r'pub const (\w+): ErrorCode = ErrorCode::new\(\s*"([^"]+)",\s*StatusCode::(\w+),'
@@ -294,6 +321,12 @@ def auth_of(path, op):
         return "oturum / API anahtarı"
     if schemes == api_key:
         return "API anahtarı"
+    if schemes == frozenset({"session_cookie"}):
+        return "tarayıcı oturumu"
+    if schemes == frozenset({"oauth2_client"}):
+        return "OAuth istemcisi"
+    if schemes == frozenset({"oauth2_access_token"}):
+        return "sağlayıcı access token'ı"
     sys.exit(f"unexpected security combination for {path}: {sorted(schemes)}")
 
 

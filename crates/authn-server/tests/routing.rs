@@ -14,8 +14,9 @@ use sqlx::PgPool;
 #[sqlx::test(migrator = "authn_testkit::MIGRATOR")]
 async fn ops_09_every_documented_path_is_routed(pool: PgPool) {
     // A documented path that answers 404 `not_found` from the fallback is
-    // not mounted (module router missing from `app.rs`).
-    let app = App::new(pool).await;
+    // not mounted (module router missing from `app.rs`). K-80: the OAuth
+    // provider is mounted only when enabled.
+    let app = App::with(pool, common::enable_oidc_provider).await;
     let doc: Value = app.send(TestRequest::get("/openapi.json")).await.json();
     let zero = "00000000-0000-0000-0000-000000000000";
     for (path, item) in doc["paths"].as_object().unwrap() {

@@ -4,8 +4,9 @@
 //!
 //! 1. request context (request id, client IP, locale; error envelopes) — authn-core
 //! 2. request latency histogram (OPS-04, [`crate::metrics`]; route template
-//!    labels only) and tracing (`TraceLayer`, path only — query strings may
-//!    carry OAuth codes)
+//!    labels only) and tracing (`TraceLayer`, [`crate::telemetry::make_http_span`]:
+//!    route template only — paths and query strings may carry personal data
+//!    or OAuth codes; OpenTelemetry export with the `otel` feature, OPS-11)
 //! 3. panic catcher (500 → standard envelope)
 //! 4. timeout (PRT-11)
 //! 5. global concurrency limit (PRT-11)
@@ -29,7 +30,7 @@
 use std::sync::Arc;
 
 use authn_core::error::AuthError;
-use authn_core::http::{REQUEST_ID_HEADER, not_found_fallback, request_context_middleware};
+use authn_core::http::{not_found_fallback, request_context_middleware};
 use authn_protect::rate_limit::{HttpRateLimit, http_rate_limit};
 use authn_protect::web::{
     CorsPolicy, HostValidation, SecurityHeaders, cors, security_headers, validate_host,
@@ -43,7 +44,7 @@ use tower::limit::GlobalConcurrencyLimitLayer;
 use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::timeout::TimeoutLayer;
-use tower_http::trace::{DefaultOnResponse, TraceLayer};
+use tower_http::trace::{DefaultOnResponse, OnResponse, TraceLayer};
 use tracing::Level;
 
 use crate::cors::{AdminConsoleCors, admin_console_cors};
@@ -78,6 +79,37 @@ pub fn session_less_routes() -> Router<AppState> {
     router
 }
 
+/// The OAuth 2.1 / OIDC provider routes that need the session (authorize,
+/// interactions, consents, client registry; K-80), merged into `router`
+/// behind slot 8 — only when `oidc_provider.enabled` (OIDP-13).
+#[allow(clippy::needless_pass_by_value)]
+fn provider_routes(
+    config: &authn_core::config::AppConfig,
+    router: Router<AppState>,
+) -> Router<AppState> {
+    #[cfg(feature = "oidc-provider")]
+    if config.oidc_provider.enabled {
+        return router.merge(authn_oidc_provider::router::<AppState>());
+    }
+    let _ = config;
+    router
+}
+
+/// The provider's protocol endpoints (token, revocation, introspection,
+/// userinfo, discovery): **outside** slot 8. They authenticate the client
+/// or the provider access token themselves, and the session middleware
+/// would treat a provider access token as a native bearer token and refuse
+/// it (token-type separation, OIDP-08). No cookie is read there, so there
+/// is nothing for CSRF to protect.
+fn provider_protocol_routes(config: &authn_core::config::AppConfig) -> Router<AppState> {
+    #[cfg(feature = "oidc-provider")]
+    if config.oidc_provider.enabled {
+        return authn_oidc_provider::protocol_router::<AppState>();
+    }
+    let _ = config;
+    Router::new()
+}
+
 /// Builds the complete application router. Fails when a web-protection
 /// setting is unusable (fail fast at start-up, ARC-07).
 pub fn build_router(state: AppState) -> Result<Router, AuthError> {
@@ -97,10 +129,10 @@ pub fn build_router_with_routes(
 
     let sessions = state.services.sessions.clone();
     // (8) authentication + CSRF, for every module route.
-    let mut router = module_routes()
-        .merge(extra)
+    let mut router = provider_routes(&config, module_routes().merge(extra))
         .layer(from_fn_with_state(sessions, authn_session::authenticate))
-        .merge(session_less_routes());
+        .merge(session_less_routes())
+        .merge(provider_protocol_routes(&config));
     if config.server.openapi_enabled {
         router = router.route(
             "/openapi.json",
@@ -140,23 +172,20 @@ pub fn build_router_with_routes(
         .layer(TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, limits.request_timeout))
         .layer(CatchPanicLayer::new())
         .layer(
+            // OPS-11/OPS-12: route template, never the raw path; W3C trace
+            // context continued when OpenTelemetry is on (crate::telemetry).
             TraceLayer::new_for_http()
-                .make_span_with(|request: &http::Request<axum::body::Body>| {
-                    // The request-context middleware has already replaced
-                    // `x-request-id` with a server-generated UUIDv7.
-                    let request_id = request
-                        .headers()
-                        .get(REQUEST_ID_HEADER)
-                        .and_then(|v| v.to_str().ok())
-                        .unwrap_or_default();
-                    tracing::info_span!(
-                        "http",
-                        request_id = %request_id,
-                        method = %request.method(),
-                        path = %request.uri().path(),
-                    )
-                })
-                .on_response(DefaultOnResponse::new().level(Level::INFO)),
+                .make_span_with(crate::telemetry::make_http_span::<axum::body::Body>)
+                .on_response(
+                    |response: &http::Response<axum::body::Body>,
+                     latency: std::time::Duration,
+                     span: &tracing::Span| {
+                        crate::telemetry::record_response(response, span);
+                        DefaultOnResponse::new()
+                            .level(Level::INFO)
+                            .on_response(response, latency, span);
+                    },
+                ),
         )
         // (2) latency histogram: times everything below the request context.
         .layer(from_fn(crate::metrics::http_metrics))

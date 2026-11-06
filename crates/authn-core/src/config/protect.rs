@@ -201,6 +201,17 @@ pub struct RiskConfig {
     /// impossible travel. Only used when a `GeoIpLookup` is plugged in.
     /// Default 1000.
     pub impossible_travel_speed_kmh: u32,
+    /// Optional MaxMind DB (`.mmdb`, City-level: GeoLite2-City, GeoIP2-City,
+    /// DB-IP City Lite, ...) enabling impossible travel and the approximate
+    /// location of RSK-04 (RSK-05, K-98). Not shipped: the operator provides
+    /// the file under its own licence. Unreadable or malformed → startup
+    /// fails.
+    pub geoip_database: Option<PathBuf>,
+    /// How often the server checks `geoip_database` for a newer file and
+    /// reloads it (a failed reload keeps the loaded database). Default
+    /// `1h` (1m … 7d).
+    #[serde(with = "super::duration")]
+    pub geoip_reload_interval: Duration,
 }
 
 impl Default for RiskConfig {
@@ -213,6 +224,8 @@ impl Default for RiskConfig {
             medium_action: MediumRiskAction::StepUp,
             high_action: HighRiskAction::Block,
             impossible_travel_speed_kmh: 1000,
+            geoip_database: None,
+            geoip_reload_interval: hours(1),
         }
     }
 }
@@ -411,6 +424,12 @@ impl ProtectConfig {
             (100..=20_000).contains(&self.risk.impossible_travel_speed_kmh),
             "protect.risk.impossible_travel_speed_kmh",
             "must be between 100 and 20000",
+        );
+        p.require_range(
+            self.risk.geoip_reload_interval,
+            mins(1),
+            days(7),
+            "protect.risk.geoip_reload_interval",
         );
         p.require_range(
             self.outbound.timeout,

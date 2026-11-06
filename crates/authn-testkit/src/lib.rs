@@ -10,6 +10,8 @@
 //!   for tests (fixed, publicly known keys: never use outside tests).
 //! * [`http`] — build requests, send them through a `Router` with
 //!   `tower::ServiceExt::oneshot`, parse the error envelope.
+//! * [`mmdb`] — a minimal MaxMind DB writer for GeoIP fixtures (RSK-05;
+//!   no third-party GeoIP data in the repository).
 //! * [`timing`] — statistical timing comparison for account-enumeration
 //!   tests (TST-02).
 //! * [`bench`](mod@bench) — latency statistics, the micro-benchmark runner of the
@@ -24,6 +26,7 @@ pub mod clock;
 pub mod config;
 pub mod fakes;
 pub mod http;
+pub mod mmdb;
 pub mod timing;
 
 use sqlx::migrate::Migrator;

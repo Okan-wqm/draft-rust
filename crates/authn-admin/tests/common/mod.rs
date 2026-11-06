@@ -518,7 +518,8 @@ impl Harness {
         self.user_with_status(email, AccountStatus::Active).await
     }
 
-    /// Flags a user as platform admin (and break-glass).
+    /// Flags a user as platform admin (and break-glass) with the
+    /// `platform_admin` staff role (K-93).
     pub async fn make_admin(&self, user: UserId, break_glass: bool) {
         sqlx::query("UPDATE users SET is_platform_admin = true, is_break_glass = $2 WHERE id = $1")
             .bind(user)
@@ -526,6 +527,49 @@ impl Harness {
             .execute(&self.pool)
             .await
             .unwrap();
+        self.set_role(user, authn_admin::StaffRole::PlatformAdmin)
+            .await;
+    }
+
+    /// Sets the staff role of a staff account directly in the database
+    /// (K-93; as `grant-admin --role` or a role change would).
+    pub async fn set_role(&self, user: UserId, role: authn_admin::StaffRole) {
+        sqlx::query(
+            "INSERT INTO admin_staff_roles (user_id, role, granted_at, updated_at) \
+             VALUES ($1, $2, now(), now()) \
+             ON CONFLICT (user_id) DO UPDATE SET role = EXCLUDED.role",
+        )
+        .bind(user)
+        .bind(role.as_str())
+        .execute(&self.pool)
+        .await
+        .unwrap();
+    }
+
+    /// The staff role row of `user` (K-93).
+    pub async fn staff_role(&self, user: UserId) -> Option<authn_admin::StaffRole> {
+        sqlx::query_scalar::<_, String>("SELECT role FROM admin_staff_roles WHERE user_id = $1")
+            .bind(user)
+            .fetch_optional(&self.pool)
+            .await
+            .unwrap()
+            .map(|r| r.parse().unwrap())
+    }
+
+    /// The id of the account with `email`.
+    pub async fn record_by_email(&self, email: &str) -> UserId {
+        UserRepository::find_by_email(&self.pool, &EmailAddress::parse(email).unwrap())
+            .await
+            .unwrap()
+            .unwrap()
+            .id
+    }
+
+    /// An active staff member with `role` and a passkey principal (K-93).
+    pub async fn staff(&self, email: &str, role: authn_admin::StaffRole) -> (UserId, Principal) {
+        let (id, principal) = self.admin(email).await;
+        self.set_role(id, role).await;
+        (id, principal)
     }
 
     /// An active platform admin and a principal for it: passkey session

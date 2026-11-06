@@ -50,6 +50,7 @@ fn with_four_eyes(
 }
 use crate::guard::AdminCaller;
 use crate::reason::Justification;
+use crate::roles::AdminPermission;
 
 /// Result of an emergency revocation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -109,6 +110,7 @@ impl AdminService {
         include_own_session: bool,
         approval: Option<Uuid>,
     ) -> Result<EmergencyOutcome, AuthError> {
+        caller.require(AdminPermission::EmergencyExecute)?;
         const ACTION: &str = "revoke_all_sessions";
         let operation = CriticalOperation::RevokeAllSessions {
             include_own_session,
@@ -186,6 +188,7 @@ impl AdminService {
         reason: &Justification,
         approval: Option<Uuid>,
     ) -> Result<KeyRotationOutcome, AuthError> {
+        caller.require(AdminPermission::EmergencyExecute)?;
         const ACTION: &str = "rotate_signing_key";
         let operation = CriticalOperation::RotateSigningKey;
         self.four_eyes_precheck(caller, ctx, &operation, approval)
@@ -271,6 +274,7 @@ impl AdminService {
         reason: &Justification,
         approval: Option<Uuid>,
     ) -> Result<BulkResetOutcome, AuthError> {
+        caller.require(AdminPermission::EmergencyExecute)?;
         const ACTION: &str = "force_password_change_before";
         if changed_before > self.now() {
             return Err(AuthError::new(codes::common::VALIDATION_FAILED)

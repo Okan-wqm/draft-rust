@@ -6,7 +6,7 @@ use authn_core::domain::Locale;
 pub const LOCALES: [Locale; 2] = [Locale::En, Locale::Tr];
 
 /// Every e-mail template kind (`NotificationKind::template_name`).
-pub const EMAIL_TEMPLATES: [&str; 24] = [
+pub const EMAIL_TEMPLATES: [&str; 25] = [
     "email_verification",
     "registration_attempt",
     "password_reset",
@@ -31,6 +31,7 @@ pub const EMAIL_TEMPLATES: [&str; 24] = [
     "identity_unlinked",
     "passkey_clone_suspected",
     "email_change_reverted",
+    "org_domain_unverified",
 ];
 
 /// Every SMS template kind (`SmsNotificationKind::template_name`).
@@ -118,6 +119,9 @@ pub(crate) const BUILTIN: &[(&str, &str)] = templates![
     "en/email/email_change_reverted.subject.txt",
     "en/email/email_change_reverted.txt",
     "en/email/email_change_reverted.html",
+    "en/email/org_domain_unverified.subject.txt",
+    "en/email/org_domain_unverified.txt",
+    "en/email/org_domain_unverified.html",
     "en/sms/mfa_sms_code.txt",
     "en/sms/phone_verification.txt",
     "tr/email/layout.txt",
@@ -194,6 +198,9 @@ pub(crate) const BUILTIN: &[(&str, &str)] = templates![
     "tr/email/email_change_reverted.subject.txt",
     "tr/email/email_change_reverted.txt",
     "tr/email/email_change_reverted.html",
+    "tr/email/org_domain_unverified.subject.txt",
+    "tr/email/org_domain_unverified.txt",
+    "tr/email/org_domain_unverified.html",
     "tr/sms/mfa_sms_code.txt",
     "tr/sms/phone_verification.txt",
 ];

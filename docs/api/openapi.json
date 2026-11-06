@@ -528,7 +528,7 @@
         "description": "Body of `POST /v1/admin/approvals` (K-66): the exact operation to be\napproved. Parameters not used by the operation are refused.",
         "properties": {
           "action": {
-            "description": "`revoke_all_sessions`, `rotate_signing_key`,\n`force_password_change_before`, `suspend_user`, `unlock_user` or\n`revoke_user_sessions`.",
+            "description": "`revoke_all_sessions`, `rotate_signing_key`,\n`force_password_change_before`, `suspend_user`, `unlock_user`,\n`revoke_user_sessions` or `change_staff_role`.",
             "type": "string"
           },
           "changed_before": {
@@ -559,11 +559,22 @@
               "null"
             ]
           },
+          "role": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/StaffRole",
+                "description": "`change_staff_role` only (required): the new role."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "target_user_id": {
             "oneOf": [
               {
                 "$ref": "#/components/schemas/UserId",
-                "description": "Target platform admin (`suspend_user`, `unlock_user`,\n`revoke_user_sessions` only)."
+                "description": "Target staff member (`suspend_user`, `unlock_user`,\n`revoke_user_sessions`, `change_staff_role` only)."
               },
               {
                 "type": "null"
@@ -878,6 +889,173 @@
           "fed"
         ],
         "type": "string"
+      },
+      "AuthorizationServerMetadata": {
+        "description": "Provider / authorization server metadata.",
+        "properties": {
+          "acr_values_supported": {
+            "description": "Supported `acr` values.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "authorization_endpoint": {
+            "description": "Authorization endpoint.",
+            "type": "string"
+          },
+          "authorization_response_iss_parameter_supported": {
+            "description": "RFC 9207: `iss` in every authorization response.",
+            "type": "boolean"
+          },
+          "claims_parameter_supported": {
+            "description": "No `claims` parameter.",
+            "type": "boolean"
+          },
+          "claims_supported": {
+            "description": "Claims that may be returned.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "code_challenge_methods_supported": {
+            "description": "`S256` only.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "grant_types_supported": {
+            "description": "`authorization_code`, `refresh_token`.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "id_token_signing_alg_values_supported": {
+            "description": "`EdDSA` (Ed25519, ADR 0001).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "introspection_endpoint": {
+            "description": "RFC 7662 endpoint.",
+            "type": "string"
+          },
+          "introspection_endpoint_auth_methods_supported": {
+            "description": "Client authentication at the introspection endpoint.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "issuer": {
+            "description": "Issuer identifier.",
+            "type": "string"
+          },
+          "jwks_uri": {
+            "description": "JWKS (the server's signing keys, SES-09).",
+            "type": "string"
+          },
+          "prompt_values_supported": {
+            "description": "Supported `prompt` values.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "request_parameter_supported": {
+            "description": "No request objects.",
+            "type": "boolean"
+          },
+          "request_uri_parameter_supported": {
+            "description": "No `request_uri`.",
+            "type": "boolean"
+          },
+          "response_modes_supported": {
+            "description": "`query` only.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "response_types_supported": {
+            "description": "`code` only.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "revocation_endpoint": {
+            "description": "RFC 7009 endpoint.",
+            "type": "string"
+          },
+          "revocation_endpoint_auth_methods_supported": {
+            "description": "Client authentication at the revocation endpoint.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "scopes_supported": {
+            "description": "Supported scopes.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "subject_types_supported": {
+            "description": "`public` subject identifiers.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "token_endpoint": {
+            "description": "Token endpoint.",
+            "type": "string"
+          },
+          "token_endpoint_auth_methods_supported": {
+            "description": "Client authentication at the token endpoint.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "userinfo_endpoint": {
+            "description": "UserInfo endpoint.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "issuer",
+          "authorization_endpoint",
+          "token_endpoint",
+          "userinfo_endpoint",
+          "jwks_uri",
+          "revocation_endpoint",
+          "introspection_endpoint",
+          "scopes_supported",
+          "response_types_supported",
+          "response_modes_supported",
+          "grant_types_supported",
+          "subject_types_supported",
+          "id_token_signing_alg_values_supported",
+          "token_endpoint_auth_methods_supported",
+          "revocation_endpoint_auth_methods_supported",
+          "introspection_endpoint_auth_methods_supported",
+          "code_challenge_methods_supported",
+          "claims_supported",
+          "acr_values_supported",
+          "prompt_values_supported",
+          "authorization_response_iss_parameter_supported",
+          "request_parameter_supported",
+          "request_uri_parameter_supported",
+          "claims_parameter_supported"
+        ],
+        "type": "object"
       },
       "BeginSmsRequest": {
         "additionalProperties": false,
@@ -1448,6 +1626,67 @@
         ],
         "type": "object"
       },
+      "ClientInput": {
+        "additionalProperties": false,
+        "description": "Body of `POST /v1/admin/oauth2/clients`.",
+        "properties": {
+          "allowed_grant_types": {
+            "description": "`authorization_code` and optionally `refresh_token`. Default both.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "allowed_resources": {
+            "description": "Resource indicators (RFC 8707) the client may request: absolute\nURIs of APIs, used as token audiences. Default none.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "allowed_scopes": {
+            "description": "Scopes the client may request (`openid`, `profile`, `email`, custom).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "application_type": {
+            "description": "`web` or `native` (RFC 8252 redirect rules).",
+            "type": "string"
+          },
+          "client_type": {
+            "description": "`confidential` (holds a secret; server-side applications) or\n`public` (browser or native application; PKCE only).",
+            "type": "string"
+          },
+          "name": {
+            "description": "Display name shown on the consent screen (1–100 characters).",
+            "type": "string"
+          },
+          "redirect_uris": {
+            "description": "Exact redirect URIs (1–10).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "skip_consent": {
+            "description": "First-party client: no consent screen. Default `false`.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "client_type",
+          "application_type",
+          "redirect_uris",
+          "allowed_scopes"
+        ],
+        "type": "object"
+      },
       "ClientKind": {
         "description": "Which kind of client a session or challenge belongs to.",
         "enum": [
@@ -1455,6 +1694,203 @@
           "native"
         ],
         "type": "string"
+      },
+      "ClientList": {
+        "description": "Registered clients.",
+        "properties": {
+          "clients": {
+            "description": "Clients, newest first.",
+            "items": {
+              "$ref": "#/components/schemas/ClientView"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "clients"
+        ],
+        "type": "object"
+      },
+      "ClientPatch": {
+        "additionalProperties": false,
+        "description": "Body of `PATCH /v1/admin/oauth2/clients/{client_id}`: fields to change.",
+        "properties": {
+          "allowed_grant_types": {
+            "description": "New allowed grant types.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "allowed_resources": {
+            "description": "New allowed resources.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "allowed_scopes": {
+            "description": "New allowed scopes.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "disabled": {
+            "description": "Disable (`true`) or enable the client. Disabling revokes every\ngrant of the client.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "name": {
+            "description": "New name.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "redirect_uris": {
+            "description": "New redirect URIs.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "skip_consent": {
+            "description": "New first-party flag.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "ClientSummary": {
+        "description": "The client as shown on the consent screen.",
+        "properties": {
+          "client_id": {
+            "description": "Public client id.",
+            "type": "string"
+          },
+          "first_party": {
+            "description": "First-party client (no consent needed).",
+            "type": "boolean"
+          },
+          "name": {
+            "description": "Display name.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "client_id",
+          "name",
+          "first_party"
+        ],
+        "type": "object"
+      },
+      "ClientView": {
+        "description": "A client registration (never contains the secret).",
+        "properties": {
+          "allowed_grant_types": {
+            "description": "Allowed grant types.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "allowed_resources": {
+            "description": "Allowed resources.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "allowed_scopes": {
+            "description": "Allowed scopes.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "application_type": {
+            "description": "`web` / `native`.",
+            "type": "string"
+          },
+          "client_id": {
+            "description": "Public client identifier.",
+            "type": "string"
+          },
+          "client_type": {
+            "description": "`confidential` / `public`.",
+            "type": "string"
+          },
+          "created_at": {
+            "description": "Creation.",
+            "format": "date-time",
+            "type": "string"
+          },
+          "disabled": {
+            "description": "Disabled.",
+            "type": "boolean"
+          },
+          "name": {
+            "description": "Display name.",
+            "type": "string"
+          },
+          "redirect_uris": {
+            "description": "Redirect URIs.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "secret_rotated_at": {
+            "description": "Last secret rotation.",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "skip_consent": {
+            "description": "First-party client.",
+            "type": "boolean"
+          },
+          "updated_at": {
+            "description": "Last change.",
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "client_id",
+          "name",
+          "client_type",
+          "application_type",
+          "redirect_uris",
+          "allowed_scopes",
+          "allowed_grant_types",
+          "allowed_resources",
+          "skip_consent",
+          "disabled",
+          "created_at",
+          "updated_at"
+        ],
+        "type": "object"
       },
       "CodeChannel": {
         "description": "Channel of a one-time code.",
@@ -1542,6 +1978,22 @@
         },
         "required": [
           "factor"
+        ],
+        "type": "object"
+      },
+      "ConsentList": {
+        "description": "The user's consents.",
+        "properties": {
+          "consents": {
+            "description": "Consents.",
+            "items": {
+              "$ref": "#/components/schemas/ConsentView"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "consents"
         ],
         "type": "object"
       },
@@ -1786,6 +2238,26 @@
         "required": [
           "key",
           "api_key"
+        ],
+        "type": "object"
+      },
+      "CreatedClient": {
+        "description": "A newly created client (or rotated secret): the secret is shown once.",
+        "properties": {
+          "client": {
+            "$ref": "#/components/schemas/ClientView",
+            "description": "The registration."
+          },
+          "client_secret": {
+            "description": "The client secret (confidential clients only). Shown once, stored\nonly as a hash.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "client"
         ],
         "type": "object"
       },
@@ -2734,6 +3206,78 @@
           "native"
         ],
         "type": "string"
+      },
+      "InteractionView": {
+        "description": "A pending authorization request, for the login / consent page.",
+        "properties": {
+          "acr_values": {
+            "description": "Requested `acr_values` (to choose the step-up method).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "authenticated": {
+            "description": "The browser has a usable session.",
+            "type": "boolean"
+          },
+          "client": {
+            "$ref": "#/components/schemas/ClientSummary",
+            "description": "The requesting client."
+          },
+          "consent_required": {
+            "description": "The consent screen must be shown.",
+            "type": "boolean"
+          },
+          "expires_at": {
+            "description": "Expiry of the request.",
+            "format": "date-time",
+            "type": "string"
+          },
+          "interaction_id": {
+            "description": "Interaction id.",
+            "format": "uuid",
+            "type": "string"
+          },
+          "login_reasons": {
+            "description": "Why: `no_session`, `prompt_login`, `max_age`, `acr`.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "login_required": {
+            "description": "The user must (re-)authenticate before accepting: sign in when\n`authenticated` is false, otherwise step up with `POST /v1/reauth`.",
+            "type": "boolean"
+          },
+          "resources": {
+            "description": "Requested resources (RFC 8707).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "scopes": {
+            "description": "Requested scopes.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "interaction_id",
+          "client",
+          "scopes",
+          "resources",
+          "expires_at",
+          "authenticated",
+          "login_required",
+          "login_reasons",
+          "consent_required",
+          "acr_values"
+        ],
+        "type": "object"
       },
       "IntrospectionRequest": {
         "description": "Body of `POST /v1/token/introspect` (form or JSON, RFC 7662 §2.1).",
@@ -3831,6 +4375,24 @@
         ],
         "type": "object"
       },
+      "OAuthErrorBody": {
+        "description": "OAuth error body (RFC 6749 §5.2).",
+        "properties": {
+          "error": {
+            "description": "Error code (`invalid_request`, `invalid_client`, `invalid_grant`,\n`unauthorized_client`, `unsupported_grant_type`, `invalid_scope`,\n`invalid_token`, `insufficient_scope`).",
+            "type": "string"
+          },
+          "error_description": {
+            "description": "Fixed English description.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "error",
+          "error_description"
+        ],
+        "type": "object"
+      },
       "OrgAuditEventPage": {
         "description": "A page of an organization's audit log.",
         "properties": {
@@ -3981,6 +4543,18 @@
             "description": "Users with a verified address of this domain join automatically.",
             "type": "boolean"
           },
+          "consecutive_absent_checks": {
+            "description": "Consecutive checks that found the TXT record definitively absent\n(periodic re-verification, ORG-13); reset by a successful check.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "consecutive_inconclusive_checks": {
+            "description": "Consecutive inconclusive checks (resolver error, timeout; ORG-13).",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
           "created_at": {
             "description": "Created.",
             "format": "date-time",
@@ -3993,6 +4567,13 @@
           "id": {
             "$ref": "#/components/schemas/OrgDomainId",
             "description": "Id."
+          },
+          "last_check_outcome": {
+            "description": "Outcome of the last check: `present`, `absent` or `inconclusive`.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "last_checked_at": {
             "description": "Last DNS check.",
@@ -4009,6 +4590,14 @@
           "status": {
             "$ref": "#/components/schemas/DomainStatus",
             "description": "Verification status."
+          },
+          "unverified_at": {
+            "description": "When periodic re-verification took the verification away (ORG-13);\ncleared by verifying again.",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "verification_record_name": {
             "description": "DNS name of the TXT record to create.",
@@ -4035,7 +4624,9 @@
           "sso_required",
           "verification_record_name",
           "verification_value",
-          "created_at"
+          "created_at",
+          "consecutive_absent_checks",
+          "consecutive_inconclusive_checks"
         ],
         "type": "object"
       },
@@ -4927,6 +5518,19 @@
         ],
         "type": "object"
       },
+      "RedirectTarget": {
+        "description": "Where the front end sends the browser after accept / deny.",
+        "properties": {
+          "redirect_to": {
+            "description": "The client's redirect URI with `code` (or `error`), `state` and\n`iss`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "redirect_to"
+        ],
+        "type": "object"
+      },
       "RefreshRequest": {
         "additionalProperties": false,
         "description": "Body of `POST /v1/token/refresh`.",
@@ -5798,6 +6402,134 @@
         ],
         "type": "object"
       },
+      "StaffMember": {
+        "description": "A staff account (K-93).",
+        "properties": {
+          "email": {
+            "description": "Its address.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "is_break_glass": {
+            "description": "Break-glass account (always `platform_admin`; managed by the CLI).",
+            "type": "boolean"
+          },
+          "role": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/StaffRole",
+                "description": "The role; `null`: staff flag without a role (no admin permission)."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "role_updated_at": {
+            "description": "When the role was last set.",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "description": "Account status.",
+            "type": "string"
+          },
+          "user_id": {
+            "$ref": "#/components/schemas/UserId",
+            "description": "The account."
+          }
+        },
+        "required": [
+          "user_id",
+          "status",
+          "is_break_glass"
+        ],
+        "type": "object"
+      },
+      "StaffRole": {
+        "description": "The role of a staff account (K-93).",
+        "enum": [
+          "support_readonly",
+          "support",
+          "security",
+          "platform_admin"
+        ],
+        "type": "string"
+      },
+      "StaffRoleChange": {
+        "description": "Result of a staff role change (K-93).",
+        "properties": {
+          "event_id": {
+            "$ref": "#/components/schemas/EventId",
+            "description": "The audit event recording the change."
+          },
+          "previous_role": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/StaffRole",
+                "description": "The role before the change (`null`: none)."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "role": {
+            "$ref": "#/components/schemas/StaffRole",
+            "description": "The new role."
+          },
+          "sessions_revoked": {
+            "description": "Sessions of the staff member revoked by the change.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "user_id": {
+            "$ref": "#/components/schemas/UserId",
+            "description": "The staff member."
+          }
+        },
+        "required": [
+          "user_id",
+          "role",
+          "sessions_revoked",
+          "event_id"
+        ],
+        "type": "object"
+      },
+      "StaffRoleRequest": {
+        "additionalProperties": false,
+        "description": "Body of `POST /v1/admin/staff/{user_id}/role` (K-93).",
+        "properties": {
+          "approval_id": {
+            "description": "Four-eyes approval (K-66) of `change_staff_role` with the same\ntarget and role, when `admin.four_eyes` is on.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reason": {
+            "description": "Mandatory justification (ADM-08).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "role": {
+            "$ref": "#/components/schemas/StaffRole",
+            "description": "The new role."
+          }
+        },
+        "required": [
+          "role"
+        ],
+        "type": "object"
+      },
       "StatusResponse": {
         "description": "Fixed acknowledgement body.",
         "properties": {
@@ -6029,6 +6761,83 @@
           "token": {
             "description": "Token from the e-mailed link.",
             "type": "string"
+          }
+        },
+        "required": [
+          "token"
+        ],
+        "type": "object"
+      },
+      "TokenResponse": {
+        "description": "The token response (RFC 6749 §5.1, OIDC Core §3.1.3.3).",
+        "properties": {
+          "access_token": {
+            "description": "JWT access token (RFC 9068).",
+            "type": "string"
+          },
+          "expires_in": {
+            "description": "Access-token lifetime in seconds.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "id_token": {
+            "description": "ID token (when `openid` was granted).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "refresh_token": {
+            "description": "Rotating refresh token (when the client may use `refresh_token`).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "scope": {
+            "description": "Granted scopes.",
+            "type": "string"
+          },
+          "token_type": {
+            "description": "Always `Bearer`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "access_token",
+          "token_type",
+          "expires_in",
+          "scope"
+        ],
+        "type": "object"
+      },
+      "TokenTypeRequest": {
+        "description": "Form body of `POST /v1/oauth2/revoke` and `/introspect`\n(documentation only).",
+        "properties": {
+          "client_id": {
+            "description": "Client id (`client_secret_post` / public clients).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "client_secret": {
+            "description": "Client secret (`client_secret_post`).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "token": {
+            "description": "The token.",
+            "type": "string"
+          },
+          "token_type_hint": {
+            "description": "`access_token` or `refresh_token` (optional hint).",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -6318,6 +7127,54 @@
         "description": "A user account (`users.id`).",
         "format": "uuid",
         "type": "string"
+      },
+      "UserInfo": {
+        "description": "Claims returned by `userinfo` (OIDC Core §5.3), by scope.",
+        "properties": {
+          "email": {
+            "description": "`email`: address.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "email_verified": {
+            "description": "`email`: whether it is verified.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "locale": {
+            "description": "`profile`: preferred language (BCP 47).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "description": "`profile`: display name.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sub": {
+            "description": "Subject (always).",
+            "type": "string"
+          },
+          "zoneinfo": {
+            "description": "`profile`: IANA time zone.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "sub"
+        ],
+        "type": "object"
       },
       "UserStatusFilter": {
         "description": "Status filter of the user listing.",
@@ -6784,6 +7641,17 @@
         "scheme": "bearer",
         "type": "http"
       },
+      "oauth2_access_token": {
+        "bearerFormat": "JWT",
+        "description": "Access token issued by the OAuth 2.1 / OIDC provider to a registered client (RFC 9068, OIDP-08; never a native session token).",
+        "scheme": "bearer",
+        "type": "http"
+      },
+      "oauth2_client": {
+        "description": "OAuth client authentication of the provider's token, revocation and introspection endpoints (OIDP-06, RFC 6749 §2.3.1): `client_secret_basic` (`Authorization: Basic`), or `client_id` + `client_secret` in the form (`client_secret_post`); public clients send only `client_id` (`none`, PKCE).",
+        "scheme": "basic",
+        "type": "http"
+      },
       "session_cookie": {
         "description": "Web session cookie. State-changing requests also need the `X-CSRF-Token` header (SES-04).",
         "in": "cookie",
@@ -6888,6 +7756,50 @@
         "summary": "The JSON Web Key Set (SES-09): public keys only, cacheable.",
         "tags": [
           "session"
+        ]
+      }
+    },
+    "/.well-known/oauth-authorization-server": {
+      "get": {
+        "operationId": "oauth2_authorization_server_metadata",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthorizationServerMetadata"
+                }
+              }
+            },
+            "description": "Authorization server metadata"
+          }
+        },
+        "security": [],
+        "summary": "OAuth 2.0 Authorization Server Metadata (RFC 8414; OIDP-09).",
+        "tags": [
+          "oauth2-provider"
+        ]
+      }
+    },
+    "/.well-known/openid-configuration": {
+      "get": {
+        "operationId": "oauth2_openid_configuration",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthorizationServerMetadata"
+                }
+              }
+            },
+            "description": "Provider metadata"
+          }
+        },
+        "security": [],
+        "summary": "OpenID Provider metadata (OpenID Connect Discovery 1.0; OIDP-09).",
+        "tags": [
+          "oauth2-provider"
         ]
       }
     },
@@ -7064,7 +7976,7 @@
                 }
               }
             },
-            "description": "forbidden / admin_phishing_resistant_mfa_required"
+            "description": "forbidden / admin_phishing_resistant_mfa_required / admin_permission_denied"
           }
         },
         "security": [
@@ -7121,7 +8033,7 @@
                 }
               }
             },
-            "description": "forbidden / admin_target_not_allowed"
+            "description": "forbidden / admin_permission_denied / admin_target_not_allowed"
           },
           "404": {
             "content": {
@@ -7221,7 +8133,7 @@
                 }
               }
             },
-            "description": "forbidden / admin_phishing_resistant_mfa_required / admin_self_approval_not_allowed / admin_target_not_allowed / admin_approval_invalid (decided or expired)"
+            "description": "forbidden / admin_phishing_resistant_mfa_required / admin_permission_denied / admin_self_approval_not_allowed / admin_target_not_allowed / admin_approval_invalid (decided or expired)"
           },
           "404": {
             "content": {
@@ -7311,7 +8223,7 @@
                 }
               }
             },
-            "description": "forbidden / admin_phishing_resistant_mfa_required / admin_self_approval_not_allowed / admin_target_not_allowed / admin_approval_invalid (decided or expired)"
+            "description": "forbidden / admin_phishing_resistant_mfa_required / admin_permission_denied / admin_self_approval_not_allowed / admin_target_not_allowed / admin_approval_invalid (decided or expired)"
           },
           "404": {
             "content": {
@@ -7483,7 +8395,7 @@
                 }
               }
             },
-            "description": "forbidden"
+            "description": "forbidden / admin_permission_denied"
           },
           "422": {
             "content": {
@@ -7552,7 +8464,7 @@
                 }
               }
             },
-            "description": "forbidden"
+            "description": "forbidden / admin_permission_denied"
           },
           "422": {
             "content": {
@@ -7621,7 +8533,7 @@
                 }
               }
             },
-            "description": "forbidden"
+            "description": "forbidden / admin_permission_denied"
           },
           "422": {
             "content": {
@@ -7701,7 +8613,7 @@
                 }
               }
             },
-            "description": "forbidden / admin_target_not_allowed"
+            "description": "forbidden / admin_permission_denied / admin_target_not_allowed"
           },
           "404": {
             "content": {
@@ -7791,7 +8703,7 @@
                 }
               }
             },
-            "description": "forbidden / admin_target_not_allowed"
+            "description": "forbidden / admin_permission_denied / admin_target_not_allowed"
           },
           "404": {
             "content": {
@@ -7880,7 +8792,7 @@
                 }
               }
             },
-            "description": "forbidden / admin_approval_required / admin_approval_invalid (K-66)"
+            "description": "forbidden / admin_permission_denied / admin_approval_required / admin_approval_invalid (K-66)"
           },
           "422": {
             "content": {
@@ -7949,7 +8861,7 @@
                 }
               }
             },
-            "description": "forbidden / admin_approval_required / admin_approval_invalid (K-66)"
+            "description": "forbidden / admin_permission_denied / admin_approval_required / admin_approval_invalid (K-66)"
           },
           "422": {
             "content": {
@@ -8028,7 +8940,7 @@
                 }
               }
             },
-            "description": "forbidden / admin_approval_required / admin_approval_invalid (K-66)"
+            "description": "forbidden / admin_permission_denied / admin_approval_required / admin_approval_invalid (K-66)"
           },
           "422": {
             "content": {
@@ -8165,6 +9077,583 @@
         ]
       }
     },
+    "/v1/admin/oauth2/clients": {
+      "get": {
+        "operationId": "oauth2_list_clients",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientList"
+                }
+              }
+            },
+            "description": "Clients"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Not authenticated / step_up_required"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Not allowed"
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
+        "summary": "Lists the registered clients (staff, `oauth_clients:read`; OIDP-01).",
+        "tags": [
+          "oauth2-provider"
+        ]
+      },
+      "post": {
+        "operationId": "oauth2_create_client",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClientInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatedClient"
+                }
+              }
+            },
+            "description": "Registered"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Not authenticated / step_up_required"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Not allowed"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "invalid_client_metadata"
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
+        "summary": "Registers a client (staff, `oauth_clients:manage`; OIDP-01). The secret\nof a confidential client is returned once.",
+        "tags": [
+          "oauth2-provider"
+        ]
+      }
+    },
+    "/v1/admin/oauth2/clients/{client_id}": {
+      "delete": {
+        "operationId": "oauth2_delete_client",
+        "parameters": [
+          {
+            "description": "Client id",
+            "in": "path",
+            "name": "client_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Not authenticated"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Not allowed"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unknown client"
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
+        "summary": "Deletes a client and everything issued to it (staff,\n`oauth_clients:manage`).",
+        "tags": [
+          "oauth2-provider"
+        ]
+      },
+      "get": {
+        "operationId": "oauth2_get_client",
+        "parameters": [
+          {
+            "description": "Client id",
+            "in": "path",
+            "name": "client_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientView"
+                }
+              }
+            },
+            "description": "Client"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Not authenticated"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Not allowed"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unknown client"
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
+        "summary": "One client (staff, `oauth_clients:read`).",
+        "tags": [
+          "oauth2-provider"
+        ]
+      },
+      "patch": {
+        "operationId": "oauth2_update_client",
+        "parameters": [
+          {
+            "description": "Client id",
+            "in": "path",
+            "name": "client_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClientPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientView"
+                }
+              }
+            },
+            "description": "Updated"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Not authenticated"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Not allowed"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unknown client"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "invalid_client_metadata"
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
+        "summary": "Changes a client (staff, `oauth_clients:manage`). Disabling it or\nnarrowing what it may do revokes its grants.",
+        "tags": [
+          "oauth2-provider"
+        ]
+      }
+    },
+    "/v1/admin/oauth2/clients/{client_id}/secret": {
+      "post": {
+        "operationId": "oauth2_rotate_secret",
+        "parameters": [
+          {
+            "description": "Client id",
+            "in": "path",
+            "name": "client_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatedClient"
+                }
+              }
+            },
+            "description": "New secret (shown once)"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Not authenticated"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Not allowed"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unknown client"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Public clients have no secret"
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
+        "summary": "Rotates the secret of a confidential client (staff,\n`oauth_clients:manage`); the old secret stops working at once.",
+        "tags": [
+          "oauth2-provider"
+        ]
+      }
+    },
+    "/v1/admin/staff": {
+      "get": {
+        "operationId": "list_staff",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/StaffMember"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Staff accounts"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "unauthenticated / step_up_required"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "forbidden / admin_phishing_resistant_mfa_required / admin_permission_denied"
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
+        "summary": "Staff accounts and their roles (K-93).",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/staff/{user_id}/role": {
+      "post": {
+        "operationId": "change_staff_role",
+        "parameters": [
+          {
+            "description": "User id of the staff member",
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StaffRoleRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StaffRoleChange"
+                }
+              }
+            },
+            "description": "Role changed"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "unauthenticated / step_up_required"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "forbidden / admin_phishing_resistant_mfa_required / admin_permission_denied / admin_target_not_allowed / admin_approval_required / admin_approval_invalid"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "not_found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "conflict (the member already has this role)"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "admin_reason_required / validation_failed"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "rate_limited"
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
+        "summary": "Changes the role of **another**, non-break-glass staff member (K-93):\nfour-eyes (`change_staff_role`), audited with the old and the new role;\nevery session and trusted device of the target ends in the same\ntransaction. The API never makes a regular user staff nor removes staff\nrights (CLI `grant-admin` / `revoke-admin`).",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/admin/users": {
       "get": {
         "operationId": "list_users",
@@ -8273,7 +9762,7 @@
                 }
               }
             },
-            "description": "forbidden / admin_phishing_resistant_mfa_required"
+            "description": "forbidden / admin_phishing_resistant_mfa_required / admin_permission_denied"
           },
           "422": {
             "content": {
@@ -8343,7 +9832,7 @@
                 }
               }
             },
-            "description": "forbidden / admin_phishing_resistant_mfa_required"
+            "description": "forbidden / admin_phishing_resistant_mfa_required / admin_permission_denied"
           },
           "404": {
             "content": {
@@ -8423,7 +9912,7 @@
                 }
               }
             },
-            "description": "forbidden / admin_target_not_allowed"
+            "description": "forbidden / admin_permission_denied / admin_target_not_allowed"
           },
           "404": {
             "content": {
@@ -8516,7 +10005,7 @@
                 }
               }
             },
-            "description": "forbidden / admin_target_not_allowed / impersonation_not_allowed"
+            "description": "forbidden / admin_permission_denied / admin_target_not_allowed / impersonation_not_allowed"
           },
           "404": {
             "content": {
@@ -8606,7 +10095,7 @@
                 }
               }
             },
-            "description": "forbidden / admin_phishing_resistant_mfa_required / admin_target_not_allowed / admin_approval_required / admin_approval_invalid (K-66)"
+            "description": "forbidden / admin_phishing_resistant_mfa_required / admin_permission_denied / admin_target_not_allowed / admin_approval_required / admin_approval_invalid (K-66)"
           },
           "404": {
             "content": {
@@ -8706,7 +10195,7 @@
                 }
               }
             },
-            "description": "forbidden / admin_target_not_allowed"
+            "description": "forbidden / admin_permission_denied / admin_target_not_allowed"
           },
           "404": {
             "content": {
@@ -8806,7 +10295,7 @@
                 }
               }
             },
-            "description": "forbidden / admin_phishing_resistant_mfa_required / admin_target_not_allowed / admin_approval_required / admin_approval_invalid (K-66)"
+            "description": "forbidden / admin_phishing_resistant_mfa_required / admin_permission_denied / admin_target_not_allowed / admin_approval_required / admin_approval_invalid (K-66)"
           },
           "404": {
             "content": {
@@ -8906,7 +10395,7 @@
                 }
               }
             },
-            "description": "forbidden / admin_phishing_resistant_mfa_required / admin_target_not_allowed / admin_approval_required / admin_approval_invalid (K-66)"
+            "description": "forbidden / admin_phishing_resistant_mfa_required / admin_permission_denied / admin_target_not_allowed / admin_approval_required / admin_approval_invalid (K-66)"
           },
           "404": {
             "content": {
@@ -9006,7 +10495,7 @@
                 }
               }
             },
-            "description": "forbidden / admin_phishing_resistant_mfa_required / admin_target_not_allowed / admin_approval_required / admin_approval_invalid (K-66)"
+            "description": "forbidden / admin_phishing_resistant_mfa_required / admin_permission_denied / admin_target_not_allowed / admin_approval_required / admin_approval_invalid (K-66)"
           },
           "404": {
             "content": {
@@ -9106,7 +10595,7 @@
                 }
               }
             },
-            "description": "forbidden / admin_phishing_resistant_mfa_required / admin_target_not_allowed / admin_approval_required / admin_approval_invalid (K-66)"
+            "description": "forbidden / admin_phishing_resistant_mfa_required / admin_permission_denied / admin_target_not_allowed / admin_approval_required / admin_approval_invalid (K-66)"
           },
           "404": {
             "content": {
@@ -9206,7 +10695,7 @@
                 }
               }
             },
-            "description": "forbidden / admin_phishing_resistant_mfa_required / admin_target_not_allowed / admin_approval_required / admin_approval_invalid (K-66)"
+            "description": "forbidden / admin_phishing_resistant_mfa_required / admin_permission_denied / admin_target_not_allowed / admin_approval_required / admin_approval_invalid (K-66)"
           },
           "404": {
             "content": {
@@ -12139,6 +13628,98 @@
         ]
       }
     },
+    "/v1/me/oauth2/consents": {
+      "get": {
+        "operationId": "oauth2_list_consents",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConsentList"
+                }
+              }
+            },
+            "description": "Consents"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Not authenticated"
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
+        "summary": "The applications the user granted access (OIDP-05).",
+        "tags": [
+          "oauth2-provider"
+        ]
+      }
+    },
+    "/v1/me/oauth2/consents/{client_id}": {
+      "delete": {
+        "operationId": "oauth2_revoke_consent",
+        "parameters": [
+          {
+            "description": "Client id",
+            "in": "path",
+            "name": "client_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Revoked"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Not authenticated"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Nothing to revoke"
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "bearer_jwt": []
+          }
+        ],
+        "summary": "Revokes an application's access: the consent and every token of it for\nthe user (OIDP-05).",
+        "tags": [
+          "oauth2-provider"
+        ]
+      }
+    },
     "/v1/me/passkeys": {
       "get": {
         "operationId": "list_passkeys",
@@ -13377,6 +14958,569 @@
         "summary": "Starts a browser login: redirects to the provider and sets the\nbrowser-binding cookie (SOC-02).",
         "tags": [
           "social-login"
+        ]
+      }
+    },
+    "/v1/oauth2/authorize": {
+      "get": {
+        "operationId": "oauth2_authorize",
+        "parameters": [
+          {
+            "description": "Client id",
+            "in": "query",
+            "name": "client_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Registered redirect URI (exact)",
+            "in": "query",
+            "name": "redirect_uri",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "`code`",
+            "in": "query",
+            "name": "response_type",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Space-separated scopes",
+            "in": "query",
+            "name": "scope",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "PKCE S256 challenge",
+            "in": "query",
+            "name": "code_challenge",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "`S256`",
+            "in": "query",
+            "name": "code_challenge_method",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Opaque client state",
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "OIDC nonce",
+            "in": "query",
+            "name": "nonce",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "`none`, `login`, `consent`",
+            "in": "query",
+            "name": "prompt",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Maximum authentication age (s)",
+            "in": "query",
+            "name": "max_age",
+            "required": false,
+            "schema": {
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Requested `acr` values",
+            "in": "query",
+            "name": "acr_values",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "RFC 8707 resource (repeatable)",
+            "in": "query",
+            "name": "resource",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "303": {
+            "description": "Redirect to the client (code / error + `iss`) or to the interaction page"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "invalid_authorization_request (never redirected)"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Too many requests"
+          }
+        },
+        "security": [],
+        "summary": "Authorization endpoint (OAuth 2.1 §4.1.1, OIDC Core §3.1.2): code flow\nwith PKCE `S256` only. Answers `303` to the client's redirect URI (code\nor error, always with `iss`, RFC 9207) or to the login / consent page\n(`oidc_provider.interaction_url?interaction_id=…`, sets the\n`__Host-authn_oidc_browser` binding cookie). Requests whose client or\nredirect URI cannot be validated are never redirected (`400`).",
+        "tags": [
+          "oauth2-provider"
+        ]
+      }
+    },
+    "/v1/oauth2/interactions/{interaction_id}": {
+      "get": {
+        "operationId": "oauth2_interaction",
+        "parameters": [
+          {
+            "description": "Interaction id",
+            "in": "path",
+            "name": "interaction_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InteractionView"
+                }
+              }
+            },
+            "description": "The request"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "oauth_interaction_invalid"
+          }
+        },
+        "security": [],
+        "summary": "The pending authorization request, for the login / consent page\n(OIDP-04). Only the browser that started it (binding cookie) may read\nit; the session, if any, decides `login_required` / `consent_required`.",
+        "tags": [
+          "oauth2-provider"
+        ]
+      }
+    },
+    "/v1/oauth2/interactions/{interaction_id}/accept": {
+      "post": {
+        "operationId": "oauth2_accept",
+        "parameters": [
+          {
+            "description": "Interaction id",
+            "in": "path",
+            "name": "interaction_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RedirectTarget"
+                }
+              }
+            },
+            "description": "Where to send the browser"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "oauth_interaction_invalid"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "unauthenticated / step_up_required"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "csrf_failed / read-only impersonation"
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ],
+        "summary": "The signed-in user approves the request (OIDP-04, OIDP-05). Answers the\nclient redirect (`redirect_to`, with `code`); the page navigates there.\n`401 step_up_required` (`details.login_reasons`) while the session does\nnot meet `prompt=login` / `max_age` / `acr_values`: re-authenticate with\n`POST /v1/reauth`, then accept again.",
+        "tags": [
+          "oauth2-provider"
+        ]
+      }
+    },
+    "/v1/oauth2/interactions/{interaction_id}/deny": {
+      "post": {
+        "operationId": "oauth2_deny",
+        "parameters": [
+          {
+            "description": "Interaction id",
+            "in": "path",
+            "name": "interaction_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RedirectTarget"
+                }
+              }
+            },
+            "description": "Where to send the browser"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "oauth_interaction_invalid"
+          }
+        },
+        "security": [],
+        "summary": "The user refuses the request: the client receives `access_denied`.",
+        "tags": [
+          "oauth2-provider"
+        ]
+      }
+    },
+    "/v1/oauth2/introspect": {
+      "post": {
+        "operationId": "oauth2_introspect",
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/TokenTypeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IntrospectionResponse"
+                }
+              }
+            },
+            "description": "Introspection result"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OAuthErrorBody"
+                }
+              }
+            },
+            "description": "invalid_request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OAuthErrorBody"
+                }
+              }
+            },
+            "description": "invalid_client"
+          }
+        },
+        "security": [
+          {
+            "oauth2_client": []
+          }
+        ],
+        "summary": "Token introspection (RFC 7662; OIDP-11) for confidential clients. A\ntoken is active only for the client it was issued to or a client in\nits audience.",
+        "tags": [
+          "oauth2-provider"
+        ]
+      }
+    },
+    "/v1/oauth2/revoke": {
+      "post": {
+        "operationId": "oauth2_revoke",
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/TokenTypeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Revoked (or nothing to revoke)"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OAuthErrorBody"
+                }
+              }
+            },
+            "description": "invalid_request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OAuthErrorBody"
+                }
+              }
+            },
+            "description": "invalid_client"
+          }
+        },
+        "security": [
+          {
+            "oauth2_client": []
+          }
+        ],
+        "summary": "Token revocation (RFC 7009; OIDP-11). A refresh token revokes its whole\ngrant. Unknown tokens and tokens of other clients also answer `200`.",
+        "tags": [
+          "oauth2-provider"
+        ]
+      }
+    },
+    "/v1/oauth2/token": {
+      "post": {
+        "operationId": "oauth2_token",
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/TokenRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenResponse"
+                }
+              }
+            },
+            "description": "Tokens"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OAuthErrorBody"
+                }
+              }
+            },
+            "description": "invalid_request / invalid_grant / unauthorized_client / unsupported_grant_type / invalid_scope"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OAuthErrorBody"
+                }
+              }
+            },
+            "description": "invalid_client"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Too many requests"
+          }
+        },
+        "security": [
+          {
+            "oauth2_client": []
+          }
+        ],
+        "summary": "Token endpoint (RFC 6749 §3.2; OIDP-06 … OIDP-08): `authorization_code`\n(PKCE verifier required, single-use code) and `refresh_token`\n(rotation, replay revokes the grant). Client authentication:\n`client_secret_basic`, `client_secret_post`, `none` (public clients).\nErrors use the OAuth format (`{\"error\": …}`).",
+        "tags": [
+          "oauth2-provider"
+        ]
+      }
+    },
+    "/v1/oauth2/userinfo": {
+      "get": {
+        "operationId": "oauth2_userinfo_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserInfo"
+                }
+              }
+            },
+            "description": "Claims"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OAuthErrorBody"
+                }
+              }
+            },
+            "description": "invalid_token (WWW-Authenticate: Bearer)"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OAuthErrorBody"
+                }
+              }
+            },
+            "description": "insufficient_scope"
+          }
+        },
+        "security": [
+          {
+            "oauth2_access_token": []
+          }
+        ],
+        "summary": "UserInfo (OIDC Core §5.3; OIDP-10): `sub`, plus `name`, `locale`,\n`zoneinfo` (`profile`) and `email`, `email_verified` (`email`).",
+        "tags": [
+          "oauth2-provider"
+        ]
+      },
+      "post": {
+        "operationId": "oauth2_userinfo_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserInfo"
+                }
+              }
+            },
+            "description": "Claims"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OAuthErrorBody"
+                }
+              }
+            },
+            "description": "invalid_token (WWW-Authenticate: Bearer)"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OAuthErrorBody"
+                }
+              }
+            },
+            "description": "insufficient_scope"
+          }
+        },
+        "security": [
+          {
+            "oauth2_access_token": []
+          }
+        ],
+        "summary": "UserInfo with `POST` (OIDC Core §5.3.1); the token is read from the\n`Authorization` header only.",
+        "tags": [
+          "oauth2-provider"
         ]
       }
     },
@@ -18034,6 +20178,10 @@
     {
       "description": "Platform admin API (passkey session + step-up)",
       "name": "admin"
+    },
+    {
+      "description": "OAuth 2.1 / OpenID Connect provider",
+      "name": "oauth2-provider"
     }
   ]
 }

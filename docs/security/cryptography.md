@@ -180,6 +180,14 @@ E-postayla giden bağlantılarda token URL **parçasındadır** (`#token=…`): 
 
 Birlikte çalışabilirlik sınırı: yalnızca EdDSA desteklenir; RS256/ES256 bekleyen kaynak sunucusu kütüphaneleri doğrulayamayabilir ([roadmap](../roadmap.md) C19).
 
+### 7.1 OAuth 2.1 / OIDC sağlayıcısının token'ları (K-80, OIDP-06 … OIDP-08)
+
+- **İmza:** native token'larla aynı anahtar kümesi ve aynı sabit algoritmalı EdDSA JWS'i (`authn_crypto::jwt`); sağlayıcı anahtar üretmez, süreç başına anlık görüntüsü en çok 5 sn eskidir. Access token `typ: at+jwt` (RFC 9068), ID token `typ: JWT`; ikisi birbirinin yerine doğrulanamaz.
+- **Ayrım:** sağlayıcı access token'ı `sid` taşımaz ve `aud`'u native `session.audiences`'ı asla içermez; native doğrulayıcı onu reddeder. Sağlayıcı her access token'ı `jti` kaydıyla (`oidc_access_tokens`) eşleştirir; kaydı olmayan (native) token kabul edilmez.
+- **`at_hash`:** OIDC Core §3.1.3.6 hash'i ID token'ın `alg`'ine göre seçer; EdDSA/Ed25519 için SHA-512'nin sol 32 baytı, base64url (Ed25519 SHA-512 üzerine kuruludur; sertifikalı diğer sağlayıcılarla aynı seçim).
+- **Opak değerler:** istemci sırrı, yetkilendirme kodu ve refresh token 256 bit `OpaqueToken`; yalnızca SHA-256 saklanır (§6), istemci sırrı sabit zamanlı karşılaştırılır. Tarayıcı bağlama çerezi de 256 bit, yalnızca SHA-256'sı saklanır.
+- **PKCE:** yalnızca `S256` (`BASE64URL(SHA-256(verifier))`), sabit zamanlı karşılaştırma, RFC 7636 Ek B test vektörüyle test edilir.
+
 ## 8. Üçüncü taraf ID token'ları ve Apple istemci sırrı (SOC-02, SOC-03, SOC-07)
 
 **ID token doğrulaması** (`crates/authn-oidc-client/src/id_token.rs`):

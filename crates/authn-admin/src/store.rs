@@ -11,6 +11,8 @@ use sqlx::{PgConnection, PgExecutor};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+use crate::roles::StaffRole;
+
 /// Stores the justification of an audited admin action.
 pub(crate) async fn insert_reason(
     conn: &mut PgConnection,
@@ -502,22 +504,6 @@ pub(crate) async fn lock_and_count_requests(
     .await
 }
 
-/// Whether an active, non-break-glass platform admin other than `caller`
-/// exists (K-66 single-admin exception; one exact `EXISTS`, the target of
-/// the operation included).
-pub(crate) async fn other_active_admin_exists(
-    conn: &mut PgConnection,
-    caller: UserId,
-) -> Result<bool, sqlx::Error> {
-    sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM users \
-           WHERE is_platform_admin AND NOT is_break_glass AND status = 'active' AND id <> $1)",
-    )
-    .bind(caller)
-    .fetch_one(conn)
-    .await
-}
-
 /// Serializes every change of platform-admin rights (K-76: `grant-admin`
 /// / `revoke-admin`) with a transaction-scoped advisory lock: two
 /// concurrent revocations cannot both count the other admin as the one
@@ -538,6 +524,23 @@ pub(crate) async fn other_active_platform_admin_exists(
     sqlx::query_scalar(
         "SELECT EXISTS (SELECT 1 FROM users \
            WHERE is_platform_admin AND status = 'active' AND id <> $1)",
+    )
+    .bind(user)
+    .fetch_one(conn)
+    .await
+}
+
+/// Whether an active staff account other than `user` with the
+/// `platform_admin` role exists, break-glass accounts included (K-93: the
+/// last account able to manage staff roles is never demoted or revoked).
+pub(crate) async fn other_active_platform_admin_role_exists(
+    conn: &mut PgConnection,
+    user: UserId,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM users u JOIN admin_staff_roles r ON r.user_id = u.id \
+           WHERE u.is_platform_admin AND u.status = 'active' AND u.id <> $1 \
+             AND r.role = 'platform_admin')",
     )
     .bind(user)
     .fetch_one(conn)
@@ -600,5 +603,162 @@ pub(crate) async fn approval_usable<'e>(
     .bind(used.target)
     .bind(used.now)
     .fetch_one(executor)
+    .await
+}
+
+// --- K-93: staff roles (`admin_staff_roles`) ----------------------------------
+
+fn parse_role(value: Option<String>) -> Option<StaffRole> {
+    let value = value?;
+    match value.parse::<StaffRole>() {
+        Ok(role) => Some(role),
+        Err(_) => {
+            // The CHECK constraint makes this unreachable; fail closed.
+            tracing::error!("unknown staff role in admin_staff_roles");
+            None
+        }
+    }
+}
+
+/// The staff role of `user` (`None`: no role, no admin permission).
+pub(crate) async fn staff_role<'e>(
+    executor: impl PgExecutor<'e>,
+    user: UserId,
+) -> Result<Option<StaffRole>, sqlx::Error> {
+    let role: Option<String> =
+        sqlx::query_scalar("SELECT role FROM admin_staff_roles WHERE user_id = $1")
+            .bind(user)
+            .fetch_optional(executor)
+            .await?;
+    Ok(parse_role(role))
+}
+
+/// The staff roles of `users`, row-locked in user id order (role changes,
+/// K-93). Accounts without a role row are absent.
+pub(crate) async fn lock_staff_roles(
+    conn: &mut PgConnection,
+    users: &[UserId],
+) -> Result<Vec<(UserId, StaffRole)>, sqlx::Error> {
+    let rows: Vec<(UserId, String)> = sqlx::query_as(
+        "SELECT user_id, role FROM admin_staff_roles WHERE user_id = ANY($1) \
+         ORDER BY user_id FOR UPDATE",
+    )
+    .bind(users)
+    .fetch_all(conn)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|(id, role)| parse_role(Some(role)).map(|r| (id, r)))
+        .collect())
+}
+
+/// Sets the staff role of `user` (insert or change). The account must
+/// already be staff (`is_platform_admin`; enforced by the table trigger,
+/// which also keeps break-glass accounts `platform_admin`).
+pub(crate) async fn set_staff_role(
+    conn: &mut PgConnection,
+    user: UserId,
+    role: StaffRole,
+    at: OffsetDateTime,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO admin_staff_roles (user_id, role, granted_at, updated_at) \
+         VALUES ($1, $2, $3, $3) \
+         ON CONFLICT (user_id) DO UPDATE SET role = EXCLUDED.role, updated_at = EXCLUDED.updated_at",
+    )
+    .bind(user)
+    .bind(role.as_str())
+    .bind(at)
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
+/// Removes the staff role of `user` (staff rights revoked).
+pub(crate) async fn delete_staff_role(
+    conn: &mut PgConnection,
+    user: UserId,
+) -> Result<u64, sqlx::Error> {
+    Ok(
+        sqlx::query("DELETE FROM admin_staff_roles WHERE user_id = $1")
+            .bind(user)
+            .execute(conn)
+            .await?
+            .rows_affected(),
+    )
+}
+
+/// A staff account with its role (K-93, `GET /v1/admin/staff`).
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub(crate) struct StaffRow {
+    pub(crate) user_id: UserId,
+    pub(crate) email: Option<String>,
+    pub(crate) status: String,
+    pub(crate) is_break_glass: bool,
+    pub(crate) role: Option<String>,
+    pub(crate) role_updated_at: Option<OffsetDateTime>,
+}
+
+impl StaffRow {
+    pub(crate) fn role(&self) -> Option<StaffRole> {
+        parse_role(self.role.clone())
+    }
+}
+
+/// Every staff account (bounded), oldest role first.
+pub(crate) async fn list_staff<'e>(
+    executor: impl PgExecutor<'e>,
+    limit: i64,
+) -> Result<Vec<StaffRow>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT u.id AS user_id, u.email, u.status, u.is_break_glass, r.role, \
+                r.updated_at AS role_updated_at \
+         FROM users u LEFT JOIN admin_staff_roles r ON r.user_id = u.id \
+         WHERE u.is_platform_admin ORDER BY u.created_at, u.id LIMIT $1",
+    )
+    .bind(limit)
+    .fetch_all(executor)
+    .await
+}
+
+fn role_names(roles: &[StaffRole]) -> Vec<&'static str> {
+    roles.iter().map(|r| r.as_str()).collect()
+}
+
+/// Whether an active, non-break-glass staff member other than `caller`
+/// whose role is one of `roles` exists (K-66 / K-93 single-approver
+/// exception; one exact `EXISTS`, the target of the operation included).
+pub(crate) async fn other_active_approver_exists(
+    conn: &mut PgConnection,
+    caller: UserId,
+    roles: &[StaffRole],
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM users u JOIN admin_staff_roles r ON r.user_id = u.id \
+           WHERE u.is_platform_admin AND NOT u.is_break_glass AND u.status = 'active' \
+             AND u.id <> $1 AND r.role = ANY($2))",
+    )
+    .bind(caller)
+    .bind(role_names(roles))
+    .fetch_one(conn)
+    .await
+}
+
+/// Whether `user` is an active staff member whose role is one of `roles`
+/// (an approval is honoured only while its approver still holds the
+/// four-eyes authority for the operation, K-66 / K-93).
+pub(crate) async fn is_active_staff_with_role(
+    conn: &mut PgConnection,
+    user: UserId,
+    roles: &[StaffRole],
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM users u JOIN admin_staff_roles r ON r.user_id = u.id \
+           WHERE u.id = $1 AND u.is_platform_admin AND u.status = 'active' \
+             AND r.role = ANY($2))",
+    )
+    .bind(user)
+    .bind(role_names(roles))
+    .fetch_one(conn)
     .await
 }

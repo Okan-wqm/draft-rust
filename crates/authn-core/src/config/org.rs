@@ -77,6 +77,41 @@ impl Default for OrgLimits {
     }
 }
 
+/// Periodic re-verification of verified domains (ORG-13, K-97).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DomainReverificationConfig {
+    /// Run the background job. Default `true`.
+    pub enabled: bool,
+    /// How often each verified domain's TXT record is checked again.
+    /// Default `24h`, `1h`–`30d`.
+    #[serde(with = "super::duration")]
+    pub interval: Duration,
+    /// Consecutive checks finding the record **definitively absent**
+    /// (NXDOMAIN, no TXT data, or TXT records without the value) after
+    /// which the domain loses its verification. Default 3, 1–10.
+    pub failure_threshold: u32,
+    /// Consecutive **inconclusive** checks (resolver errors, SERVFAIL,
+    /// timeouts) after which the domain loses its verification too: a
+    /// domain whose DNS never answers cannot keep auto-join forever.
+    /// Default 14, `failure_threshold`–100.
+    pub inconclusive_limit: u32,
+    /// Domains checked per job run (per instance). Default 100, 1–10000.
+    pub batch_size: u32,
+}
+
+impl Default for DomainReverificationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            interval: hours(24),
+            failure_threshold: 3,
+            inconclusive_limit: 14,
+            batch_size: 100,
+        }
+    }
+}
+
 /// `[org]` section.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -118,6 +153,8 @@ pub struct OrgConfig {
     pub limits: OrgLimits,
     /// API keys.
     pub api_keys: ApiKeyConfig,
+    /// Periodic domain re-verification (ORG-13, K-97).
+    pub domain_reverification: DomainReverificationConfig,
 }
 
 impl Default for OrgConfig {
@@ -137,6 +174,7 @@ impl Default for OrgConfig {
             deletion_grace_period: days(30),
             limits: OrgLimits::default(),
             api_keys: ApiKeyConfig::default(),
+            domain_reverification: DomainReverificationConfig::default(),
         }
     }
 }
@@ -202,6 +240,28 @@ impl OrgConfig {
             Duration::ZERO,
             days(365),
             "org.deletion_grace_period",
+        );
+        let r = &self.domain_reverification;
+        p.require_range(
+            r.interval,
+            hours(1),
+            days(30),
+            "org.domain_reverification.interval",
+        );
+        p.require(
+            (1..=10).contains(&r.failure_threshold),
+            "org.domain_reverification.failure_threshold",
+            "must be 1-10",
+        );
+        p.require(
+            (r.failure_threshold..=100).contains(&r.inconclusive_limit),
+            "org.domain_reverification.inconclusive_limit",
+            "must be between failure_threshold and 100",
+        );
+        p.require(
+            (1..=10_000).contains(&r.batch_size),
+            "org.domain_reverification.batch_size",
+            "must be 1-10000",
         );
         let l = &self.limits;
         for (value, key, max) in [
@@ -299,6 +359,48 @@ mod tests {
             "org.dns_timeout",
             "org.domain_verification_label",
         ] {
+            assert!(found.iter().any(|p| p.starts_with(key)), "{key}: {found:?}");
+        }
+    }
+
+    #[test]
+    fn org_13_domain_reverification_is_bounded() {
+        let c = OrgConfig::default();
+        assert!(c.domain_reverification.enabled);
+        assert_eq!(c.domain_reverification.interval, hours(24));
+        assert_eq!(c.domain_reverification.failure_threshold, 3);
+        assert_eq!(c.domain_reverification.inconclusive_limit, 14);
+        for (tweak, key) in [
+            (
+                (|r: &mut DomainReverificationConfig| r.interval = mins(59))
+                    as fn(&mut DomainReverificationConfig),
+                "org.domain_reverification.interval",
+            ),
+            (
+                |r| r.interval = days(31),
+                "org.domain_reverification.interval",
+            ),
+            (
+                |r| r.failure_threshold = 0,
+                "org.domain_reverification.failure_threshold",
+            ),
+            (
+                |r| r.failure_threshold = 11,
+                "org.domain_reverification.failure_threshold",
+            ),
+            (
+                |r| r.inconclusive_limit = 2,
+                "org.domain_reverification.inconclusive_limit",
+            ),
+            (
+                |r| r.inconclusive_limit = 101,
+                "org.domain_reverification.inconclusive_limit",
+            ),
+            (|r| r.batch_size = 0, "org.domain_reverification.batch_size"),
+        ] {
+            let mut c = OrgConfig::default();
+            tweak(&mut c.domain_reverification);
+            let found = problems(&c);
             assert!(found.iter().any(|p| p.starts_with(key)), "{key}: {found:?}");
         }
     }

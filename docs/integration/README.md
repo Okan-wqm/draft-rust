@@ -10,6 +10,7 @@
 | [`android.md`](android.md) | Android: Credential Manager ile passkey (`assetlinks.json`, `android:apk-key-hash:`), Google ile giriş, App Links, Keystore |
 | [`resource-server.md`](resource-server.md) | Kendi API'niz: JWKS ile JWT doğrulama (Rust örneği), introspection |
 | [`b2b.md`](b2b.md) | B2B SaaS: organizasyonlar, aktif organizasyon, roller/izinler, davetler, domain'ler, politikalar (`login_method_not_allowed`, `org_policy_mfa_required`), API anahtarları, servis hesapları |
+| [`oidc-provider.md`](oidc-provider.md) | OAuth 2.1 / OIDC sağlayıcısı (K-80): istemci kaydı, giriş / onay sayfası (headless), RP akışı (code + PKCE, ID token doğrulama, refresh, userinfo, iptal), kaynak sunucusu |
 | [`webhooks.md`](webhooks.md) | Webhook alıcısı: Standard Webhooks imza doğrulaması (Rust örneği), yeniden deneme, tekilleştirme |
 
 ## Hangi kimlik bilgisi?
@@ -21,5 +22,6 @@
 | Kullanıcı adına çalışan arka uç (BFF) | native akış, token'lar sunucuda | web §5 |
 | Makineden makineye (organizasyon kapsamlı) | Organizasyon API anahtarı `ak_…` | b2b §6 |
 | Kendi API'niz token'ı doğrular | JWKS (yerel) veya introspection (API anahtarıyla) | resource-server |
+| Kayıtlı (üçüncü taraf) uygulama | OIDC: authorization code + PKCE, sağlayıcı access / ID / refresh token'ı | oidc-provider |
 
-Faz 1'de bir OAuth 2.1 / OIDC **sağlayıcısı** yoktur (üçüncü taraf istemci kaydı, authorization code akışı, device flow yok); bunlar [`docs/roadmap.md`](../roadmap.md)'de Faz 2 kapsamındadır. Tüm istemciler birinci taraftır (`client_id: "first-party"`).
+Native ve çerez akışlarındaki istemciler birinci taraftır (`client_id: "first-party"`). Faz 2'nin ilk kalemi olarak OAuth 2.1 / OIDC **sağlayıcısı** (K-80) eklendi ve varsayılan kapalıdır ([oidc-provider.md](oidc-provider.md)); device flow, client credentials, token exchange ve dinamik kayıt hâlâ [`docs/roadmap.md`](../roadmap.md)'de Faz 2 kapsamındadır.

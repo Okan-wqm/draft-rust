@@ -27,11 +27,13 @@ pub mod duration;
 pub mod mfa;
 pub mod notify;
 pub mod oidc_client;
+pub mod oidc_provider;
 pub mod org;
 pub mod password;
 pub mod protect;
 pub mod server;
 pub mod session;
+pub mod telemetry;
 pub mod webauthn;
 
 use std::path::Path;
@@ -88,6 +90,10 @@ pub struct AppConfig {
     /// Social login (authn-oidc-client).
     #[serde(default)]
     pub oidc_client: oidc_client::OidcClientConfig,
+    /// OAuth 2.1 / OpenID Connect provider (authn-oidc-provider); off by
+    /// default.
+    #[serde(default)]
+    pub oidc_provider: oidc_provider::OidcProviderConfig,
     /// Organizations, RBAC, API keys (authn-org).
     #[serde(default)]
     pub org: org::OrgConfig,
@@ -103,6 +109,9 @@ pub struct AppConfig {
     /// Admin API (authn-admin).
     #[serde(default)]
     pub admin: admin::AdminConfig,
+    /// OpenTelemetry trace export (authn-server, feature `otel`; OPS-11).
+    #[serde(default)]
+    pub telemetry: telemetry::TelemetryConfig,
 }
 
 impl AppConfig {
@@ -139,11 +148,13 @@ impl AppConfig {
         self.mfa.validate(&mut p);
         self.webauthn.validate(&mut p);
         self.oidc_client.validate(&mut p);
+        self.oidc_provider.validate(&mut p);
         self.org.validate(&mut p);
         self.protect.validate(&mut p);
         self.audit.validate(&mut p);
         self.notify.validate(&mut p);
         self.admin.validate(&mut p);
+        self.telemetry.validate(&mut p);
         self.validate_cross_section(&mut p);
         p.into_result()
     }
@@ -163,6 +174,7 @@ impl AppConfig {
         );
         if hardened {
             self.reject_public_keys(p);
+            self.oidc_provider.validate_hardened(p);
             p.require(
                 self.server.public_base_url.scheme() == "https",
                 "server.public_base_url",

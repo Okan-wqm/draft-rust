@@ -27,6 +27,7 @@ Bu belge, aynı çalışma ağacında **paralel çalışan** modül agent'ların
 | `authn-session` | Dalga B | Giriş akışı, web oturumu + CSRF, native token'lar + rotasyon, JWKS, introspection, step-up, şifresiz giriş |
 | `authn-oidc-client` | Dalga B | Sosyal giriş (Google, Apple, Microsoft, GitHub, genel OIDC) |
 | `authn-admin` | Dalga B | Platform admin API'si, impersonation, break-glass, acil durum işlemleri |
+| `authn-oidc-provider` | Dalga B (Faz 2, K-80) | OAuth 2.1 / OIDC sağlayıcısı: istemci kaydı, authorization code + PKCE, token / refresh, ID token, keşif, userinfo, RFC 7009 / 7662 |
 | `authn-server` | 3 | `rust-authentication` binary'si, `AppState`, middleware yığını, CLI, sağlık, arka plan işleri |
 
 ### Gereksinim → sahip crate eşlemesi
@@ -44,14 +45,15 @@ Spesifikasyondaki **her** gereksinim kimliği tam olarak bir crate'e aittir. Sah
 | `authn-account` | ACC-01, ACC-02, ACC-03, ACC-04, ACC-05, ACC-06, ACC-07, ACC-08, ACC-09, ACC-10, ACC-11, ACC-12, ACC-13, DOC-07 |
 | `authn-mfa` | MFA-01, MFA-02, MFA-03, MFA-04, MFA-05, MFA-06, MFA-07, MFA-08, MFA-09, MFA-10 |
 | `authn-webauthn` | PKY-01, PKY-02, PKY-03, PKY-04, PKY-05, PKY-06, PKY-07, PKY-08 |
-| `authn-org` | ARC-10, ORG-01, ORG-02, ORG-03, ORG-04, ORG-05, ORG-06, ORG-07, ORG-08, ORG-09, ORG-10, ORG-11, ORG-12 |
-| `authn-protect` | DOC-03, PRT-01, PRT-02, PRT-03, PRT-04, PRT-05, PRT-07, PRT-08, PRT-09, PRT-10, PRT-12, RSK-01, RSK-02, RSK-03, RSK-04 |
+| `authn-org` | ARC-10, ORG-01, ORG-02, ORG-03, ORG-04, ORG-05, ORG-06, ORG-07, ORG-08, ORG-09, ORG-10, ORG-11, ORG-12, ORG-13 |
+| `authn-protect` | DOC-03, PRT-01, PRT-02, PRT-03, PRT-04, PRT-05, PRT-07, PRT-08, PRT-09, PRT-10, PRT-12, RSK-01, RSK-02, RSK-03, RSK-04, RSK-05 |
 | `authn-audit` | AUD-01, AUD-02, AUD-03, AUD-04, AUD-05, AUD-06, AUD-07 |
 | `authn-notify` | NTF-01, NTF-02, NTF-03, NTF-04 |
 | `authn-session` | DOC-05, SES-01, SES-02, SES-03, SES-04, SES-05, SES-06, SES-07, SES-08, SES-09, SES-10, SES-11, SES-12, SES-13, SES-14, SES-15, SES-16, SES-17, SES-18, SES-19, SES-20, SES-21, SES-22 |
 | `authn-oidc-client` | SOC-01, SOC-02, SOC-03, SOC-04, SOC-05, SOC-06, SOC-07, SOC-08, SOC-09 |
-| `authn-admin` | ADM-01, ADM-02, ADM-03, ADM-04, ADM-05, ADM-06, ADM-07, ADM-08 |
-| `authn-server` | ARC-03, ARC-09, ARC-11, DOC-01, DOC-04, DOC-06, OPS-01, OPS-02, OPS-03, OPS-04, OPS-05, OPS-06, OPS-07, OPS-08, OPS-09, PRT-11, TST-02, TST-06 |
+| `authn-admin` | ADM-01, ADM-02, ADM-03, ADM-04, ADM-05, ADM-06, ADM-07, ADM-08, ADM-09, ADM-10 |
+| `authn-oidc-provider` | OIDP-01, OIDP-02, OIDP-03, OIDP-04, OIDP-05, OIDP-06, OIDP-07, OIDP-08, OIDP-09, OIDP-10, OIDP-11, OIDP-12, OIDP-13 |
+| `authn-server` | ARC-03, ARC-09, ARC-11, DOC-01, DOC-04, DOC-06, OPS-01, OPS-02, OPS-03, OPS-04, OPS-05, OPS-06, OPS-07, OPS-08, OPS-09, OPS-11, OPS-12, PRT-11, TST-02, TST-06 |
 
 Notlar:
 - **PRT-06** (istemci IP'si) mimar tarafından `authn-core`'da uygulandı (`authn_core::http::client_ip`), çünkü `RequestContext` her crate'in ihtiyacıdır.
@@ -74,7 +76,7 @@ authn-core  ←  authn-crypto  ←  authn-store  ←  Dalga A  ←  Dalga B  ←
 | `authn-crypto` | core |
 | `authn-store` | core, crypto |
 | Dalga A (`password`, `account`, `mfa`, `webauthn`, `org`, `protect`, `audit`, `notify`) | core, crypto, store — **birbirlerine asla** |
-| Dalga B (`session`, `oidc-client`, `admin`) | core, crypto, store, tüm Dalga A — **birbirlerine asla** |
+| Dalga B (`session`, `oidc-client`, `admin`; Faz 2: `oidc-provider`) | core, crypto, store, tüm Dalga A — **birbirlerine asla** (sağlayıcının session / admin'den ihtiyacı kanca trait'leriyle gelir, §4) |
 | `authn-server` | hepsi |
 | `authn-testkit` | core (yalnızca diğerlerinin `[dev-dependencies]`'inde) |
 
@@ -97,7 +99,7 @@ Bir agent yalnızca sahibi olduğu dosyaları değiştirir.
 | `crates/authn-core/src/ports/<port>.rs` | portu **uygulayan** crate (§4 tablosu) — yalnızca geriye uyumlu ekleme |
 | `crates/authn-core/src/**` (diğer her şey: `config/mod.rs`, `config/common.rs`, `config/duration.rs`, `error/*.rs`, `error/codes/mod.rs`, `error/codes/common.rs`, `domain/**`, `http/**`, `id.rs`, `secret.rs`, `redact.rs`, `tls.rs`, `macros.rs`, `lib.rs`) | mimar |
 | `migrations/0001`–`0099` | mimar; modüller kendi aralıklarına yazar (§6) |
-| `fuzz/fuzz_targets/<hedef>.rs` | dosya başlığındaki crate (`jwt_parse`, `envelope_parse`, `password_hash_parse`, `token_parse`, `webhook_verify` → crypto; `api_key_parse` → org; `webhook_signature` → audit; `return_to` → protect; `hibp_range_parse` → password; `mfa_input_parse` → mfa; `webauthn_response_parse` → webauthn; `email_normalize` → core/account; `client_ip` → core). Yeni hedefin `fuzz/Cargo.toml` kaydı mimarın işidir (§13) |
+| `fuzz/fuzz_targets/<hedef>.rs` | dosya başlığındaki crate (`jwt_parse`, `envelope_parse`, `password_hash_parse`, `token_parse`, `webhook_verify` → crypto; `api_key_parse` → org; `webhook_signature` → audit; `return_to` → protect; `hibp_range_parse` → password; `mfa_input_parse` → mfa; `webauthn_response_parse` → webauthn; `email_normalize` → core/account; `client_ip` → core; `oidc_authorize_request` → oidc-provider). Yeni hedefin `fuzz/Cargo.toml` kaydı mimarın işidir (§13) |
 | `config/example.toml` | authn-server (her modül kendi bölümünün yorumlarını §13 ile günceller) |
 | Kök dosyalar: `Cargo.toml`, `deny.toml`, `clippy.toml`, `rustfmt.toml`, `rust-toolchain.toml`, `.cargo/*`, `.github/**`, `docker-compose.yml`, `config/dev-certs/**` (yalnızca geliştirme sertifikası), `docs/architecture/**`, `fuzz/Cargo.toml`, `fuzz/deny.toml` | mimar |
 | `Cargo.lock` | yalnızca cargo üretir; birleştirme çakışmasında elle düzenlenmez, `cargo update --workspace` ile yeniden üretilir |
@@ -156,6 +158,7 @@ Aynı dalgadaki modüller birbirini göremediği için, başka bir modülün ver
 | `authn_account::EmailChangeRevertHook` (wave 3A, K-20) | `crates/authn-account/src/hooks.rs` | e-posta değişikliği geri alma transaction'ı, oturumlar kapatıldıktan sonra, commit'ten önce (yalnızca verilen bağlantı; hata geri almayı geri alır) |
 | `authn_oidc_client::LoginMethodInventory`, `authn_oidc_client::SessionLiveness` | `crates/authn-oidc-client/src/hooks.rs` | ayırma / bağlama transaction'ı (kullanıcı satırı kilitli) |
 | `authn_admin::SigningKeyCache` | `crates/authn-admin/src/hooks.rs` | acil anahtar rotasyonundan sonra (senkron) |
+| `authn_oidc_provider::SessionLiveness`, `authn_oidc_provider::ClientAdminAuthorizer` (K-80) | `crates/authn-oidc-provider/src/hooks.rs` | liveness: kod takası / refresh / introspection / userinfo transaction'ında, yalnızca verilen bağlantı; authorizer: istemci kaydı istekleri (havuz) |
 
 Kural: kanca uygulaması **yalnızca verilen bağlantıdan** okur (ikinci bir havuz bağlantısı kilitli satırı göremez veya kilitlenmeye yol açar) ve yan etki üretmez; yazma gerekiyorsa sahibin `*_in_tx` API'si aynı bağlantıyla çağrılır.
 
@@ -174,8 +177,9 @@ Kural: kanca uygulaması **yalnızca verilen bağlantıdan** okur (ikinci bir ha
 | `mfa_factors`, `recovery_codes`, `mfa_user_settings`, `trusted_devices` | mfa | |
 | `webauthn_user_handles`, `webauthn_credentials`, `webauthn_ceremonies` | webauthn | |
 | `identities`, `oauth_states`, `oauth_token_revocations` | oidc-client | `identities` Faz 2 kurumsal SSO'nun da bağlantı noktasıdır; `identities.token_client_id` (2102). `oauth_states.remember_me` / `shared_device` (2100), `session_id` (2101, bağlama akışında zorunlu; FK yok — oturum silinse de state 10 dk'da ölür). `oauth_token_revocations` (2102): silinen / ayrılan kimliklerin sağlayıcı token iptal kuyruğu (zarf şifreli, **kullanıcı kimliği yok**, sınırlı yeniden deneme) |
-| `admin_action_reasons`, `admin_reason_restrictions`, `admin_passkey_enrollments`, `admin_operation_leases` | admin | `admin_action_reasons` (2200): admin işlem gerekçeleri, `audit_events(id)`'ye FK, ekleme-yalnızca tetikleyici. `admin_reason_restrictions` (2201): yasal kısıtlamalar, ekleme-yalnızca. `admin_passkey_enrollments` (2201): break-glass kayıt bağlantıları (yalnızca token hash'i). `admin_operation_leases` (2201): küme genelinde tek eşzamanlı pahalı işlem kiralaması. Wave 3B eklemeleri (`admin_approvals`, `admin_reason_restriction_periods`, migration `2202`) authn-admin README'sinde |
-| `organizations`, `roles`, `role_permissions`, `memberships`, `invitations`, `org_domains`, `org_policies`, `service_accounts`, `api_keys`, `org_auto_join_exclusions` | org | Yerleşik roller sabit kimliklerle `0012`'de. `org_auto_join_exclusions` (1501): çıkarılan/ayrılan üye domain otomatik katılımıyla geri eklenmez (ORG-02, ORG-06). `memberships_last_owner` ertelenmiş kısıtı (1500) bir organizasyonun son aktif sahibinin `users` satırının silinmesini commit'te reddeder (ACC-09'un ikinci savunma hattı) |
+| `admin_action_reasons`, `admin_reason_restrictions`, `admin_passkey_enrollments`, `admin_operation_leases` | admin | `admin_action_reasons` (2200): admin işlem gerekçeleri, `audit_events(id)`'ye FK, ekleme-yalnızca tetikleyici. `admin_reason_restrictions` (2201): yasal kısıtlamalar, ekleme-yalnızca. `admin_passkey_enrollments` (2201): break-glass kayıt bağlantıları (yalnızca token hash'i). `admin_operation_leases` (2201): küme genelinde tek eşzamanlı pahalı işlem kiralaması. Wave 3B eklemeleri (`admin_approvals`, `admin_reason_restriction_periods`, migration `2202`) authn-admin README'sinde. `admin_staff_roles` (2203, K-93): personel rolü (`support_readonly` / `support` / `security` / `platform_admin`); `users.is_platform_admin` "personel" bayrağı olarak kalır, satırı olmayan personelin admin izni yoktur; tetikleyici satırı personel hesabına ve break-glass hesabını `platform_admin`'e bağlar |
+| `oidc_clients`, `oidc_interactions`, `oidc_grants`, `oidc_authorization_codes`, `oidc_refresh_tokens`, `oidc_access_tokens`, `oidc_consents` | oidc-provider | Migration `3000` (K-80). `oidc_grants.session_id` bilinçle FK'sızdır: grant her kullanımda canlı oturuma karşı denetlenir (`SessionLiveness`, OIDP-12); temizlenen oturum o denetimi geçemez. Kullanıcıya bağlı satırlar `users` ile kaskad; istemci silinince grant / onay / token kaskad |
+| `organizations`, `roles`, `role_permissions`, `memberships`, `invitations`, `org_domains`, `org_policies`, `service_accounts`, `api_keys`, `org_auto_join_exclusions` | org | Yerleşik roller sabit kimliklerle `0012`'de. `org_auto_join_exclusions` (1501): çıkarılan/ayrılan üye domain otomatik katılımıyla geri eklenmez (ORG-02, ORG-06). `org_domains` yeniden doğrulama kolonları (1514, ORG-13, K-97): `check_failures`, `check_inconclusive`, `last_check_outcome`, `unverified_at`. `memberships_last_owner` ertelenmiş kısıtı (1500) bir organizasyonun son aktif sahibinin `users` satırının silinmesini commit'te reddeder (ACC-09'un ikinci savunma hattı) |
 | `rate_limit_buckets` (UNLOGGED), `login_soft_locks`, `captcha_pow_challenges`, `known_devices`, `known_networks` | protect | |
 | `audit_subjects`, `audit_events`, `audit_event_pii`, `audit_chain_head`, `audit_chain_checkpoints`, `outbox`, `webhook_endpoints`, `webhook_deliveries` | audit | notify, `outbox`'a `notification.*` konulu kayıt **ekler** (Notifier uygulaması) |
 | `signing_keys`, `data_encryption_keys` | crypto | `data_encryption_keys` **ayrılmış, kullanılmıyor** (0014 yorumu): CRY-08 zarfı kendi KEK ile sarılmış DEK'ini taşır (`version ‖ kek_id ‖ wrapped_dek ‖ nonce ‖ ciphertext`); tablo ileride KMS sarılmış-DEK önbelleği için boş tutulur |
@@ -237,6 +241,7 @@ Yeni purpose eklemek sahibin işidir; bu tabloya §13 ile eklenir. Kurallar: lin
 | 2000–2099 | authn-session |
 | 2100–2199 | authn-oidc-client |
 | 2200–2299 | authn-admin |
+| 3000–3099 | authn-oidc-provider (Faz 2, K-80) |
 | 2900–2999 | authn-server |
 | 3000+ | Faz 2/3 için ayrılmış |
 
@@ -273,6 +278,7 @@ Dalga A sonrası migration'lar:
 | `1702` | audit (wave 4, K-58) | teslim edilen outbox yükünün temizlenmesi, silinen kullanıcının outbox / `webhook_deliveries.subject_user_id` izlerinin karartılması (AUD-05, AUD-06, ACC-09) |
 | `2001` | session (wave 4, K-58) | `refresh_tokens.access_token_id` (eşzamanlı rotasyonu geride kalan yetki değişikliği `401`), `signing_keys` tetikleyicisi + `LISTEN/NOTIFY` ile imza anahtarı önbelleğinin anında boşaltılması |
 | `2202` | admin (wave 3B) | `admin_reason_restriction_periods` (K-62 gözden geçirme tarihleri), `admin_approvals` (dört göz onayı, K-66) |
+| `2203` | admin (wave 11, K-93) | `admin_staff_roles` + koruma tetikleyicisi (satır personel hesabı ister, break-glass hep `platform_admin`); var olan her platform admini `platform_admin` olarak taşınır (ADM-09) |
 | `1703` | audit (wave 5A, K-77) | anahtarlı audit zinciri: `audit_events.chain_key_version` (`NULL` = eski SHA-256 satırı), baş ve kontrol noktası sürümü, sürüm değişince `chain_key_switch` kontrol noktası yazan `SECURITY DEFINER` tetikleyici (`search_path` sabit; `pg_temp` ele geçirmesine karşı test `k_77_switch_trigger_cannot_be_hijacked_through_pg_temp`) |
 | `2002` | session (wave 5A, K-78) | `sessions.mfa_factors`, `auth_challenges.mfa_factors`: MFA'yı üreten ikinci faktör türleri; org değiştirmede `allowed_mfa_factors` buna göre denetlenir |
 | `2050`–`2053` | session (wave 5B, K-70) | yabancı anahtar indeksleri, `CREATE INDEX CONCURRENTLY`, dosya başına tek ifade, `-- no-transaction`, **`IF NOT EXISTS` yok** (yarıda kalmış INVALID indeksin üstüne migration kaydedilmesin): `refresh_tokens (parent_id)`, `refresh_tokens (replaced_by_id)`, `auth_challenges (session_id)`, `auth_challenges (requested_org)` |
@@ -283,12 +289,15 @@ Dalga A sonrası migration'lar:
 | `1202` | account (wave 7, K-103) | `consents (terms_version_id)` yabancı anahtar indeksi (`RESTRICT` denetimi), 2050–2053 ile aynı kurallar |
 | `1301` | mfa (wave 7, K-103) | `trusted_devices (user_id)` yabancı anahtar indeksi (tam; mevcut kısmi `trusted_devices_user_idx` iptal edilmemiş cihazlarla sınırlı), 2050–2053 ile aynı kurallar |
 | `1502`–`1513` | org (wave 7, K-103) | yabancı anahtar indeksleri, 2050–2053 ile aynı kurallar: `api_keys (created_by)`, `api_keys (user_id, org_id)` (üyelik bileşik anahtarı), `api_keys (rotated_from_id)`, `api_keys (service_account_id, org_id)` (servis hesabı bileşik anahtarı), `invitations (accepted_by)`, `invitations (invited_by)`, `invitations (role_id)`, `memberships (invited_by)`, `org_policies (updated_by)`, `organizations (created_by)`, `service_accounts (created_by)`, `service_accounts (role_id)`. Tek kolonlu boş olabilen anahtarlar kısmi (`IS NOT NULL`), bileşik ve `NOT NULL` anahtarlar tam indeks |
+| `1514` | org (wave 11, K-97) | `org_domains`: `check_failures`, `check_inconclusive`, `last_check_outcome`, `unverified_at` (expand-only, varsayılanlı) — periyodik yeniden doğrulama (ORG-13) |
+| `1515` | org (wave 11, K-97) | `org_domains_reverification_due_idx (last_checked_at) WHERE status = 'verified'`; `-- no-transaction`, `CONCURRENTLY`, `IF NOT EXISTS` yok (K-102 kalıbı) |
 | `1705` | audit (wave 8, K-107) | `audit_chain_checkpoints.reason` `CHECK`'ine `scheduled` eklenir; zamanlanmış kontrol noktası için kısmi indeks `(created_at) WHERE reason = 'scheduled'`. Yalnızca genişletme (önceki sürüm kontrol noktalarını `seq`/`hash` ile eşleştirir, nedene bakmaz) |
 | `1704` | audit (wave 7, K-103) | `webhook_endpoints (created_by)` yabancı anahtar indeksi (kısmi), 2050–2053 ile aynı kurallar. `webhook_deliveries_endpoint_fk (endpoint_id, org_id)` bilinçle ayrı indekssiz: `endpoint_id` tek başına benzersiz olduğundan mevcut `endpoint_id` ile başlayan indeksler kaskadı karşılıyor (gerekçe ve plan testi `schema_foreign_keys.rs`) |
 | `2054`–`2057` | session (wave 7, K-103) | yabancı anahtar indeksleri, 2050–2053 ile aynı kurallar: `sessions (user_id)`, `sessions (active_org_id)` (kısmi), `sessions (impersonator_user_id)` (kısmi), `auth_challenges (user_id)`; mevcut indeksler yalnızca iptal edilmemiş / tüketilmemiş satırları kapsadığından silme kaskadı onları kullanamıyordu |
 | `2103` | oidc-client (wave 7, K-103) | `oauth_states (user_id)` yabancı anahtar indeksi (kısmi), 2050–2053 ile aynı kurallar. K-103 sonrasında kullanıcıya bağlı her yabancı anahtar eylemi indeks kullanır: `k_103_user_deletion_cascades_use_indexes` |
 | `2901` | authn-server (wave 6B) | `authn_apply_least_privilege` artık veritabanı düzeyindeki `TEMPORARY` yetkisini iki rolden ve `PUBLIC`'ten geri alır; rollerden biri hâlâ geçici nesne oluşturabiliyorsa (ör. çağıran veritabanı sahibi değil) hata verir (K-77 `pg_temp` bulgusuna karşı derinlemesine savunma). Veritabanı adı kuruluma göre değiştiğinden ifade migration'da değil, `current_database()` ile bu fonksiyonda çalışır |
 | `2902` | authn-server (wave 8 denetimi, K-108) | `authn_apply_least_privilege` `erasure_ledger`'ı ekleme-yalnızca tablolara ekler (uygulama rolüne yalnızca `SELECT, INSERT`): ele geçirilmiş bir uygulama rolü bir silmenin kaydını dışa aktarılmadan önce silemez/değiştiremez. Geri kalanı 2901 ile aynı; sürümden sonra fonksiyon veritabanı sahibi olarak yeniden çalıştırılır |
+| `3000` | oidc-provider (wave 11A, K-80) | `oidc_clients`, `oidc_interactions`, `oidc_grants`, `oidc_authorization_codes`, `oidc_refresh_tokens`, `oidc_access_tokens`, `oidc_consents` ve yabancı anahtar indeksleri (yeni tablolar: indeksler aynı transaction'da). Yalnızca genişletme |
 
 ---
 
@@ -466,6 +475,8 @@ Dalga A modüllerinin authn-server (ve gerekli yerlerde Dalga B) tarafından ba�
 | `authn_account::AccountErasureHook` | account / `hooks.rs` | `account.register_erasure_hook(Arc::new(oidc.erasure_hook()))`: silme transaction'ında Apple token'ı iptal kuyruğuna (K-35) | ACC-09 |
 | `authn_account::EmailChangeRevertHook::after_revert_in_tx(conn, ctx, user)` | account / `hooks.rs` | `ServerRevertHook`: aynı transaction'da `WebauthnService::remove_all_passkeys_in_tx`, `MfaService::reset_user_mfa_in_tx`, `OidcClientService::remove_all_identities_in_tx` (K-20) | ACC-07 geri alma |
 | `authn_admin::SigningKeyCache::invalidate_signing_keys()` | admin / `hooks.rs` | `ServerSigningKeyCache(SessionService)` → `SessionService::invalidate_signing_keys()` | ADM-06 |
+| `authn_oidc_provider::SessionLiveness::is_active(conn, session, user, now)` | oidc-provider / `crates/authn-oidc-provider/src/hooks.rs` | `ServerSessionLiveness` → `authn_session::is_session_active_in` (varsayılan `NoLiveSessions` her şeyi reddeder) | grant'in oturuma bağlı iptali (OIDP-12) |
+| `authn_oidc_provider::ClientAdminAuthorizer::authorize(principal, ctx, access)` | oidc-provider / `hooks.rs` | `ServerClientAdmin(AdminService)` → `AdminService::authorize_permission(…, AdminPermission::OAuthClientsRead / OAuthClientsManage)` (K-93; varsayılan `DenyClientAdmin`) | istemci kaydı (OIDP-01) |
 
 ### 15.2 Port uygulamaları (`AppState`)
 
@@ -477,7 +488,7 @@ Dalga A modüllerinin authn-server (ve gerekli yerlerde Dalga B) tarafından ba�
 | `RateLimiter` | Postgres (varsayılan) / Redis (`authn-protect` `redis` feature) / bellek (yalnızca geliştirme) | `authn_protect::build_rate_limiter` (`crates/authn-protect/src/rate_limit/mod.rs`) |
 | `CaptchaVerifier` | Turnstile / hCaptcha / proof-of-work / kapalı | `authn_protect::build_captcha_verifier` (`captcha/mod.rs`); `CaptchaService` (`FromRef`) |
 | `RiskEvaluator` | `DefaultRiskEvaluator` | `crates/authn-protect/src/risk/mod.rs` |
-| `GeoIpLookup` | opsiyonel — paketle gelen adaptör yok; takılmazsa imkânsız seyahat sinyali kapalı (RSK-02) | — |
+| `GeoIpLookup` | opsiyonel — `MmdbGeoIp::open(path)` yalnızca `protect.risk.geoip_database` ayarlıysa (RSK-05, K-98; işletmecinin MaxMind DB dosyası, gömülü veri yok); takılmazsa imkânsız seyahat sinyali kapalı (RSK-02). Değişen dosyayı `jobs::reload_geoip` her `geoip_reload_interval`'da yükler | `crates/authn-protect/src/risk/geoip.rs`, `authn_server::services::open_geoip` |
 | `HttpClient` | `SsrfSafeHttpClient::new(&config.protect.outbound)` | `crates/authn-protect/src/outbound/mod.rs` (HIBP, webhook, CAPTCHA, SMS, OIDC) |
 | `BreachedPasswordChecker` | `HibpBreachChecker::from_config(&config.password.breach_check, http)` | `crates/authn-password/src/breach.rs` |
 | `PasswordValidator` | `PasswordService::validator()` | `crates/authn-password/src/service/mod.rs` (authn-account'a ACC-01 için) |
@@ -499,6 +510,7 @@ Dalga A modüllerinin authn-server (ve gerekli yerlerde Dalga B) tarafından ba�
 | session | `SessionService` | `authn_session::router` (`/v1/me`, `/v1/me/sessions*`, `/v1/logout*`, `/v1/reauth*`, `/v1/token/*`, `/.well-known/jwks.json`) + giriş rotaları | `SessionApi`, `LoginApi` |
 | oidc-client | `OidcClientService` (`OidcClientService::build(deps, OidcClientSettings::from_app_config(&config)).await?` — Apple anahtarı açılışta çözülür) | `authn_oidc_client::router` — `/v1/oauth/*` kimliksiz (Apple `form_post` callback'i çapraz site POST'udur: oturum çerezi gelmez, CSRF katmanı devreye girmez; koruma tarayıcıya bağlı tek kullanımlık `state`), `/v1/me/identities*` oturum + CSRF arkasında | `OidcClientApi` |
 | admin | `AdminService` (`AdminServiceDeps { pool, clock, audit: PgAuditSink::keyed, sessions: sarılmış revoker, issuer, accounts, mfa, webauthn, passwords, protection, hasher, envelopes, signing_keys, rate_limiter, audit_chain_keys }`; `audit_chain_keys`: admin zincir doğrulaması için `authn_audit::ChainKeys`, K-77) | `authn_admin::router` oturum + CSRF arkasında; `authn_admin::enrollment_router` (`passkey` özelliği) **kimlik doğrulama katmanının dışında** birleştirilir (`app.rs::session_less_routes`): bağlantı token'ı gövdede kimlik bilgisidir, oturum çerezi taşıyan bir tarayıcıda CSRF katmanı onu reddetmemeli | `AdminApi`, `AdminEnrollmentApi` |
+| oidc-provider (`oidc-provider` özelliği) | `OidcProviderService` (`OidcProviderDeps { pool, clock, audit, rate_limiter, envelopes, accounts, liveness: ServerSessionLiveness, client_admin: ServerClientAdmin(AdminService) }`, `OidcProviderSettings::from_app_config(&config)?`; `services.rs` adım 9) | yalnızca `oidc_provider.enabled` iken: `authn_oidc_provider::router` oturum + CSRF arkasında (`app.rs::provider_routes`), `authn_oidc_provider::protocol_router` (token, iptal, introspection, userinfo, keşif) **kimlik doğrulama katmanının dışında** (`app.rs::provider_protocol_routes`): istemciyi / sağlayıcı token'ını kendileri doğrular, çerez okumaz; native bearer ara katmanı sağlayıcı token'ını reddederdi. `ProviderDataExporter` dışa aktarıcılara; bakım turunda `purge_expired` | `OidcProviderApi` |
 
 Cargo feature'ları (ARC-11): workspace girdileri `default-features = false` olduğundan authn-server `authn-mfa`'yı `features = ["sms"]`, `authn-webauthn`'u, `authn-session`'ı ve `authn-admin`'i `["passkey"]`, `authn-notify`'ı `["sms"]` ile; Redis isteniyorsa `authn-protect`'i `["redis"]` ile alır.
 
@@ -531,6 +543,7 @@ Cargo feature'ları (ARC-11): workspace girdileri `default-features = false` old
 | İmza anahtarı rotasyonu (CRY-10) | `SigningKeyRepository::rotate_if_due` | `crates/authn-store/src/signing_keys.rs` |
 | Oturum / challenge / ardıl token temizliği | `SessionService::purge_expired(batch)` | `crates/authn-session/src/service/` |
 | Süresi dolan OAuth state'leri ve native nonce'lar | `OidcClientService::purge_expired_states(limit)` | `crates/authn-oidc-client/src/service/accounts.rs` |
+| Domain yeniden doğrulama (ORG-13, K-97; DNS çağrısı, ayrı görev, 5 dakikada bir; her domain `org.domain_reverification.interval` başına bir kez) | `OrgService::reverify_due_domains()` (`UPDATE … FOR UPDATE SKIP LOCKED` ile talep, DNS sırasında bağlantı tutulmaz) | `crates/authn-org/src/service/reverify.rs`; sunucuda `jobs::reverify_domains` |
 | Sağlayıcı token iptalleri (K-35; ağ çağrısı, ayrı görev, dakikada bir) | `OidcClientService::process_token_revocations(limit)` (`UPDATE … SKIP LOCKED` kiralama, HTTP sırasında bağlantı tutulmaz) | `crates/authn-oidc-client/src/service/revocation.rs`; sunucuda `jobs::process_token_revocations` |
 
 ### 15.6 Açılış, kapanış ve CLI
@@ -542,7 +555,7 @@ Cargo feature'ları (ARC-11): workspace girdileri `default-features = false` old
 - **`audit-checkpoint`** (K-107): `authn_audit::create_checkpoint` (`manual`), `database.maintenance_url` varsa bakım rolüyle; stdout'un son satırı `<seq>:<64 hex>` (`verify-audit-chain --anchor` biçimi), veritabanı dışında saklanır. Boş zincirde hata.
 - **`export-erasures --output <dosya|-> [--since <RFC 3339>]`** / **`reapply-erasures --from <dosya|->`** (K-108): her satır `crypto.hmac_root_key`'den türetilen `KeyPurpose::ErasureLedger` anahtarıyla bir `mac` alanı taşır (`authn_account::ledger_line` / `parse_ledger_line`); `reapply-erasures` MAC'i geçersiz ya da eksik bir satırda hiçbir şey silmeden çıkış `65` ile durur (K-108 denetimi). `AccountService::export_erasures` (JSON satırları: `user_id`, `erased_at`, `reason`; zaman imleci, çakışan dışa aktarımlar zararsız) ve `AccountService::reapply_erasure` (idempotent; geri gelen hesap normal silme yolundan — denetimli durum geçişleri, `user.deleted`, audit takma adlaştırma, silme kancaları — yeniden silinir; geri yüklenen silme takvimi tamamlanır; geri yüklenen veride bir organizasyonun son sahibi ise dokunulmaz, raporlanır ve komut `1` ile çıkar). Dosyanın tamamı uygulamadan önce doğrulanır; geçersiz satır numarasıyla `65` (içerik yazdırılmaz).
 - **`rotate-audit-chain-key`:** zinciri hemen `[audit.chain] key_version` sürümüne geçirir (yükseltme sonrası ilk anahtarlı olay veya anahtar rotasyonu; yalnızca yeni satırlara uygulanır, sürüm hiç azalmaz) ve dışarıda saklanacak `chain_key_switch` kontrol noktasını yazdırır (K-77). Sunucu açılışta aynısını yapar (`activate_chain_key`).
-- **`grant-admin` / `revoke-admin`** (K-76): `AdminService::{grant_admin_offline, revoke_admin_offline}`; `--target`, `--reason`, `--operator` zorunlu, son aktif admin korunur, eşzamanlı komutlar advisory lock ile sıralanır.
+- **`grant-admin --role <rol>` / `revoke-admin`** (K-76, K-93): `AdminService::{grant_admin_offline(operator, target, role, reason), revoke_admin_offline}`; `--target`, `--reason`, `--operator` (ve `grant-admin` için `--role`: `support_readonly`, `support`, `security`, `platform_admin`) zorunlu; `grant-admin` personel olmayan aktif hesaba rolle yetki verir, personelin rolünü değiştirir; son aktif admin ve son aktif `platform_admin` korunur, eşzamanlı komutlar advisory lock ile sıralanır.
 - **`rotate-kek` / `reencrypt`:** `SigningKeyRepository::rewrap_private_keys`, `authn_audit::webhooks::rewrap_webhook_secrets` ve zarf şifreli her `*_ciphertext` kolonu için `EnvelopeCipher::rewrap`: `mfa_factors.secret_ciphertext`, `refresh_tokens.successor_ciphertext`, `outbox.sealed_payload`, `identities.access_token_ciphertext` / `refresh_token_ciphertext`, `oauth_states.pkce_verifier_ciphertext`, `oauth_token_revocations.token_ciphertext` (test `cry_08_rotate_kek_covers_every_sealed_column_of_the_schema` şemadaki her `*_ciphertext` kolonunun kapsandığını zorlar). Yapılandırmadaki `oidc_client.apple.private_key_ciphertext` yeniden sarılır ve yeni değer operatöre yazdırılır (yapılandırma dosyası değiştirilemez).
 - **Admin / break-glass (ADM-05, K-07, K-11):** `create-admin --email <adres> [--passkey-link [--ttl 30m]]` → `authn_admin::create_break_glass_admin` (tek seferlik şifre) veya `create_break_glass_admin_with_passkey_link` (`{public_base_url}/admin/enroll#<token>`; token URL parçasında, sunucu loglarına gitmez; bir kez yazdırılır, loglanmaz); `admin-enrollment-link`, `suspend-admin`, `unsuspend-admin`, `revoke-admin-sessions` (`--target`, `--reason`, `--operator` zorunlu) → `AdminService::{issue_break_glass_enrollment_link_offline, suspend_admin_offline, unsuspend_admin_offline, revoke_admin_sessions_offline}`.
 - **`seal-apple-key --pem-file <yol|->`** (SOC-07, K-34): PEM dosyadan/stdin'den okunur (16 KiB'tan büyükse kesilmez, reddedilir; tampon sıfırlanır), asla yazdırılmaz; çıktı `apple.private_key_ciphertext` değeridir. Çevrimdışı admin komutlarında `--operator` / `--reason` veritabanına bağlanmadan önce doğrulanır; geçersiz girdi çıkış kodu 65.

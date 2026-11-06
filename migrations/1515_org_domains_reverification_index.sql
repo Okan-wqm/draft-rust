@@ -1,0 +1,13 @@
+-- no-transaction
+-- ORG-13 / K-97 (authn-org, range 1500-1599): the re-verification job looks
+-- for verified domains whose last check is older than the interval.
+--
+-- CONCURRENTLY: no write lock on a live table; it cannot run inside a
+-- transaction, hence the no-transaction marker and one statement per file.
+-- If it is interrupted, PostgreSQL leaves an INVALID index behind and the
+-- migration is not recorded. No IF NOT EXISTS on purpose: it would skip over
+-- the INVALID index and record the migration as applied; the re-run fails
+-- with "already exists" instead. Then drop it
+-- (DROP INDEX CONCURRENTLY org_domains_reverification_due_idx;) and run the
+-- migrations again.
+CREATE INDEX CONCURRENTLY org_domains_reverification_due_idx ON org_domains (last_checked_at) WHERE status = 'verified';

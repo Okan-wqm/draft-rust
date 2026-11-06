@@ -25,6 +25,7 @@ pub const MIGRATION_RANGES: &[(&str, i64, i64)] = &[
     ("authn-oidc-client", 2100, 2199),
     ("authn-admin", 2200, 2299),
     ("authn-server", 2900, 2999),
+    ("authn-oidc-provider", 3000, 3099),
 ];
 
 /// The owner of a migration version, if it lies in a declared range.

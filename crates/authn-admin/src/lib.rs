@@ -9,6 +9,7 @@
 //! | [`service`] | ADM-02 … ADM-04, ADM-06 … ADM-08 | [`AdminService`]: search/details, per-user actions, impersonation, emergency operations, audit query/export/verification |
 //! | [`routes`] | ADM-01 … ADM-07 | [`router`], [`AdminApi`] |
 //! | [`break_glass`] | ADM-05 | [`create_break_glass_admin`] for the CLI `create-admin` |
+//! | [`roles`] | ADM-09, ADM-10 (K-93) | [`StaffRole`], [`AdminPermission`]: the role → permission table; routes declare their permission in [`routes::ROUTE_PERMISSIONS`] |
 //! | [`reason`] | ADM-08 | [`Justification`]: mandatory, bounded, printable |
 //! | [`hooks`] | ADM-06 | [`SigningKeyCache`]: implemented by authn-server with authn-session |
 //! | [`operations`] | ADM-05, K-07 | Offline incident response for the CLI (`suspend-admin`, `unsuspend-admin`, `revoke-admin-sessions`) |
@@ -31,6 +32,7 @@ pub mod hooks;
 pub mod metrics;
 pub mod operations;
 pub mod reason;
+pub mod roles;
 pub mod routes;
 pub mod service;
 pub mod settings;
@@ -45,14 +47,15 @@ pub use guard::{AdminCaller, Denial, authorize, is_phishing_resistant_mfa};
 pub use hooks::{NoSigningKeyCache, SigningKeyCache};
 pub use operations::{OfflineOperator, OfflineTarget};
 pub use reason::Justification;
-pub use routes::{AdminApi, router};
+pub use roles::{AdminPermission, StaffRole};
+pub use routes::{AdminApi, ROUTE_PERMISSIONS, route_permission, router};
 #[cfg(feature = "passkey")]
 pub use routes::{AdminEnrollmentApi, enrollment_router};
 pub use service::{
     ActionOutcome, AdminActionsDataExporter, AdminAuditEvent, AdminAuditFilter, AdminService,
     AdminServiceDeps, AdminUserDetail, AdminUserSummary, ApprovalView, AuditExport,
     BulkResetOutcome, ChainVerification, CriticalOperation, EmergencyOutcome, ForcedReset,
-    ImpersonationOptions, KeyRotationOutcome, PasswordState, RESTRICTION_MAX_PERIOD, UserSearch,
-    UserStatusFilter, VerifiedAnchor,
+    ImpersonationOptions, KeyRotationOutcome, PasswordState, RESTRICTION_MAX_PERIOD, StaffMember,
+    StaffRoleChange, UserSearch, UserStatusFilter, VerifiedAnchor,
 };
 pub use settings::AdminSettings;

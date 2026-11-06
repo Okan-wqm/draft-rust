@@ -3,7 +3,8 @@
 //! * [`DefaultRiskEvaluator`] implements the [`RiskEvaluator`] port:
 //!   new device, new network (`/24`, `/48`), recent failures, optional
 //!   anonymizing-network list, impossible travel (only with a
-//!   [`GeoIpLookup`]).
+//!   [`GeoIpLookup`]; [`MmdbGeoIp`] reads an operator-provided MaxMind DB,
+//!   RSK-05).
 //! * [`decide`] maps an assessment to the configured reaction (RSK-03).
 //! * [`RiskAlerts`] records successful logins and sends the new-device
 //!   notification with a "this wasn't me" token (RSK-04), and handles
@@ -18,6 +19,7 @@
 
 mod alerts;
 pub mod geo;
+pub mod geoip;
 pub mod networks;
 pub mod store;
 pub mod useragent;
@@ -35,6 +37,7 @@ use authn_core::ports::{
 use sqlx::PgPool;
 
 pub use alerts::{DeviceLoginOutcome, NotMeTokenIssuer, RiskAlerts};
+pub use geoip::{GeoIpDatabaseInfo, MmdbGeoIp};
 pub use networks::{AnonymizingNetworks, network_of};
 pub use store::{DeviceObservation, Novelty, RiskStore};
 

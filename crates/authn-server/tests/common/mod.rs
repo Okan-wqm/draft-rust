@@ -26,6 +26,13 @@ pub const HOST: &str = "auth.test.example";
 /// A password every policy accepts.
 pub const PASSWORD: &str = "tramway galaxy orchid lantern 47";
 
+/// K-80: mounts the OAuth 2.1 / OIDC provider (off by default), for the
+/// tests that enumerate every documented route.
+pub fn enable_oidc_provider(config: &mut AppConfig) {
+    config.oidc_provider.enabled = true;
+    config.oidc_provider.interaction_url = Some("https://app.test.example/consent".to_owned());
+}
+
 pub struct App {
     pub ports: TestPorts,
     pub services: Services,

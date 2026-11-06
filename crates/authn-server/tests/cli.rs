@@ -422,7 +422,7 @@ async fn ops_01_check_config_refusals_exit_with_the_configuration_code() {
     );
 }
 
-/// K-76 (OPS-01): `grant-admin` / `revoke-admin` end to end through the
+/// K-76 (OPS-01), K-93 (ADM-09): `grant-admin --role` / `revoke-admin` end to end through the
 /// binary: flags validated before the database is touched (exit 65, no
 /// echo), the grant and the revocation change the flags, and the last
 /// active admin's rights are never revoked (exit 69, "last admin").
@@ -479,20 +479,40 @@ async fn adm_05_k76_cli_grant_and_revoke_admin(pool: PgPool) {
         }
     };
 
-    let bad = cli(args("grant-admin", "alice@example.com", "two words"))
-        .await
-        .unwrap();
+    let grant = |operator: &str, role: &str| {
+        let mut a = args("grant-admin", "alice@example.com", operator);
+        a.extend(["--role".to_owned(), role.to_owned()]);
+        a
+    };
+    let bad = cli(grant("two words", "support")).await.unwrap();
     assert_eq!(bad.code, 65, "{}", bad.all());
     assert!(bad.stderr.contains("--operator"), "{}", bad.all());
     assert!(!bad.all().contains("two words"), "{}", bad.all());
     assert!(!is_admin("alice@example.com").await);
+    // K-93: an unknown role is an input error, before the database.
+    let bad = cli(grant("ops.oncall", "superuser")).await.unwrap();
+    assert_eq!(bad.code, 65, "{}", bad.all());
+    assert!(bad.stderr.contains("--role"), "{}", bad.all());
+    assert!(!is_admin("alice@example.com").await);
 
-    let out = cli(args("grant-admin", "alice@example.com", "ops.oncall"))
-        .await
-        .unwrap();
+    let out = cli(grant("ops.oncall", "support")).await.unwrap();
     assert_eq!(out.code, 0, "{}", out.all());
     assert!(out.stdout.contains("offline_grant_admin"), "{}", out.all());
     assert!(is_admin("alice@example.com").await);
+    let role: String = sqlx::query_scalar("SELECT role FROM admin_staff_roles WHERE user_id = $1")
+        .bind(alice)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(role, "support");
+    // The same command with another role changes the role.
+    let out = cli(grant("ops.oncall", "security")).await.unwrap();
+    assert_eq!(out.code, 0, "{}", out.all());
+    assert!(
+        out.stdout.contains("offline_change_staff_role"),
+        "{}",
+        out.all()
+    );
 
     let out = cli(args("revoke-admin", &alice.to_string(), "ops.oncall"))
         .await

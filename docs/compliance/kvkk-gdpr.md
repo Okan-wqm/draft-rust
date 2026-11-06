@@ -50,6 +50,20 @@ Kaynak: `migrations/`. "Kişisel veri" sütunu doğrudan veya dolaylı (kullanı
 | `auth_challenges` | kullanıcı kimliği, **IP**, **user-agent**, cihaz kimliği, risk seviyesi | MFA / zorunlu adım challenge'ları (5 dk) | kaskad; süresi dolunca temizlenir |
 | `trusted_devices` | cihaz adı, **user-agent**, oluşturma **IP'si** | "Bu cihazda MFA sorma" (MFA-09) | kaskad |
 
+### 2.2a OAuth 2.1 / OIDC sağlayıcısı (K-80, `authn-oidc-provider`)
+
+| Tablo | Kişisel veri | Amaç | Silme |
+|-------|--------------|------|-------|
+| `oidc_clients` | yok (istemci adı, redirect URI'leri, sırrın SHA-256'sı) | Kayıtlı uygulamalar (OIDP-01) | personel siler; silinince grant / onay / token kaskad |
+| `oidc_interactions` | yok (istemci, kapsamlar, `state` / `nonce`, tarayıcı bağlama çerezinin hash'i); kullanıcı kimliği tutulmaz | Bekleyen yetkilendirme isteği (OIDP-04, varsayılan 10 dk) | süresi dolunca temizlik işiyle |
+| `oidc_grants` | kullanıcı kimliği, oturum kimliği, kapsamlar, `auth_time`, AMR / `acr`, `nonce` | Uygulamaya verilen yetki, refresh ailesi (OIDP-06, OIDP-07) | kaskad; süresi dolan / iptal edilen grant'ler bir gün sonra temizlik işiyle |
+| `oidc_authorization_codes` | kod hash'i, redirect URI, PKCE challenge (grant'e bağlı) | Tek kullanımlık kod (OIDP-06) | kaskad (grant üzerinden) |
+| `oidc_refresh_tokens` | token hash'i (grant'e bağlı) | Refresh rotasyonu (OIDP-07) | kaskad (grant üzerinden) |
+| `oidc_access_tokens` | `jti`, süre (grant'e bağlı) | İptal / introspection / userinfo (OIDP-11) | kaskad; süresi dolunca temizlik işiyle |
+| `oidc_consents` | kullanıcı kimliği, uygulama, onaylanan kapsamlar ve kaynaklar (RFC 8707), zamanlar | Onay kaydı (OIDP-05; kullanıcı `DELETE /v1/me/oauth2/consents/{client_id}` ile geri alır) | kaskad; kullanıcı geri alınca silinir |
+
+Sağlayıcı, `userinfo`'da kullanıcının onayladığı kapsama göre e-posta, ad, dil ve saat dilimini **üçüncü taraf uygulamaya aktarır**; bu aktarımın hukuki dayanağı kullanıcının uygulama başına verdiği onaydır (birinci taraf istemcilerde onay ekranı atlanır — bunlar işletmecinin kendi uygulamaları olmalıdır). Dışa aktarımın `oauth_provider` bölümü onayları ve grant'leri içerir (token, kod, hash yok).
+
 ### 2.3 MFA ve passkey
 
 | Tablo | Kişisel veri | Amaç | Silme |
@@ -68,7 +82,7 @@ Kaynak: `migrations/`. "Kişisel veri" sütunu doğrudan veya dolaylı (kullanı
 | `rate_limit_buckets` | IP / e-posta / kullanıcıdan türetilmiş **anahtarlı hash** (ham değer saklanmaz) | Rate limit (PRT-01) | UNLOGGED, kısa ömürlü; süresi dolunca silinir. Hesaba bağlı değildir (kaskad yok) ama hash anahtarsız geri çevrilemez |
 | `login_soft_locks` | kullanıcı kimliği, başarısız deneme sayısı | Yumuşak kilit (PRT-03) | kaskad |
 | `captcha_pow_challenges` | — (challenge hash'i; kişisel veri yok) | PRT-05 | süresi dolunca silinir |
-| `known_devices` | cihaz hash'i ve adı, son **IP**, yaklaşık konum (ülke, enlem/boylam — GeoIP takılıysa) | Risk değerlendirmesi, yeni cihaz bildirimi (RSK-02/04) | kaskad |
+| `known_devices` | cihaz hash'i ve adı, son **IP**, yaklaşık konum — yalnızca `protect.risk.geoip_database` ayarlıysa: ülke kodu ve **0,1°'ye yuvarlanmış** enlem/boylam (≈ 11 km; RSK-05, K-98). Şehir adı tabloya yazılmaz, yalnızca RSK-04 bildiriminde kullanılır; posta kodu, bölge, ISS/ASN hiç çözülmez. Özel/ayrılmış IP'ler GeoIP'e sorulmaz | Risk değerlendirmesi (imkânsız seyahat), yeni cihaz bildirimi (RSK-02/04/05) | kaskad |
 | `known_networks` | kullanıcının görüldüğü ağ blokları (/24, /48) | Risk değerlendirmesi | kaskad |
 
 ### 2.5 Organizasyonlar (B2B)
@@ -79,7 +93,7 @@ Kaynak: `migrations/`. "Kişisel veri" sütunu doğrudan veya dolaylı (kullanı
 | `roles`, `role_permissions` | — (organizasyon rolleri) | RBAC | — |
 | `memberships` | kullanıcı kimliği, rol, davet eden | Üyelik | kaskad; `invited_by` NULL |
 | `invitations` | **davet edilen e-posta** (henüz kullanıcı olmayan kişi!), davet eden, kabul eden | ORG-05 | `invited_by` / `accepted_by` NULL; davet satırı organizasyonla birlikte silinir. Kabul edilmemiş davetlerin süresi dolunca temizlenmesi authn-org işidir |
-| `org_domains` | — (domain doğrulama) | ORG-06 | — |
+| `org_domains` | — (domain doğrulama; yeniden doğrulama sayaçları ve son kontrol sonucu) | ORG-06, ORG-13 | — |
 | `org_auto_join_exclusions` | kullanıcı kimliği, organizasyondan çıkarılma/ayrılma nedeni ve zamanı (domain ile otomatik katılımın kullanıcıyı geri eklemesini engeller) | ORG-06 | **kaskad** (kullanıcı veya organizasyon silinince) |
 | `org_policies` | güncelleyen kullanıcı kimliği | ORG-07 | NULL |
 | `service_accounts` | oluşturan kullanıcı kimliği | ORG-09 | NULL |
@@ -96,6 +110,7 @@ Kaynak: `migrations/`. "Kişisel veri" sütunu doğrudan veya dolaylı (kullanı
 | `admin_reason_restriction_periods` | — (kısıtlanan kaydın olay kimliği, gözden geçirme tarihi, tarihi koyan admin işleminin olay kimliği, zaman) | Kısıtlamanın süresi (K-62): kısıtlama en geç son `review_at`'te biter. Her tarih en çok 180 gün sonrasıdır, uzatma gerekçeli ve audit'li yeni bir satırdır | Ekleme-yalnızca (trigger, `CHECK`); kısıtlama veya işlem olayı silinince kaskad |
 | `admin_approvals` | isteyen ve onaylayan admin kimlikleri, hedef admin kimliği, işlem kodu ve parametreleri (kişisel veri değil: tarih, bayraklar), parametre hash'i, zamanlar, karar | Kritik admin işlemlerinde çift onay (four-eyes, K-66): istek, karar, tek kullanımlık tüketim. Gerekçeler `admin_action_reasons`'tadır. Hedef adminin kendi olay listesi ve veri dışa aktarımı bekleyen isteği, süresi dolana kadar (en çok 2 saat) göstermez: müdahale önceden haber verilmez. Süre dolunca istek görünür (GDPR md. 23 kapsamında kısa ve sınırlı bir erteleme) | İstek sütunları değiştirilemez, karar ve tüketim bir kez yazılır, satır silinemez (trigger). İsteyen admin veya hedef silinince kaskad, onaylayan silinince NULL |
 | `audit_subject_view_holds` | — (olay kimliği, gizleme bitiş zamanı) | Bir olayın ilgili kişinin kendi olay listesinden geçici olarak gizlenmesi (K-62: aktif yasal kısıtlamanın kısıtlama/uzatma olayları; GDPR art. 23(2)(h)) | Ekleme-yalnızca (trigger); olay saklama süresiyle silinince kaskad. Süre geçince olay yeniden görünür |
+| `admin_staff_roles` | personel hesabının kullanıcı kimliği, rolü (`support_readonly` / `support` / `security` / `platform_admin`), rolün verilme ve son değişme zamanı | Personel yetkilendirmesi (ADM-09, K-93): admin API'sinde hangi işlemin yapılabileceği; her istekte okunur. Rol değişiklikleri ayrıca `admin.action` olarak audit'lenir | Personel yetkisi alınınca (`revoke-admin`) satır silinir; kullanıcı silinince kaskad |
 | `admin_passkey_enrollments` | break-glass admin kullanıcı kimliği; bağlantı token'ının yalnızca SHA-256'sı, oluşturma / bitiş / kullanım zamanı | Break-glass passkey kayıt bağlantısı (ADM-05, K-11) | kullanıcı silinince kaskad; kullanılmış/süresi dolmuş satırlar hesapla birlikte kalır (denetim izi) |
 | `admin_operation_leases` | — (işlem adı, rastgele tutucu kimliği, zaman) | Pahalı admin işlemlerinde tek eşzamanlı çalışma (zincir doğrulama, K-09) | Tutucu bitirince silinir; ölü kiralama süresi dolunca devralınır |
 | `audit_event_pii` | **IP**, **user-agent** (olaya ve takma ada bağlı) | Güvenlik incelemesi | Takma ad eşlemesi silinince kaskad |
@@ -110,6 +125,7 @@ Kaynak: `migrations/`. "Kişisel veri" sütunu doğrudan veya dolaylı (kullanı
 | Yer | Kişisel veri | Not |
 |-----|--------------|-----|
 | Uygulama logları | maskeli e-posta (`a***@example.com`), maskeli IP, istek kimliği | OPS-03; sırlar ve tam adresler loglanmaz. Log saklama süresini işletmeci belirler (öneri ≤ 90 gün). |
+| Dağıtık izler (OpenTelemetry, opsiyonel) | yok (OPS-12) | Span'ler yöntem, rota şablonu, durum kodu, `request_id` ve `trace_id` taşır; kişisel veri ve sır içermez (`crates/authn-server/tests/telemetry.rs`). İz saklama süresini işletmeci belirler. |
 | E-postalar / SMS'ler | alıcı adresi, görünen ad, link/kod | Dış sağlayıcılarda saklanır (bkz. §7). |
 | Yedekler | Veritabanının tamamı | Silinen veri, yedek rotasyonu dolana kadar yedeklerde kalır; yedekler şifreli tutulmalı, geri yüklemede silinmiş hesaplar veritabanı dışında tutulan **silme defteriyle** (`export-erasures` çıktısı) `reapply-erasures` komutuyla yeniden silinmelidir (§4.1). Geri yüklenen `account_deletions` / `erasure_ledger` yedekten sonraki silmeleri içermez. |
 | Silme defteri dosyaları (`export-erasures`) | silinen hesap kimlikleri (UUID), zaman, neden kodu | Kişisel veri değildir (kimlik hiçbir kayda bağlanmaz); ancak geri yüklenen bir yedekle eşleştirildiğinde "bu hesap silindi" bilgisini taşır — erişimi yedeklerle aynı düzeyde kısıtlayın, yedeklerin en uzun saklama süresi kadar tutun. |
@@ -221,7 +237,8 @@ KVKK md. 9 (7499 sayılı Kanun ile 1 Haziran 2024'ten itibaren değişik hâli)
 | HIBP (sızdırılmış şifre) | şifrenin SHA-1 hash'inin **ilk 5 karakteri** (k-anonimlik, `Add-Padding`) | Kişisel veri sayılmaz; şifre veya tam hash gönderilmez (PWD-03). |
 | Sosyal giriş sağlayıcıları | kullanıcının sağlayıcıya kendi yönlendirmesi; sunucudan token değişimi | Kullanıcının başlattığı akış; sağlayıcıdan alınan e-posta/ad `identities`'te saklanır. |
 | Webhook alıcıları (organizasyon) | kullanıcı kimliği, olay türü | Organizasyonun kendi uç noktası; organizasyon ile veri işleme sözleşmesi önerilir. |
-| GeoIP | — | Yerel veritabanı (port), dışarı veri gitmez. |
+| GeoIP | — | Yerel MaxMind DB dosyası (`MmdbGeoIp`, RSK-05); sorgu süreç içinde yapılır, **dışarı veri gitmez**. Veritabanının kendisi işletmecinin lisansladığı üçüncü taraf verisidir (GeoLite2 EULA, DB-IP Lite CC BY 4.0 vb.); veri sağlayıcısına kişisel veri aktarılmaz. |
+| OpenTelemetry toplayıcısı (opsiyonel, K-92) | yalnızca yöntem, rota şablonu, durum kodu, istek kimliği, trace kimliği — **kişisel veri yok** (OPS-12; e-posta, IP, kullanıcı kimliği, token ve ham yol dışa aktarılmaz, testle zorlanır) | Toplayıcı/iz arka ucu yurt dışında olsa bile kişisel veri aktarımı doğmaz. `traceparent` ile gelen yabancı trace kimliği sürdürülür, `tracestate` atılır. |
 
 Veritabanı ve yedeklerin bulunduğu bölge de bir aktarım konusudur: Türkiye'deki ilgili kişiler için barındırmanın yurt içinde veya uygun güvencelerle yapılması önerilir.
 
@@ -265,6 +282,7 @@ Veritabanı ve yedeklerin bulunduğu bölge de bir aktarım konusudur: Türkiye'
 - [ ] VERBİS kaydı ve kişisel veri işleme envanteri (bu belgenin §2 tablosu temel alınabilir).
 - [ ] Aydınlatma metni (`privacy_policy`) ve kullanım şartları `account.terms` ile yayımlandı; yeni sürümde `requires_reacceptance` değerlendirildi.
 - [ ] Saklama ve imha politikası §3'teki sürelerle uyumlu; temizlik işleri (`purge_unverified_accounts`, `purge_due_deletions`, `purge_expired_reservations`, token/oturum temizliği, audit saklama) zamanlandı.
+- [ ] GeoIP kullanılıyorsa (`protect.risk.geoip_database`): veritabanının lisansı (GeoLite2 EULA atıf/güncelleme yükümlülükleri, DB-IP Lite atfı) karşılanıyor ve aydınlatma metninde "IP adresinden yaklaşık konum çıkarımı (risk değerlendirmesi, yeni cihaz bildirimi)" amacı yer alıyor.
 - [ ] Log saklama süresi belirlendi; log toplama sistemi maskeli alanları yeniden birleştirmiyor.
 - [ ] Yedekler şifreli; silme defteri (`export-erasures`) zamanlanmış olarak yedeklerden ayrı bir depoya aktarılıyor; her geri yüklemede `serve`'den önce `reapply-erasures` çalıştırılıyor (§4.1).
 - [ ] Yurt dışındaki sağlayıcılar için KVKK md. 9 kapsamında standart sözleşme imzalandı ve Kurum'a bildirildi / GDPR SCC'leri mevcut.

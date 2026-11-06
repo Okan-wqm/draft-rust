@@ -241,5 +241,8 @@ async fn insert_admin_account(
     }
     UserRepository::mark_email_verified(&mut *conn, id, now).await?;
     UserRepository::set_admin_flags(&mut *conn, id, true, true).await?;
+    // K-93: a break-glass account is always `platform_admin`.
+    crate::store::set_staff_role(&mut *conn, id, crate::roles::StaffRole::PlatformAdmin, now)
+        .await?;
     Ok(())
 }

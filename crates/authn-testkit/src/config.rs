@@ -112,11 +112,13 @@ impl TestConfigBuilder {
             mfa: Default::default(),
             webauthn: Default::default(),
             oidc_client: Default::default(),
+            oidc_provider: Default::default(),
             org: Default::default(),
             protect: Default::default(),
             audit: Default::default(),
             notify: Default::default(),
             admin: Default::default(),
+            telemetry: Default::default(),
         };
         config.notify.email.transport = EmailTransportKind::Log;
         config.notify.email.from_address = "no-reply@test.example".to_owned();

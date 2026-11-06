@@ -104,6 +104,8 @@ project!(CaptchaService, captcha);
 project!(AuditService, audit);
 project!(OidcClientService, oidc);
 project!(AdminService, admin);
+#[cfg(feature = "oidc-provider")]
+project!(authn_oidc_provider::OidcProviderService, oidc_provider);
 
 impl FromRef<AppState> for WellKnownDocuments {
     fn from_ref(state: &AppState) -> Self {

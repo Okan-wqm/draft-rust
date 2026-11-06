@@ -302,6 +302,18 @@ pub enum NotificationKind {
         #[serde(with = "time::serde::rfc3339")]
         expires_at: OffsetDateTime,
     },
+    /// A verified domain of an organization the recipient administers lost
+    /// its verification (periodic re-verification, ORG-13, K-97): auto-join
+    /// stopped until the TXT record is published and verified again.
+    OrgDomainUnverified {
+        /// Organization display name.
+        org_name: String,
+        /// The domain (normalized, punycode).
+        domain: String,
+        /// When.
+        #[serde(with = "time::serde::rfc3339")]
+        at: OffsetDateTime,
+    },
     /// An admin started impersonating the user (ADM-04).
     ImpersonationStarted {
         /// When.
@@ -369,6 +381,7 @@ impl NotificationKind {
             Self::MagicLink { .. } => "magic_link",
             Self::LoginCode { .. } => "login_code",
             Self::OrgOwnershipTransfer { .. } => "org_ownership_transfer",
+            Self::OrgDomainUnverified { .. } => "org_domain_unverified",
             Self::ImpersonationStarted { .. } => "impersonation_started",
             Self::IdentityLinked { .. } => "identity_linked",
             Self::IdentityUnlinked { .. } => "identity_unlinked",

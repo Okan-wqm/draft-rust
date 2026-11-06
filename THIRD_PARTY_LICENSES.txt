@@ -14,10 +14,10 @@ repository listed for each crate.
 
 Licences overview
 -----------------
-* MIT License (459)
-* ISC License (23)
+* MIT License (462)
+* ISC License (24)
 * Unicode License v3 (21)
-* Apache License 2.0 (11)
+* Apache License 2.0 (18)
 * BSD 3-Clause "New" or "Revised" License (8)
 * Mozilla Public License 2.0 (5)
 * Community Data License Agreement Permissive 2.0 (2)
@@ -233,6 +233,7 @@ Crates
 * inout 0.2.5: MIT OR Apache-2.0 (https://github.com/RustCrypto/utils)
 * ipconfig 0.3.4: MIT OR Apache-2.0 (https://github.com/liranringel/ipconfig)
 * ipnet 2.12.2: MIT OR Apache-2.0 (https://github.com/krisprice/ipnet)
+* ipnetwork 0.21.1: MIT OR Apache-2.0 (https://github.com/achanda/ipnetwork)
 * is_terminal_polyfill 1.70.2: MIT OR Apache-2.0 (https://github.com/polyfill-rs/is_terminal_polyfill)
 * itertools 0.10.5: MIT OR Apache-2.0 (https://github.com/rust-itertools/itertools)
 * itertools 0.14.0: MIT OR Apache-2.0 (https://github.com/rust-itertools/itertools)
@@ -254,6 +255,7 @@ Crates
 * loom 0.7.2: MIT (https://github.com/tokio-rs/loom)
 * matchers 0.2.0: MIT (https://github.com/hawkw/matchers)
 * matchit 0.8.4: MIT AND BSD-3-Clause (https://github.com/ibraheemdev/matchit)
+* maxminddb 0.32.0: ISC (https://github.com/oschwald/maxminddb-rust)
 * md-5 0.11.0: MIT OR Apache-2.0 (https://github.com/RustCrypto/hashes)
 * md5 0.8.1: Apache-2.0 OR MIT (https://github.com/stainless-steel/md5)
 * memchr 2.8.3: Unlicense OR MIT (https://github.com/BurntSushi/memchr)
@@ -282,6 +284,11 @@ Crates
 * once_cell_polyfill 1.70.2: MIT OR Apache-2.0 (https://github.com/polyfill-rs/once_cell_polyfill)
 * openidconnect 4.0.1: MIT (https://github.com/ramosbugs/openidconnect-rs)
 * openssl-probe 0.2.2: MIT OR Apache-2.0 (https://github.com/rustls/openssl-probe)
+* opentelemetry 0.33.1: Apache-2.0 (https://github.com/open-telemetry/opentelemetry-rust/tree/main/opentelemetry)
+* opentelemetry-http 0.33.1: Apache-2.0 (https://github.com/open-telemetry/opentelemetry-rust/tree/main/opentelemetry-http)
+* opentelemetry-otlp 0.33.1: Apache-2.0 (https://github.com/open-telemetry/opentelemetry-rust/tree/main/opentelemetry-otlp)
+* opentelemetry-proto 0.33.1: Apache-2.0 (https://github.com/open-telemetry/opentelemetry-rust/tree/main/opentelemetry-proto)
+* opentelemetry_sdk 0.33.1: Apache-2.0 (https://github.com/open-telemetry/opentelemetry-rust/tree/main/opentelemetry-sdk)
 * ordered-float 2.10.1: MIT (https://github.com/reem/rust-ordered-float)
 * p256 0.13.2: Apache-2.0 OR MIT (https://github.com/RustCrypto/elliptic-curves/tree/master/p256)
 * p256 0.14.0: Apache-2.0 OR MIT (https://github.com/RustCrypto/elliptic-curves)
@@ -319,6 +326,8 @@ Crates
 * primeorder 0.14.0: Apache-2.0 OR MIT (https://github.com/RustCrypto/elliptic-curves)
 * proc-macro2 1.0.107: MIT OR Apache-2.0 (https://github.com/dtolnay/proc-macro2)
 * proc-macro2-diagnostics 0.10.1: MIT OR Apache-2.0 (https://github.com/SergioBenitez/proc-macro2-diagnostics)
+* prost 0.14.4: Apache-2.0 (https://github.com/tokio-rs/prost)
+* prost-derive 0.14.4: Apache-2.0 (https://github.com/tokio-rs/prost)
 * qrcode 0.14.1: MIT OR Apache-2.0 (https://github.com/kennytm/qrcode-rust)
 * quanta 0.12.6: MIT (https://github.com/metrics-rs/quanta)
 * quote 1.0.47: MIT OR Apache-2.0 (https://github.com/dtolnay/quote)
@@ -444,6 +453,7 @@ Crates
 * tracing-attributes 0.1.31: MIT (https://github.com/tokio-rs/tracing)
 * tracing-core 0.1.36: MIT (https://github.com/tokio-rs/tracing)
 * tracing-log 0.2.0: MIT (https://github.com/tokio-rs/tracing)
+* tracing-opentelemetry 0.34.0: MIT (https://github.com/tokio-rs/tracing-opentelemetry)
 * tracing-serde 0.2.0: MIT (https://github.com/tokio-rs/tracing)
 * tracing-subscriber 0.3.23: MIT (https://github.com/tokio-rs/tracing)
 * try-lock 0.2.5: MIT (https://github.com/seanmonstar/try-lock)
@@ -475,6 +485,7 @@ Crates
 * wasm-bindgen-macro-support 0.2.130: MIT OR Apache-2.0 (https://github.com/wasm-bindgen/wasm-bindgen/tree/main/crates/macro-support)
 * wasm-bindgen-shared 0.2.130: MIT OR Apache-2.0 (https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/shared)
 * web-sys 0.3.107: MIT OR Apache-2.0 (https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/web-sys)
+* web-time 1.1.0: MIT OR Apache-2.0 (https://github.com/daxpedda/web-time)
 * webauthn-attestation-ca 0.6.2: MPL-2.0 (https://github.com/kanidm/webauthn-rs)
 * webauthn-rs 0.6.2: MPL-2.0 (https://github.com/kanidm/webauthn-rs)
 * webauthn-rs-core 0.6.2: MPL-2.0 (https://github.com/kanidm/webauthn-rs)
@@ -1462,6 +1473,7 @@ Used by:
 Apache License 2.0 (Apache-2.0)
 Used by:
   * minijinja 3.0.5 (https://github.com/mitsuhiko/minijinja)
+  * opentelemetry-proto 0.33.1 (https://github.com/open-telemetry/opentelemetry-rust/tree/main/opentelemetry-proto)
 ==============================================================================
 
                                  Apache License
@@ -1671,6 +1683,8 @@ Used by:
 Apache License 2.0 (Apache-2.0)
 Used by:
   * minijinja 3.0.5 (https://github.com/mitsuhiko/minijinja)
+  * prost-derive 0.14.4 (https://github.com/tokio-rs/prost)
+  * prost 0.14.4 (https://github.com/tokio-rs/prost)
   * ring 0.17.14 (https://github.com/briansmith/ring)
 ==============================================================================
 
@@ -1881,6 +1895,10 @@ limitations under the License.
 Apache License 2.0 (Apache-2.0)
 Used by:
   * metrics-exporter-prometheus 0.18.3 (https://github.com/metrics-rs/metrics)
+  * opentelemetry-http 0.33.1 (https://github.com/open-telemetry/opentelemetry-rust/tree/main/opentelemetry-http)
+  * opentelemetry-otlp 0.33.1 (https://github.com/open-telemetry/opentelemetry-rust/tree/main/opentelemetry-otlp)
+  * opentelemetry 0.33.1 (https://github.com/open-telemetry/opentelemetry-rust/tree/main/opentelemetry)
+  * opentelemetry_sdk 0.33.1 (https://github.com/open-telemetry/opentelemetry-rust/tree/main/opentelemetry-sdk)
   * ryu 1.0.23 (https://github.com/dtolnay/ryu)
   * sync_wrapper 1.0.2 (https://github.com/Actyx/sync_wrapper)
   * woothee 0.13.0 (https://github.com/woothee/woothee-rust)
@@ -3041,6 +3059,29 @@ OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 The files under third-party/chromium are licensed as described in
 third-party/chromium/LICENSE.
+
+
+==============================================================================
+ISC License (ISC)
+Used by:
+  * maxminddb 0.32.0 (https://github.com/oschwald/maxminddb-rust)
+==============================================================================
+
+ISC License
+
+Copyright (c) 2015, Gregory J. Oschwald <oschwald@gmail.com>
+
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted, provided that the above
+copyright notice and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 
 ==============================================================================
@@ -6170,6 +6211,7 @@ Used by:
   * tracing-attributes 0.1.31 (https://github.com/tokio-rs/tracing)
   * tracing-core 0.1.36 (https://github.com/tokio-rs/tracing)
   * tracing-log 0.2.0 (https://github.com/tokio-rs/tracing)
+  * tracing-opentelemetry 0.34.0 (https://github.com/tokio-rs/tracing-opentelemetry)
   * tracing-serde 0.2.0 (https://github.com/tokio-rs/tracing)
   * tracing-subscriber 0.3.23 (https://github.com/tokio-rs/tracing)
   * tracing 0.1.44 (https://github.com/tokio-rs/tracing)
@@ -7840,6 +7882,39 @@ DEALINGS IN THE SOFTWARE.
 ==============================================================================
 MIT License (MIT)
 Used by:
+  * ipnetwork 0.21.1 (https://github.com/achanda/ipnetwork)
+==============================================================================
+
+Copyright 2020 Developers of the ipnetwork project
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+
+==============================================================================
+MIT License (MIT)
+Used by:
   * axum-extra 0.12.6 (https://github.com/tokio-rs/axum)
   * axum-macros 0.5.1 (https://github.com/tokio-rs/axum)
 ==============================================================================
@@ -8459,6 +8534,35 @@ Used by:
 MIT License
 
 Copyright (c) 2022 Ibraheem Ahmed
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+==============================================================================
+MIT License (MIT)
+Used by:
+  * web-time 1.1.0 (https://github.com/daxpedda/web-time)
+==============================================================================
+
+MIT License
+
+Copyright (c) 2023 dAxpeDDa
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

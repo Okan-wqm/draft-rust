@@ -54,6 +54,7 @@ use time::format_description::well_known::Rfc3339;
 use super::{ActionOutcome, AdminService, meta};
 use crate::guard::AdminCaller;
 use crate::reason::Justification;
+use crate::roles::AdminPermission;
 use crate::store;
 
 /// The `admin_actions` section of the personal data export (ACC-10,
@@ -149,6 +150,7 @@ impl AdminService {
         note: &Justification,
         review_at: OffsetDateTime,
     ) -> Result<ActionOutcome, AuthError> {
+        caller.require(AdminPermission::AuditRestrict)?;
         const ACTION: &str = "restrict_justification";
         let now = self.now();
         check_review_at(now, review_at)?;
@@ -204,6 +206,7 @@ impl AdminService {
         reason: &Justification,
         review_at: OffsetDateTime,
     ) -> Result<ActionOutcome, AuthError> {
+        caller.require(AdminPermission::AuditRestrict)?;
         const ACTION: &str = "extend_restriction";
         let now = self.now();
         check_review_at(now, review_at)?;

@@ -43,6 +43,7 @@ use uuid::Uuid;
 use super::{AdminService, CriticalOperation, TargetPolicy, meta};
 use crate::guard::AdminCaller;
 use crate::reason::Justification;
+use crate::roles::AdminPermission;
 
 const ALL_DEVICES: RevokeOptions = RevokeOptions {
     also_trusted_devices: true,
@@ -128,6 +129,7 @@ impl AdminService {
         reason: &Justification,
         approval: Option<Uuid>,
     ) -> Result<ActionOutcome, AuthError> {
+        caller.require(AdminPermission::UsersSuspend)?;
         const ACTION: &str = "suspend_user";
         let operation = CriticalOperation::SuspendAdmin(user);
         self.four_eyes_precheck_target(caller, ctx, &operation, approval)
@@ -200,6 +202,7 @@ impl AdminService {
         user: UserId,
         reason: &Justification,
     ) -> Result<ActionOutcome, AuthError> {
+        caller.require(AdminPermission::UsersSuspend)?;
         const ACTION: &str = "unsuspend_user";
         let mut tx = self.begin().await?;
         let target = self
@@ -265,6 +268,7 @@ impl AdminService {
         reason: &Justification,
         approval: Option<Uuid>,
     ) -> Result<ActionOutcome, AuthError> {
+        caller.require(AdminPermission::UsersUnlock)?;
         const ACTION: &str = "unlock_user";
         let operation = CriticalOperation::UnlockAdmin(user);
         self.four_eyes_precheck_target(caller, ctx, &operation, approval)
@@ -354,6 +358,7 @@ impl AdminService {
         reason: &Justification,
         approval: Option<Uuid>,
     ) -> Result<ActionOutcome, AuthError> {
+        caller.require(AdminPermission::UsersRevokeSessions)?;
         const ACTION: &str = "revoke_user_sessions";
         let operation = CriticalOperation::RevokeAdminSessions(user);
         self.four_eyes_precheck_target(caller, ctx, &operation, approval)
@@ -412,6 +417,7 @@ impl AdminService {
         reason: &Justification,
         send_email: bool,
     ) -> Result<ForcedReset, AuthError> {
+        caller.require(AdminPermission::UsersResetPassword)?;
         const ACTION: &str = "force_password_reset";
         // Hash before opening the transaction (Argon2 is slow; ARC-12).
         let unusable = OpaqueToken::generate().map_err(AuthError::from)?;
@@ -496,6 +502,7 @@ impl AdminService {
         must_change: bool,
         reason: &Justification,
     ) -> Result<ActionOutcome, AuthError> {
+        caller.require(AdminPermission::UsersResetPassword)?;
         const ACTION: &str = "set_must_change_password";
         let mut tx = self.begin().await?;
         self.lock_target(&mut tx, caller, user, TargetPolicy::RegularUsersOnly)
@@ -541,6 +548,7 @@ impl AdminService {
         user: UserId,
         reason: &Justification,
     ) -> Result<ActionOutcome, AuthError> {
+        caller.require(AdminPermission::UsersRecover)?;
         const ACTION: &str = "reset_mfa";
         let mut tx = self.begin().await?;
         self.lock_target(&mut tx, caller, user, TargetPolicy::RegularUsersOnly)
@@ -605,6 +613,7 @@ impl AdminService {
         user: UserId,
         reason: &Justification,
     ) -> Result<ActionOutcome, AuthError> {
+        caller.require(AdminPermission::UsersRecover)?;
         const ACTION: &str = "mark_email_verified";
         let mut tx = self.begin().await?;
         self.lock_target(&mut tx, caller, user, TargetPolicy::RegularUsersOnly)

@@ -2,6 +2,32 @@
 
 İstemcileri, SDK'ları (K-85) ve operatörleri etkileyen değişiklikler. En yeni en üstte. Her madde neyin değiştiğini, kimin ne yapması gerektiğini ve geriye uyumluluğu söyler.
 
+## Wave 11A (2026-11-05)
+
+### K-80 — OAuth 2.1 / OpenID Connect sağlayıcısı (yeni uçlar; varsayılan kapalı, geriye uyumlu)
+
+- **Ne değişti:** yeni crate `authn-oidc-provider`, migration `3000`. `oidc_provider.enabled = true` (ve `interaction_url`) ile şu uçlar bağlanır; kapalıyken hiçbiri yoktur (`404`): `GET /v1/oauth2/authorize`, `GET /v1/oauth2/interactions/{interaction_id}`, `POST …/accept`, `POST …/deny`, `POST /v1/oauth2/token`, `POST /v1/oauth2/revoke`, `POST /v1/oauth2/introspect`, `GET|POST /v1/oauth2/userinfo`, `GET /.well-known/openid-configuration`, `GET /.well-known/oauth-authorization-server`, `GET /v1/me/oauth2/consents`, `DELETE /v1/me/oauth2/consents/{client_id}` ve personel uçları `GET|POST /v1/admin/oauth2/clients`, `GET|PATCH|DELETE /v1/admin/oauth2/clients/{client_id}`, `POST /v1/admin/oauth2/clients/{client_id}/secret` (izinler `oauth_clients:read` / `oauth_clients:manage`, K-93).
+- **Yeni hata kodları:** `invalid_authorization_request` (400), `oauth_interaction_invalid` (400), `invalid_client_metadata` (422). Token / iptal / introspection / userinfo uçları RFC 6749 / RFC 6750 hata biçimini kullanır (`{"error": "invalid_grant"}`), proje zarfını değil.
+- **OpenAPI:** yeni güvenlik şemaları `oauth2_client` (istemci kimlik doğrulaması) ve `oauth2_access_token` (sağlayıcı access token'ı).
+- **Mevcut istemciler:** etkilenmez. Native ve çerez akışlarının token'ları değişmedi; sağlayıcı token'ları native uçlarda (ve tersi) kabul edilmez. Kişisel veri dışa aktarımına (`POST /v1/me/export`) yeni `oauth_provider` bölümü eklendi (onaylar ve grant'ler; token yok).
+- **Rehber:** [`docs/integration/oidc-provider.md`](integration/oidc-provider.md).
+
+## Wave 11B (2026-11-05)
+
+### K-93 — Personel rolleri (admin API; davranış değişikliği, geriye uyumlu taşıma)
+
+- **Ne değişti:** admin API'sinde tek "platform admini" yetkisi yerine dört personel rolü: `support_readonly`, `support`, `security`, `platform_admin`. Her admin ucu bir izin ister (tablo: `crates/authn-admin/README.md` "Personel rolleri"). Rolü izni taşımayan personel `403 admin_permission_denied` alır (`details.permission` izni adlandırır; yeni hata kodu). Personel olmayan çağıranın yanıtı değişmedi (`403 forbidden`).
+- **Yeni uçlar:** `GET /v1/admin/staff` (personel ve rolleri, `staff:read`), `POST /v1/admin/staff/{user_id}/role` (`{role, reason, approval_id?}`, yalnızca `platform_admin`, her zaman çift onay; hedefin oturumları kapanır). `POST /v1/admin/approvals` yeni `action: "change_staff_role"` ve `role` alanını kabul eder.
+- **Çift onay:** onayı yalnızca `security` ve `platform_admin` verebilir; onaylayan işlemin iznini de taşımalı (rol değişikliğini yalnızca başka bir `platform_admin` onaylar). Onay kullanılırken onaylayanın yetkisi yeniden denetlenir.
+- **Taşıma:** migration `2203` var olan her platform adminine (break-glass dahil) `platform_admin` rolü verir; mevcut konsol kullanıcıları için hiçbir şey değişmez. CLI `grant-admin` artık zorunlu `--role <rol>` ister (eski betikleri `--role platform_admin` ekleyerek güncelleyin) ve personelin rolünü de değiştirebilir. Veritabanında `users.is_platform_admin`'i elle `true` yapmak artık yetki vermez.
+- **Konsol istemcileri:** `admin_permission_denied`'ı "rolünüz izin vermiyor" olarak gösterin; `GET /v1/admin/staff` ile kullanıcının kendi rolüne göre menüyü daraltabilirsiniz (yalnızca `security`/`platform_admin` okuyabilir; diğer roller için izin hatası beklenen yanıttır).
+
+### K-97 — Domain'lerin periyodik yeniden doğrulanması (organizasyon API'si; geriye uyumlu)
+
+- **Ne değişti:** doğrulanmış domain'ler arka planda yeniden kontrol edilir; TXT kaydı ardışık `failure_threshold` (varsayılan 3) kontrolde kesin olarak bulunamazsa domain `failed` olur, `auto_join` kapanır ve domain yöneticilerine `org_domain_unverified` e-postası gider. DNS hataları yokluk sayılmaz.
+- **Yanıt alanları:** `OrgDomain`'e (`GET /v1/orgs/{org_id}/domains` ve domain uçları) dört yeni alan eklendi: `consecutive_absent_checks`, `consecutive_inconclusive_checks`, `last_check_outcome` (`present` / `absent` / `inconclusive` / `null`), `unverified_at`. Yeni alanları yok sayan istemciler etkilenmez.
+- **İstemciler:** `status: "failed"` + `unverified_at` dolu ise kullanıcıya "TXT kaydını yeniden yayımlayıp doğrulayın" deyin; doğrulamadan sonra otomatik katılımı yeniden açmak gerekir (`PATCH …/domains/{domain_id}`, `auto_join: true`).
+
 ## Wave 9A (2026-11-05)
 
 ### K-112 — Giriş challenge'ı içinde passkey kaydı (yeni uçlar; geriye uyumlu)

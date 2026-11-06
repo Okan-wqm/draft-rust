@@ -28,6 +28,15 @@ async fn make_admin(app: &App, user: UserId) {
         .execute(&app.pool)
         .await
         .unwrap();
+    // K-93: staff without a role row have no admin permission.
+    sqlx::query(
+        "INSERT INTO admin_staff_roles (user_id, role, granted_at, updated_at) \
+         VALUES ($1, 'platform_admin', now(), now())",
+    )
+    .bind(user)
+    .execute(&app.pool)
+    .await
+    .unwrap();
 }
 
 /// Registers a passkey for the signed-in `browser`; returns the key and its
@@ -884,7 +893,12 @@ async fn adm_05_k76_grant_and_revoke_end_real_sessions(pool: PgPool) {
 
     app.services
         .admin
-        .grant_admin_offline(&operator, &OfflineTarget::Id(alice), &why)
+        .grant_admin_offline(
+            &operator,
+            &OfflineTarget::Id(alice),
+            authn_admin::StaffRole::PlatformAdmin,
+            &why,
+        )
         .await
         .unwrap();
     assert_eq!(

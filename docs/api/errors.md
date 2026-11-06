@@ -2,7 +2,7 @@
 
 > **Üretilmiş tablo — elle düzenlemeyin.** Kaynak: `crates/authn-core/src/error/codes/*.rs` (her kod `ErrorCode::new(kod, durum, İngilizce, Türkçe)`), açıklama sütunu kodun kendi Türkçe mesajıdır; notlar `generate_reference.py` içindedir.
 
-Toplam **128** kararlı kod. Yayımlanmış bir kod asla yeniden adlandırılmaz ve anlamı değişmez (contracts §8). İstemciler `message`'a değil `code`'a göre dallanmalıdır.
+Toplam **132** kararlı kod. Yayımlanmış bir kod asla yeniden adlandırılmaz ve anlamı değişmez (contracts §8). İstemciler `message`'a değil `code`'a göre dallanmalıdır.
 
 ## Hata zarfı
 
@@ -169,6 +169,14 @@ Kodu doğrudan üreten bir handler yoksa (`method_not_allowed`, `payload_too_lar
 | `identity_last_login_method` | 409 | Bu, giriş yapmanın son yolu. Kaldırmadan önce bir şifre veya passkey ekleyin. |  |
 | `identity_link_not_allowed` | 403 | Bir giriş sağlayıcısı bağlamadan önce e-posta adresinizi doğrulayın. |  |
 
+## OAuth 2.1 / OIDC sağlayıcısı (`codes::oidc_provider`)
+
+| Kod | HTTP | Anlam (sunucunun Türkçe mesajı) | Not |
+|-----|------|----------------------------------|-----|
+| `invalid_authorization_request` | 400 | Uygulama geçersiz bir giriş isteği gönderdi. | `GET /v1/oauth2/authorize` istemcisi bilinmeyen / devre dışı ya da `redirect_uri`'si kayıtlı olmayan isteğe döner (OIDP-02); tarayıcı asla yönlendirilmez. Diğer yetkilendirme hataları RFC 6749 kodlarıyla (`invalid_request`, `invalid_scope`, `login_required` …) istemciye yönlendirilir. Token / iptal / introspection / userinfo uçları RFC 6749 §5.2 / RFC 6750 biçimini (`{"error": …}`) kullanır, bu katalogda değildir. |
+| `oauth_interaction_invalid` | 400 | Giriş isteğinin süresi doldu veya artık geçerli değil. Lütfen uygulamaya dönüp yeniden başlayın. | Bekleyen istek bilinmiyor, süresi dolmuş, tamamlanmış veya başka bir tarayıcıya ait (OIDP-04); bilinçli olarak tek tip. |
+| `invalid_client_metadata` | 422 | İstemci kaydı geçersiz. | `details.field` geçersiz alanı adlandırır (`redirect_uris`, `allowed_scopes`, `allowed_grant_types`, `allowed_resources` …). |
+
 ## Koruma (`codes::protect`)
 
 | Kod | HTTP | Anlam (sunucunun Türkçe mesajı) | Not |
@@ -209,3 +217,4 @@ Kodu doğrudan üreten bir handler yoksa (`method_not_allowed`, `payload_too_lar
 | `admin_approval_required` | 403 | Bu işlem ikinci bir platform yöneticisinin onayını gerektirir. |  |
 | `admin_approval_invalid` | 403 | Onay bu işlem için geçerli değil. Yeni bir onay isteyin. |  |
 | `admin_self_approval_not_allowed` | 403 | Bir istek farklı bir platform yöneticisi tarafından onaylanmalıdır. |  |
+| `admin_permission_denied` | 403 | Personel rolünüz bu işleme izin vermiyor. | Yalnızca admin guard'ını geçmiş personele döner (K-93); `details.permission` gereken izni adlandırır (ör. `users:suspend`). Personel olmayan çağıran genel `forbidden` alır. |

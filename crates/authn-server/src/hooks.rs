@@ -481,3 +481,54 @@ mod tests {
         assert!(err.status().is_server_error(), "{err}");
     }
 }
+
+/// `authn_oidc_provider::SessionLiveness` (OIDP-12): a provider grant lives
+/// only as long as the browser session it was authorized in — sign-out,
+/// "sign out everywhere", password reset, suspension, deletion and admin
+/// revocation end every grant of that session.
+#[cfg(feature = "oidc-provider")]
+#[async_trait]
+impl authn_oidc_provider::SessionLiveness for ServerSessionLiveness {
+    async fn is_active(
+        &self,
+        conn: &mut PgConnection,
+        session: SessionId,
+        user: UserId,
+        now: OffsetDateTime,
+    ) -> Result<bool, AuthError> {
+        authn_session::is_session_active_in(conn, session, user, now).await
+    }
+}
+
+/// `authn_oidc_provider::ClientAdminAuthorizer` (OIDP-01): the staff-role
+/// check of authn-admin (K-93): `oauth_clients:read` (security, platform
+/// admin) and `oauth_clients:manage` (platform admin), on top of the full
+/// ADM-01 guard (passkey MFA, recent authentication, IP allow-list, no
+/// impersonation).
+#[cfg(feature = "oidc-provider")]
+#[derive(Clone)]
+pub struct ServerClientAdmin(pub authn_admin::AdminService);
+
+#[cfg(feature = "oidc-provider")]
+#[async_trait]
+impl authn_oidc_provider::ClientAdminAuthorizer for ServerClientAdmin {
+    async fn authorize(
+        &self,
+        principal: &Principal,
+        ctx: &RequestContext,
+        access: authn_oidc_provider::ClientAdminAccess,
+    ) -> Result<(), AuthError> {
+        let permission = match access {
+            authn_oidc_provider::ClientAdminAccess::Read => {
+                authn_admin::AdminPermission::OAuthClientsRead
+            }
+            authn_oidc_provider::ClientAdminAccess::Manage => {
+                authn_admin::AdminPermission::OAuthClientsManage
+            }
+        };
+        self.0
+            .authorize_permission(principal, ctx, permission)
+            .await
+            .map(|_| ())
+    }
+}

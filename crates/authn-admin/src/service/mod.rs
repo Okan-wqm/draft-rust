@@ -17,6 +17,7 @@ mod enrollment;
 mod export;
 mod impersonation;
 mod limits;
+mod staff;
 mod users;
 
 use std::sync::Arc;
@@ -48,6 +49,7 @@ pub use self::audit::{
 pub use self::emergency::{BulkResetOutcome, EmergencyOutcome, KeyRotationOutcome};
 pub use self::export::{AdminActionsDataExporter, RESTRICTION_MAX_PERIOD, STAFF_ACTOR};
 pub use self::impersonation::ImpersonationOptions;
+pub use self::staff::{StaffMember, StaffRoleChange};
 pub use self::users::{
     AdminUserDetail, AdminUserSummary, PasswordState, UserSearch, UserStatusFilter,
 };
@@ -55,6 +57,7 @@ use crate::guard::{AdminCaller, Denial, authorize};
 use crate::hooks::SigningKeyCache;
 use crate::metrics;
 use crate::reason::Justification;
+use crate::roles::AdminPermission;
 use crate::settings::AdminSettings;
 use crate::store;
 
@@ -176,16 +179,27 @@ impl AdminService {
         principal: &Principal,
         ctx: &RequestContext,
     ) -> Result<AdminCaller, AuthError> {
-        let live = match principal.user_id() {
+        let (live, role) = match principal.user_id() {
             Some(user) if principal.impersonation.is_none() => {
-                UserRepository::find_by_id(self.pool(), user).await?
+                let live = UserRepository::find_by_id(self.pool(), user).await?;
+                // K-93: the role is re-read on every request (never taken
+                // from the session or a token), so a change applies to the
+                // next request.
+                let role = match live.as_ref() {
+                    Some(record) if record.is_platform_admin => {
+                        store::staff_role(self.pool(), user).await?
+                    }
+                    _ => None,
+                };
+                (live, role)
             }
-            _ => None,
+            _ => (None, None),
         };
         let now = self.now();
         match authorize(
             principal,
             live.as_ref(),
+            role,
             ctx.client_ip,
             now,
             self.settings(),
@@ -213,6 +227,57 @@ impl AdminService {
                 Err(denial.into_error())
             }
         }
+    }
+
+    /// [`Self::authorize`] plus the role check of `permission` (K-93): a
+    /// staff member whose role lacks it gets `403 admin_permission_denied`
+    /// (audited as a failed `admin.action` `admin_access` with the
+    /// permission and the role). The [`AdminCaller`] extractor calls this
+    /// with the permission its route declares; other modules guarding
+    /// admin endpoints of their own (authn-oidc-provider client registry,
+    /// K-80) call it directly.
+    pub async fn authorize_permission(
+        &self,
+        principal: &Principal,
+        ctx: &RequestContext,
+        permission: AdminPermission,
+    ) -> Result<AdminCaller, AuthError> {
+        let caller = self.authorize(principal, ctx).await?;
+        if caller.has(permission) {
+            return Ok(caller);
+        }
+        Err(self.permission_denied(&caller, ctx, permission).await)
+    }
+
+    /// Records a refused permission (metric, log, failed `admin.action`)
+    /// and returns the error to answer with.
+    pub(crate) async fn permission_denied(
+        &self,
+        caller: &AdminCaller,
+        ctx: &RequestContext,
+        permission: AdminPermission,
+    ) -> AuthError {
+        metrics::denied("permission_denied");
+        tracing::warn!(
+            admin = %caller.user_id(),
+            role = caller.role().as_str(),
+            permission = permission.as_str(),
+            "admin request refused: the staff role lacks the permission"
+        );
+        let event = SecurityEvent::new(SecurityEventKind::AdminAction, self.now())
+            .with_context(ctx)
+            .with_actor(Actor::User(caller.user_id()))
+            .with_meta("action", "admin_access")
+            .with_meta("permission", permission.as_str())
+            .with_meta("role", caller.role().as_str())
+            .failed("permission_denied");
+        if let Err(err) = self.deps().audit.record(event).await {
+            tracing::error!(
+                code = err.code().code(),
+                "could not audit a permission refusal"
+            );
+        }
+        permission.denied()
     }
 
     async fn record_break_glass_use(
@@ -297,12 +362,25 @@ impl AdminService {
             .await?
             .is_some_and(|u| u.is_platform_admin && u.id != caller.user_id());
         if budgeted {
+            if !caller.has(AdminPermission::StaffContain) {
+                return Err(self
+                    .permission_denied(caller, ctx, AdminPermission::StaffContain)
+                    .await);
+            }
             self.check_admin_target(caller, ctx, action).await?;
         }
         loop {
             let mut tx = self.begin().await?;
             let record = self.lock_target(&mut tx, caller, target, policy).await?;
             let is_admin = record.is_platform_admin && record.id != caller.user_id();
+            if is_admin && !caller.has(AdminPermission::StaffContain) {
+                // K-93: acting on another staff member is `staff:contain`
+                // (the target became staff since the unlocked read).
+                tx.rollback().await?;
+                return Err(self
+                    .permission_denied(caller, ctx, AdminPermission::StaffContain)
+                    .await);
+            }
             if !is_admin || budgeted {
                 return Ok((tx, record, is_admin));
             }

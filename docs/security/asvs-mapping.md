@@ -252,6 +252,25 @@ Karşılanmayan iki madde: **V6.4.2** (anahtar materyali uygulama belleğinde; K
 
 V13.3 (SOAP) ve V13.4 (GraphQL) uygulanmaz ve sayıma dahil edilmedi.
 
+### OAuth 2.1 / OIDC sağlayıcısı (K-80; ASVS 5.0 V10'a göre, yukarıdaki 4.0.3 sayımına dahil değil)
+
+| ASVS 5.0 | Gereksinim (özet) | Durum | Kod | Test | Not |
+|----------|-------------------|-------|-----|------|-----|
+| 10.4.1 | `redirect_uri` önceden kayıtlı değerle birebir eşleşir | ✅ | `crates/authn-oidc-provider/src/redirect.rs` | `oidp_02_exact_match_rejects_variants`, `oidp_02_unregistered_redirects_are_never_followed` | Tek istisna RFC 8252 loopback portu |
+| 10.4.2 | Kod tek kullanımlık; tekrarında token'lar iptal | ✅ | `src/service/token.rs` | `oidp_06_code_replay_revokes_every_token_of_the_grant` | — |
+| 10.4.3 | Kod kısa ömürlü | ✅ | `oidc_provider.authorization_code_ttl` (60 sn) | `oidp_06_code_is_bound_to_client_redirect_verifier_and_lifetime` | — |
+| 10.4.4 | Yalnızca gerekli grant türleri (implicit / ROPC yok) | ✅ | `src/request.rs` | `oidp_03_only_the_code_flow_exists` | — |
+| 10.4.5 | Refresh token rotasyonu ve tekrar tespiti | ✅ | `src/service/token.rs` | `oidp_07_refresh_rotation_and_replay_detection` | — |
+| 10.4.6 | PKCE `S256` zorunlu | ✅ | `src/pkce.rs`, `src/request.rs` | `oidp_03_missing_and_plain_pkce_are_redirected_errors`, `oidp_03_rfc_7636_appendix_b_vector` | — |
+| 10.4.8 | Refresh token'ın mutlak ömrü var | ✅ | `oidc_provider.refresh_token_absolute_ttl` + oturum bağı | `oidp_12_ended_session_ends_the_grant` | — |
+| 10.4.10 | Gizli istemci kimlik doğrulaması | ✅ | `src/service/token.rs` (`authenticate_client`, sabit zamanlı hash karşılaştırması) | `oidp_06_basic_credentials_are_form_decoded_and_exclusive`, `oidp_02_native_public_client_with_loopback_port_and_no_secret` | `private_key_jwt` K-84 |
+| 10.4.11 | İstemci yalnızca izinli kapsamları alır | ✅ | `src/request.rs` | `oidp_03_scope_and_resource_policy` | — |
+| 10.5.1 | ID token `nonce` / `aud` / `at_hash` doğrulanabilir | ✅ | `src/claims.rs` | `oidp_06_web_client_code_flow_with_pkce_and_independent_id_token_check` | Bağımsız Ed25519 doğrulayıcısıyla |
+| 10.6.1 | Mix-up savunması (`iss` yanıt parametresi) | ✅ | `src/service/authorize.rs` | `oidp_06_web_client_code_flow_with_pkce_and_independent_id_token_check` | RFC 9207 |
+| 10.7.1 | Onay kaydı ve geri alma | ✅ | `src/service/authorize.rs` | `oidp_05_existing_consent_gives_sso_and_prompt_consent_asks_again` | — |
+| 10.3.x | Access token `aud` kısıtı / tür ayrımı | ✅ | `src/service/token.rs` (`mint`) | `oidp_08_resource_indicators_set_the_audience`, `oidp_08_provider_and_native_tokens_are_never_interchangeable` | RFC 8707 |
+
+
 ## V14 — Yapılandırma
 
 | ASVS | Gereksinim (özet) | Durum | Kod | Test | Not |

@@ -4,7 +4,7 @@ B2B kiracı (tenant) katmanı: organizasyonlar, üyelikler, RBAC, davetler, DNS 
 
 ## Sahip olunan gereksinimler
 
-ARC-10, ORG-01 … ORG-12. Uygulanan port: `DnsTxtResolver` (`HickoryDnsTxtResolver`, `hickory-resolver`).
+ARC-10, ORG-01 … ORG-13. Uygulanan port: `DnsTxtResolver` (`HickoryDnsTxtResolver`, `hickory-resolver`).
 
 | Gereksinim | Nerede | Test (örnek) |
 |------------|--------|--------------|
@@ -20,6 +20,7 @@ ARC-10, ORG-01 … ORG-12. Uygulanan port: `DnsTxtResolver` (`HickoryDnsTxtResol
 | ORG-10 / ARC-10 Kiracı izolasyonu, IDOR | `authz.rs`, tüm sorgular `org_id` filtreli | `arc_10_org_10_every_endpoint_hides_other_tenants_from_a_session_owner` |
 | ORG-11 Sahiplik devri (hedef onayı) | `service/transfer.rs` | `org_11_transfer_needs_owner_step_up_and_target_acceptance` |
 | ORG-12 Bekleme süreli silme | `service/orgs.rs` | `org_12_purge_deletes_everything_after_the_grace_period` |
+| ORG-13 Doğrulanmış domain'lerin periyodik yeniden doğrulanması (K-97) | `service/reverify.rs`, migration `1514`, `1515` | `org_13_definitive_absence_unverifies_the_domain_and_stops_auto_join`, `org_13_resolver_errors_are_not_absence`, `org_13_each_domain_is_checked_once_per_interval_across_instances` |
 
 ## Bağımlılık kuralı
 
@@ -88,6 +89,19 @@ Platform admin'i örtük yetki almaz (ADM-07 kendi API'sini kullanır).
 
 TXT kaydı `<domain_verification_label>.<domain>` (tam nitelikli sorgu, arama domain'i eklenmez), değer `authn-verification=<43 karakter>`. DNS sorgusu transaction dışında, `dns_timeout` ile sınırlı ve organizasyon başına sınırlıdır. Domain'ler e-posta domain'leri gibi normalize edilir (IDNA, homograf reddi). Bir domain'i yalnızca bir organizasyon doğrulayabilir (ilk doğrulayan kazanır). Otomatik katılım yalnızca doğrulanmış domain'lerde açılabilir ve yalnızca **doğrulanmış** e-posta adresi tam olarak o domain'de olan kullanıcıları (`member` rolüyle) ekler; alt domain'ler ve benzer görünenler eşleşmez. Organizasyondan **çıkarılan veya ayrılan** kullanıcılar otomatik katılımla geri eklenmez (`org_auto_join_exclusions`, migration `1501`); kaydı yalnızca kabul edilen bir davet siler ve kayıt kişisel veri dışa aktarımında (`auto_join_exclusions`) yer alır. `sso_required` Faz 2 için saklanır, henüz uygulanmaz.
 
+### Periyodik yeniden doğrulama (ORG-13, K-97)
+
+ORG-06 domain kontrolünü bir kez kanıtlar; domain'ler el değiştirir. `OrgService::reverify_due_domains()` (sunucu işi `jobs::reverify_domains`, 5 dakikada bir, her instance'ta) her doğrulanmış domain'in TXT kaydını `org.domain_reverification.interval` (varsayılan 24 saat) başına bir kez yeniden kontrol eder:
+
+1. **Talep:** süresi gelen doğrulanmış domain'ler tek bir ifadede `FOR UPDATE SKIP LOCKED` ile seçilir ve `last_checked_at` şimdiye alınır; böylece aynı aralıkta başka bir instance onları kontrol etmez (en çok `batch_size` domain). Çalışma ortasında ölen bir instance yalnızca o domain'leri bir aralık geciktirir.
+2. **Sorgu** bağlantı tutulmadan, `dns_timeout` ile sınırlı, domain domain yapılır.
+3. **Kayıt** kısa bir transaction'da (organizasyon kilidi, otomatik katılımla aynı sıra), yalnızca domain hâlâ aynı doğrulanmış domain ise (aynı kimlik, aynı doğrulama değeri):
+   - `present` — değer yayımlanmış: iki sayaç da sıfırlanır;
+   - `absent` — **kesin yokluk**: NXDOMAIN, TXT verisi yok ya da değerlerden hiçbiri bizim değerimiz değil → `check_failures + 1`;
+   - `inconclusive` — çözücü hatası (SERVFAIL, refused, ağ hatası) ya da zaman aşımı: **yokluk sayılmaz** → `check_inconclusive + 1`. (`HickoryDnsTxtResolver` yalnızca NXDOMAIN / NOERROR-veri yok yanıtlarını boş liste döner; SERVFAIL hickory'de `NoRecordsFound` değil yanıt kodu hatasıdır ve `service_unavailable` olur.)
+
+`failure_threshold` (varsayılan 3) ardışık yoklukta — ya da `inconclusive_limit` (varsayılan 14) ardışık belirsiz kontrolde; DNS'i hiç yanıt vermeyen (ör. yeni sahibinin kayıt adını bilerek hata verdirdiği) bir domain otomatik katılımı süresiz tutamaz — domain `failed` olur: `verified_at`, `auto_join`, `sso_required` temizlenir (otomatik katılım hemen durur), `unverified_at` yazılır, yüksek öncelikli `org.domain_unverified` olayı (`Actor::System`, `reason`: `absent` / `inconclusive`, `consecutive_checks`) audit'lenir ve `domains:manage` iznine sahip her aktif üyeye (en çok 50) `org_domain_unverified` bildirimi (TR/EN) kuyruğa alınır; hepsi aynı transaction'da. Organizasyon domain'i normal ORG-06 akışıyla yeniden doğrular (sayaçlar ve `unverified_at` sıfırlanır; otomatik katılım yeniden açıkça açılır). API'de `OrgDomain` alanları: `consecutive_absent_checks`, `consecutive_inconclusive_checks`, `last_check_outcome`, `unverified_at`. Metrikler: `authn_org_domain_reverifications_total{outcome}`, `authn_org_domains_unverified_total{reason}` (`reason="inconclusive"` artışı çözücünün tüm domain'ler için bozulduğunu gösterebilir; alarm kurun).
+
 ## Politikalar (ORG-07)
 
 Alanlar: `mfa_required`, `phishing_resistant_mfa_required` (MFA'yı ima eder), `allowed_login_methods`, `allowed_mfa_factors`, `max_session_lifetime_seconds`, `ip_allowlist` (CIDR, en fazla 100), `trusted_devices_allowed`, `allowed_passkey_aaguids` (PKY-08). Değişiklik `policies:manage` + step-up ister, eski ve yeni değerlerle audit'e yazılır, çağıranı dışarıda bırakacak değişikliği reddeder (`org_policy_lockout`) ve sıkılaştırmada organizasyonun tüm oturumlarını kapatır.
@@ -114,6 +128,7 @@ Silme: sahip + step-up; `pending_deletion` + `deletion_scheduled_for`; bekleyen 
 | `ownership_transfer_ttl` | `7d` |
 | `ownership_transfers_per_org` | 10 / 1 saat |
 | `deletion_grace_period` | `30d` |
+| `domain_reverification.{enabled, interval, failure_threshold, inconclusive_limit, batch_size}` | `true`, `24h` (1h–30d), `3` (1–10), `14` (eşik–100), `100` (ORG-13) |
 | `limits.{custom_roles, domains, service_accounts, api_keys, pending_invitations}` | 50, 20, 100, 500, 1000 |
 | `api_keys.environment` | `live` |
 | `api_keys.max_lifetime` / `default_lifetime` | `365d` / `90d` |
@@ -142,11 +157,16 @@ Tablo: `src/routes.rs` modül belgesi. Tüm yollar `/v1/orgs/{org_id}/…` adlan
 
 - `org_auto_join_exclusions (org_id, user_id, reason ∈ {removed, left}, created_at)`: çıkarılan / ayrılan kullanıcıyı domain otomatik katılımından hariç tutar (ORG-02, ORG-06). Organizasyon veya kullanıcı silinince kaskadla temizlenir; davet kabulü kaydı siler.
 
+## Migration `1514_org_domain_reverification.sql`, `1515_org_domains_reverification_index.sql`
+
+- `org_domains`: `check_failures`, `check_inconclusive` (≥ 0), `last_check_outcome` (`present` / `absent` / `inconclusive`), `unverified_at` (expand-only, varsayılanlı; ORG-13).
+- `org_domains_reverification_due_idx (last_checked_at) WHERE status = 'verified'` (`CONCURRENTLY`, ayrı dosya, K-102 kalıbı).
+
 ## Server / Dalga B'nin bağlaması gerekenler
 
 1. `OrgService::new(OrgServiceDeps { pool, clock, audit, events, notifier, rate_limiter, session_revoker, dns: Arc::new(HickoryDnsTxtResolver::from_system_conf(config.org.dns_timeout)?) }, OrgServiceSettings::from_app_config(&config))`, `impl FromRef<AppState> for OrgService`, `.merge(authn_org::router::<AppState>())` (kimlik doğrulama katmanının arkasında), `openapi.rs`'e `authn_org::OrgApi`.
 2. `api_key_middleware`'i request-context'ten sonra, session kimlik doğrulama katmanıyla aynı yere (`from_fn_with_state(org_service, api_key_middleware)`), modül router'ları mutlak `/v1/...` yollarıyla birleştirildikten sonra (ara katman tam yolu görmeli); başka bir katman zaten `Principal` koyduysa ve anahtar da sunulmuşsa istek reddedilir. Anahtar yalnızca `/v1/orgs/{org_id}[/…]` yollarında `Principal` olur; API anahtarıyla istemci doğrulaması yapan diğer uç noktalar (SES-10) `authenticate_api_key`'i doğrudan çağırmalıdır.
-3. Arka plan işleri: `purge_due_deletions(limit)`, `expire_invitations()`.
+3. Arka plan işleri: `purge_due_deletions(limit)`, `expire_invitations()`; ayrı görevde (DNS çağrısı) `reverify_due_domains()` (ORG-13; bağlandı: `jobs::reverify_domains`).
 4. `authn_account::OrganizationOwnership` → `authn_org::sole_owner_organizations(conn, user)`.
 5. `authn_mfa::MfaPolicySource::org_policy_for_user` → `authn_org::policies_for_user(conn, user)` sonucunu `OrgMfaPolicy { mfa_required, phishing_resistant_required, allowed_factors, trusted_devices_allowed }`'e eşleyip `strictest` ile birleştirmek.
 6. `authn_audit::AuditAccessPolicy::check` → `org_service.authorize_from(principal, Permission::{AuditRead, WebhooksRead, WebhooksManage}, org, client_ip)`; `Ok` → `Allow`, `Err(not_found/forbidden/…)` → `Deny`.
@@ -178,7 +198,7 @@ Tablo: `src/routes.rs` modül belgesi. Tüm yollar `/v1/orgs/{org_id}/…` adlan
 - Organizasyon adı, davet ve devir e-postalarında görünür ve organizasyonu kuran kullanıcı tarafından seçilir (kontrol / bidi / görünmez karakterler reddedilir, ≤ 200 karakter). Organizasyon kurma kullanıcı başına, davetler organizasyon ve organizasyon + alıcı başına sınırlıdır; içerik (ör. marka taklidi) denetlenmez.
 - Domain otomatik katılımını açmak / kapatmak `domains:manage` ister, step-up istemez (audit'e `org.policy_changed` olarak yazılır).
 - `org_domain_claimed` hatası, TXT kaydını yayımlayabilen (domain'i kontrol eden) çağırana domain'in başka bir organizasyonda doğrulandığını söyler; domain'i kontrol etmeyen biri bunu öğrenemez.
-- Doğrulanmış domain'ler periyodik olarak yeniden doğrulanmaz (Faz 2); domain el değiştirirse eski doğrulama ve otomatik katılım sürer.
+- ~~Doğrulanmış domain'ler periyodik olarak yeniden doğrulanmaz~~ — **kapatıldı (wave 11, ORG-13, K-97):** bkz. "Periyodik yeniden doğrulama". Kalan: el değiştiren bir domain en çok `interval × failure_threshold` (varsayılan ~3 gün) otomatik katılımı sürdürür; DNS'i yanıt vermeyen bir domain en çok `interval × inconclusive_limit` (~14 gün). Bildirim varsayılan dilde gider (alıcının profil dili okunmaz: profil tablosu authn-account'a aittir). Bekleyen (`pending`) ve `failed` domain'ler yeniden kontrol edilmez (sahibi elle doğrular).
 - ~~Üye listesi satır başına okuma~~ — **kapatıldı (wave 2B, K-41):** üye listesi sayfanın adreslerini tek sorguyla `UserRepository::find_many` ile okur.
 - ~~Rol değişikliğinde `MembershipRemoved`~~ — **kapatıldı (wave 2B, K-41):** rol düşürme, özel rolden izin çıkarma ve devirde eski sahibin düşürülmesi oturumları `RevocationReason::MembershipChanged` (`membership_changed`) ile kapatır; üyelik askıya alma / çıkarma / ayrılma `MembershipRemoved` kalır (testler `changed_in_org` / `revoked_in_org` ile ayırır).
 - IP izin listesi değişikliği (genişletme dahil) sıkılaştırma sayılır ve oturumları kapatır (bilinçli olarak temkinli).

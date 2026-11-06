@@ -16,6 +16,7 @@ members = [
     "crates/authn-session",
     "crates/authn-oidc-client",
     "crates/authn-admin",
+    "crates/authn-oidc-provider",
     "crates/authn-server",
 ]
 # The fuzz package is a separate cargo-fuzz workspace (nightly only).
@@ -48,6 +49,7 @@ authn-notify = { path = "crates/authn-notify", default-features = false }
 authn-session = { path = "crates/authn-session", default-features = false }
 authn-oidc-client = { path = "crates/authn-oidc-client" }
 authn-admin = { path = "crates/authn-admin", default-features = false }
+authn-oidc-provider = { path = "crates/authn-oidc-provider" }
 
 # --- runtime, HTTP ---------------------------------------------------------
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "signal", "time", "sync", "net"] }
@@ -88,6 +90,14 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json", "fmt", "registry", "ansi", "std"] }
 metrics = "0.24.6"
 metrics-exporter-prometheus = { version = "0.18.3", default-features = false, features = ["http-listener"] }
+# K-92 OpenTelemetry (authn-server feature `otel`, default off). OTLP over
+# HTTP/protobuf only: no gRPC (tonic/h2 server side), no reqwest 0.12 (the
+# exporter sends through our own reqwest 0.13 client), no internal logs.
+opentelemetry = { version = "0.33.1", default-features = false, features = ["trace"] }
+opentelemetry_sdk = { version = "0.33.1", default-features = false, features = ["trace"] }
+opentelemetry-otlp = { version = "0.33.1", default-features = false, features = ["http-proto", "trace"] }
+opentelemetry-http = { version = "0.33.1", default-features = false }
+tracing-opentelemetry = { version = "0.34.0", default-features = false }
 
 # --- API docs, config, CLI -------------------------------------------------
 utoipa = { version = "6.0.0", features = ["macros", "uuid", "time", "url"] }
@@ -131,6 +141,9 @@ oauth2 = { version = "5.0.0", default-features = false, features = ["timing-resi
 lettre = { version = "0.11.23", default-features = false, features = ["builder", "smtp-transport", "pool", "hostname", "tokio1", "tokio1-rustls", "ring", "rustls-platform-verifier"] }
 minijinja = { version = "3.0.5", features = ["serde", "json"] }
 hickory-resolver = { version = "0.26.3", default-features = false, features = ["system-config", "tokio"] }
+# K-98 GeoIP: MaxMind DB reader (ISC). No mmap (that feature needs unsafe
+# memmap2); the operator-provided file is read into memory.
+maxminddb = { version = "0.32.0", default-features = false }
 
 # --- text, identity, misc --------------------------------------------------
 zxcvbn = "3.1.1"

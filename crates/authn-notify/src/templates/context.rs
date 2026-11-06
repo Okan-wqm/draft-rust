@@ -88,7 +88,8 @@ pub fn deliver_before(kind: &NotificationKind) -> Option<OffsetDateTime> {
         | NotificationKind::IdentityLinked { .. }
         | NotificationKind::IdentityUnlinked { .. }
         | NotificationKind::PasskeyCloneSuspected { .. }
-        | NotificationKind::EmailChangeReverted { .. } => None,
+        | NotificationKind::EmailChangeReverted { .. }
+        | NotificationKind::OrgDomainUnverified { .. } => None,
     }
 }
 
@@ -287,6 +288,18 @@ pub(crate) fn email_values(
             v.insert("at", at(when));
             v.insert("ends_at", at(expires_at));
         }
+        NotificationKind::OrgDomainUnverified {
+            org_name,
+            domain,
+            at: when,
+        } => {
+            v.insert(
+                "org_name",
+                Value::from(sanitize::user_text(org_name, MAX_ORG_NAME_CHARS)),
+            );
+            v.insert("domain", detail(domain));
+            v.insert("at", at(when));
+        }
     }
     v.insert(
         "link",
@@ -377,7 +390,8 @@ pub(crate) fn secret_parts(kind: &NotificationKind) -> SecretParts {
         | NotificationKind::IdentityLinked { .. }
         | NotificationKind::IdentityUnlinked { .. }
         | NotificationKind::PasskeyCloneSuspected { .. }
-        | NotificationKind::EmailChangeReverted { .. } => {}
+        | NotificationKind::EmailChangeReverted { .. }
+        | NotificationKind::OrgDomainUnverified { .. } => {}
     }
     SecretParts { tokens, codes }
 }
@@ -493,6 +507,11 @@ pub(crate) fn samples(locale: Locale, now: OffsetDateTime) -> Vec<Notification> 
         },
         NotificationKind::PasskeyCloneSuspected { at: now },
         NotificationKind::EmailChangeReverted { at: now },
+        NotificationKind::OrgDomainUnverified {
+            org_name: "Example Org".to_owned(),
+            domain: "example.com".to_owned(),
+            at: now,
+        },
     ];
     let email = EmailAddress::parse("ada@example.com").ok();
     kinds

@@ -57,7 +57,6 @@
 //!   four-eyes operation while that admin exists, and creating or
 //!   demoting admins is CLI-only.
 
-use authn_core::domain::AccountStatus;
 use authn_core::error::{AuthError, codes};
 use authn_core::http::RequestContext;
 use authn_core::id::UserId;
@@ -75,6 +74,7 @@ use super::limits::Limit;
 use super::{AdminService, TargetPolicy, check_target, meta};
 use crate::guard::AdminCaller;
 use crate::reason::Justification;
+use crate::roles::{AdminPermission, StaffRole};
 use crate::store;
 
 /// A critical operation with its exact parameters (K-66).
@@ -100,6 +100,13 @@ pub enum CriticalOperation {
     UnlockAdmin(UserId),
     /// ADM-03 revoke the sessions of another platform admin.
     RevokeAdminSessions(UserId),
+    /// K-93 change the role of another staff member.
+    ChangeStaffRole {
+        /// The staff member.
+        target: UserId,
+        /// The new role.
+        role: StaffRole,
+    },
 }
 
 impl CriticalOperation {
@@ -113,7 +120,15 @@ impl CriticalOperation {
             Self::SuspendAdmin(_) => "suspend_user",
             Self::UnlockAdmin(_) => "unlock_user",
             Self::RevokeAdminSessions(_) => "revoke_user_sessions",
+            Self::ChangeStaffRole { .. } => "change_staff_role",
         }
+    }
+
+    /// The permissions the operation needs (K-93): the requester holds
+    /// them to request and to run it, the approver to approve it.
+    #[must_use]
+    pub fn permissions(&self) -> &'static [AdminPermission] {
+        permissions_of_action(self.action()).unwrap_or(&[])
     }
 
     /// The account the operation targets, if any.
@@ -121,6 +136,7 @@ impl CriticalOperation {
     pub fn target(&self) -> Option<UserId> {
         match self {
             Self::SuspendAdmin(u) | Self::UnlockAdmin(u) | Self::RevokeAdminSessions(u) => Some(*u),
+            Self::ChangeStaffRole { target, .. } => Some(*target),
             _ => None,
         }
     }
@@ -141,6 +157,7 @@ impl CriticalOperation {
                 ),
                 ("revoke_sessions", Value::from(*revoke_sessions)),
             ]),
+            Self::ChangeStaffRole { role, .. } => meta([("role", Value::from(role.as_str()))]),
             Self::RotateSigningKey
             | Self::SuspendAdmin(_)
             | Self::UnlockAdmin(_)
@@ -167,6 +184,7 @@ impl CriticalOperation {
                 "changed_before={};revoke_sessions={revoke_sessions}",
                 changed_before.unix_timestamp_nanos()
             ),
+            Self::ChangeStaffRole { role, .. } => format!("role={}", role.as_str()),
             Self::RotateSigningKey
             | Self::SuspendAdmin(_)
             | Self::UnlockAdmin(_)
@@ -180,6 +198,33 @@ impl CriticalOperation {
             .as_bytes(),
         )
     }
+}
+
+/// The permissions of a critical operation by its stored action code
+/// (K-93); `None` for an unknown code (the decision is then refused).
+#[must_use]
+pub(crate) fn permissions_of_action(action: &str) -> Option<&'static [AdminPermission]> {
+    use AdminPermission as P;
+    Some(match action {
+        "revoke_all_sessions" | "rotate_signing_key" | "force_password_change_before" => {
+            &[P::EmergencyExecute]
+        }
+        "suspend_user" => &[P::UsersSuspend, P::StaffContain],
+        "unlock_user" => &[P::UsersUnlock, P::StaffContain],
+        "revoke_user_sessions" => &[P::UsersRevokeSessions, P::StaffContain],
+        "change_staff_role" => &[P::StaffManage],
+        _ => return None,
+    })
+}
+
+/// The roles that may approve an operation needing `permissions`: four-eyes
+/// authority (`approvals:decide`, i.e. `security` and `platform_admin`)
+/// **and** the operation's own permissions (a `security` member cannot
+/// approve a staff role change).
+pub(crate) fn approver_roles(permissions: &[AdminPermission]) -> Vec<StaffRole> {
+    let mut needed = permissions.to_vec();
+    needed.push(AdminPermission::ApprovalsDecide);
+    StaffRole::holding(&needed)
 }
 
 fn utc(at: OffsetDateTime) -> OffsetDateTime {
@@ -257,6 +302,14 @@ impl AdminService {
         operation: CriticalOperation,
         reason: &Justification,
     ) -> Result<ApprovalView, AuthError> {
+        // K-93: only a role that may run the operation may ask for it.
+        for permission in
+            std::iter::once(&AdminPermission::ApprovalsRequest).chain(operation.permissions())
+        {
+            if !caller.has(*permission) {
+                return Err(self.permission_denied(caller, ctx, *permission).await);
+            }
+        }
         if let Some(target) = operation.target() {
             let record = UserRepository::find_by_id(self.pool(), target)
                 .await?
@@ -266,6 +319,12 @@ impl AdminService {
                 _ => TargetPolicy::NotBreakGlass,
             };
             check_target(caller, &record, policy)?;
+            if matches!(operation, CriticalOperation::ChangeStaffRole { .. })
+                && !record.is_platform_admin
+            {
+                return Err(AuthError::new(codes::admin::TARGET_NOT_ALLOWED)
+                    .with_context("roles are changed on staff accounts only"));
+            }
         }
         let now = self.now();
         let expires_at = now + self.settings().four_eyes_approval_ttl;
@@ -362,11 +421,29 @@ impl AdminService {
         approve: bool,
         reason: &Justification,
     ) -> Result<ApprovalView, AuthError> {
+        caller.require(AdminPermission::ApprovalsDecide)?;
         let now = self.now();
         let mut tx = self.begin().await?;
         let row = store::lock_approval(&mut tx, id)
             .await?
             .ok_or_else(|| AuthError::new(codes::common::NOT_FOUND))?;
+        // K-93: four-eyes authority and the operation's own permissions.
+        let missing = match permissions_of_action(&row.action) {
+            Some(needed) => needed.iter().copied().find(|p| !caller.has(*p)),
+            None => Some(AdminPermission::StaffManage),
+        };
+        if let Some(permission) = missing {
+            tx.rollback().await?;
+            self.audit_four_eyes_refusal(
+                caller,
+                ctx,
+                "approval_decided",
+                "four_eyes_role",
+                Some(id),
+            )
+            .await;
+            return Err(permission.denied());
+        }
         let refusal = if row.requested_by == caller.user_id() {
             Some((
                 "four_eyes_self_approval",
@@ -428,8 +505,9 @@ impl AdminService {
     /// Recent approval requests (pending first, newest first; K-66).
     pub async fn list_approvals(
         &self,
-        _caller: &AdminCaller,
+        caller: &AdminCaller,
     ) -> Result<Vec<ApprovalView>, AuthError> {
+        caller.require(AdminPermission::ApprovalsRead)?;
         let now = self.now();
         let rows = store::recent_approvals(self.pool(), now - time::Duration::days(7), 100).await?;
         Ok(rows.into_iter().map(|r| r.into_view(now)).collect())
@@ -473,10 +551,18 @@ impl AdminService {
                 },
             )
             .await?;
+            // The approver must still be active staff with four-eyes
+            // authority for this operation (K-66, K-93: a demoted or
+            // re-roled approver's approvals die with its authority).
             let approver_ok = match approver {
-                Some(approver) => UserRepository::find_by_id(&mut *conn, approver)
+                Some(approver) => {
+                    store::is_active_staff_with_role(
+                        &mut *conn,
+                        approver,
+                        &approver_roles(operation.permissions()),
+                    )
                     .await?
-                    .is_some_and(|u| u.is_platform_admin && u.status == AccountStatus::Active),
+                }
                 None => false,
             };
             if !approver_ok {
@@ -489,7 +575,10 @@ impl AdminService {
         }
         let exception = if caller.is_break_glass() {
             Some("break_glass")
-        } else if !self.second_admin_exists(&mut *conn, caller).await? {
+        } else if !self
+            .second_admin_exists(&mut *conn, caller, operation)
+            .await?
+        {
             Some("no_second_admin")
         } else {
             None
@@ -556,7 +645,9 @@ impl AdminService {
             }
             None => {
                 let mut conn = self.pool().acquire().await?;
-                let second = self.second_admin_exists(&mut conn, caller).await?;
+                let second = self
+                    .second_admin_exists(&mut conn, caller, operation)
+                    .await?;
                 second.then_some(FourEyesRefusal::Required)
             }
         };
@@ -569,8 +660,9 @@ impl AdminService {
     }
 
     /// [`Self::four_eyes_precheck`] for an ADM-03 action on `target`: only
-    /// relevant when the target is (currently) another platform admin; the
-    /// locked row decides again inside the transaction.
+    /// relevant when the target is (currently) another staff member; the
+    /// locked row decides again inside the transaction. Acting on another
+    /// staff member needs `staff:contain` (K-93) before anything else.
     pub(crate) async fn four_eyes_precheck_target(
         &self,
         caller: &AdminCaller,
@@ -585,6 +677,11 @@ impl AdminService {
             .await?
             .is_some_and(|u| u.is_platform_admin && u.id != caller.user_id());
         if is_admin {
+            if !caller.has(AdminPermission::StaffContain) {
+                return Err(self
+                    .permission_denied(caller, ctx, AdminPermission::StaffContain)
+                    .await);
+            }
             self.four_eyes_precheck(caller, ctx, operation, approval)
                 .await?;
         }
@@ -666,12 +763,30 @@ impl AdminService {
     /// for the break-glass account (never blocked) or the CLI. One exact
     /// `EXISTS` over every admin (no page of the newest few that
     /// break-glass accounts could fill).
+    ///
+    /// K-93: "admin" means a staff member with four-eyes authority
+    /// (`approvals:decide`: `security`, `platform_admin`); a `support`
+    /// colleague does not make an approval possible. Deliberately **not**
+    /// narrowed to the roles that could approve this very operation: with
+    /// one `platform_admin` and a `security` member, a staff role change
+    /// (which only another `platform_admin` may approve) is impossible
+    /// through the API rather than allowed alone — otherwise a lone
+    /// compromised `platform_admin` could demote every `security` member
+    /// and then run every critical operation under this exception. That
+    /// case is for the CLI (`grant-admin --role`) or the break-glass
+    /// account.
     async fn second_admin_exists(
         &self,
         conn: &mut PgConnection,
         caller: &AdminCaller,
+        _operation: &CriticalOperation,
     ) -> Result<bool, AuthError> {
-        Ok(store::other_active_admin_exists(conn, caller.user_id()).await?)
+        Ok(store::other_active_approver_exists(
+            conn,
+            caller.user_id(),
+            &StaffRole::holding(&[AdminPermission::ApprovalsDecide]),
+        )
+        .await?)
     }
 
     /// [`Self::four_eyes_in_tx`] in a transaction of its own, for an

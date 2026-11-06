@@ -37,6 +37,7 @@ use authn_webauthn::PasskeyRemovalReason;
 use sqlx::PgConnection;
 
 use crate::reason::Justification;
+use crate::roles::StaffRole;
 use crate::service::{ActionOutcome, AdminService};
 use crate::store;
 
@@ -306,10 +307,21 @@ impl AdminService {
         Ok(offline_outcome(ACTION, user, revoked > 0, revoked, event))
     }
 
-    /// `grant-admin` (K-76): makes an existing, `active` account a
-    /// (regular, not break-glass) platform admin. Offline only: the API
-    /// never grants admin rights, so a compromised console session — even
-    /// with a second admin's approval — cannot mint new admins.
+    /// `grant-admin --role <role>` (K-76, K-93): makes an existing,
+    /// `active` account a (regular, not break-glass) staff member with
+    /// `role`, or changes the role of an existing staff member. Offline
+    /// only for regular accounts: the API never grants staff rights, so a
+    /// compromised console session — even with a second admin's approval —
+    /// cannot mint new staff (the API changes roles of existing staff only,
+    /// with four-eyes).
+    ///
+    /// Role change of existing staff: a break-glass account stays
+    /// `platform_admin` (`admin_target_not_allowed`), the same role is
+    /// `conflict`, and the last active `platform_admin` (break-glass
+    /// included) is never demoted (`admin_target_not_allowed`, "last
+    /// platform admin"). Audited as `offline_change_staff_role` with both
+    /// roles. Suspended staff can be re-roled (the role applies when the
+    /// account is unsuspended).
     ///
     /// Every session and trusted device of the account ends in the same
     /// transaction: a session (or a stolen cookie) established before the
@@ -324,25 +336,52 @@ impl AdminService {
         &self,
         operator: &OfflineOperator,
         target: &OfflineTarget,
+        role: StaffRole,
         reason: &Justification,
     ) -> Result<ActionOutcome, AuthError> {
         const ACTION: &str = "offline_grant_admin";
+        const CHANGE: &str = "offline_change_staff_role";
         let user = self.resolve_offline_target(target).await?;
         let ctx = RequestContext::system(Locale::default());
+        let now = self.now();
         let mut tx = self.begin().await?;
         store::lock_admin_rights(&mut tx).await?;
         let record = UserRepository::lock_for_update(&mut tx, user)
             .await?
             .ok_or_else(|| AuthError::new(codes::common::NOT_FOUND))?;
-        if record.is_platform_admin {
-            return Err(AuthError::new(codes::common::CONFLICT)
-                .with_context("the account already is a platform admin"));
-        }
-        if record.status != AccountStatus::Active {
-            return Err(AuthError::new(codes::admin::TARGET_NOT_ALLOWED)
-                .with_context("admin rights are granted to active accounts only"));
-        }
-        UserRepository::set_admin_flags(&mut tx, user, true, false).await?;
+        let previous = if record.is_platform_admin {
+            store::staff_role(&mut *tx, user).await?
+        } else {
+            None
+        };
+        let action = if record.is_platform_admin {
+            if previous == Some(role) {
+                return Err(AuthError::new(codes::common::CONFLICT)
+                    .with_context("the account already is staff with this role"));
+            }
+            if record.is_break_glass && role != StaffRole::PlatformAdmin {
+                return Err(AuthError::new(codes::admin::TARGET_NOT_ALLOWED)
+                    .with_context("a break-glass account is always platform_admin"));
+            }
+            if previous == Some(StaffRole::PlatformAdmin)
+                && !store::other_active_platform_admin_role_exists(&mut tx, user).await?
+            {
+                return Err(
+                    AuthError::new(codes::admin::TARGET_NOT_ALLOWED).with_context(
+                        "last platform admin: no other active platform_admin would remain",
+                    ),
+                );
+            }
+            CHANGE
+        } else {
+            if record.status != AccountStatus::Active {
+                return Err(AuthError::new(codes::admin::TARGET_NOT_ALLOWED)
+                    .with_context("admin rights are granted to active accounts only"));
+            }
+            UserRepository::set_admin_flags(&mut tx, user, true, false).await?;
+            ACTION
+        };
+        store::set_staff_role(&mut tx, user, role, now).await?;
         let revoked = self
             .deps()
             .sessions
@@ -353,14 +392,21 @@ impl AdminService {
                 &mut tx,
                 &ctx,
                 operator,
-                ACTION,
+                action,
                 &record,
                 reason,
-                super_meta(&[("sessions_revoked", revoked.into())]),
+                super_meta(&[
+                    ("sessions_revoked", revoked.into()),
+                    ("role", role.as_str().into()),
+                    (
+                        "previous_role",
+                        previous.map_or(serde_json::Value::Null, |r| r.as_str().into()),
+                    ),
+                ]),
             )
             .await?;
         authn_store::commit(tx).await?;
-        Ok(offline_outcome(ACTION, user, true, revoked, event))
+        Ok(offline_outcome(action, user, true, revoked, event))
     }
 
     /// `revoke-admin` (K-76): takes the platform-admin rights (and the
@@ -395,6 +441,15 @@ impl AdminService {
             return Err(AuthError::new(codes::admin::TARGET_NOT_ALLOWED)
                 .with_context("last admin: no other active platform admin would remain"));
         }
+        // K-93: nor the last account able to manage staff roles.
+        let previous = store::staff_role(&mut *tx, user).await?;
+        if previous == Some(StaffRole::PlatformAdmin)
+            && !store::other_active_platform_admin_role_exists(&mut tx, user).await?
+        {
+            return Err(AuthError::new(codes::admin::TARGET_NOT_ALLOWED)
+                .with_context("last platform admin: no other active platform_admin would remain"));
+        }
+        store::delete_staff_role(&mut tx, user).await?;
         UserRepository::set_admin_flags(&mut tx, user, false, false).await?;
         let links = store::expire_enrollments_of(&mut tx, user, now).await?;
         let revoked = self
@@ -414,6 +469,10 @@ impl AdminService {
                     ("sessions_revoked", revoked.into()),
                     ("links_expired", links.into()),
                     ("status", record.status.as_str().into()),
+                    (
+                        "previous_role",
+                        previous.map_or(serde_json::Value::Null, |r| r.as_str().into()),
+                    ),
                 ]),
             )
             .await?;

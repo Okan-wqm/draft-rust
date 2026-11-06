@@ -1,0 +1,13 @@
+{% extends "en/email/layout.html" %}
+{% block content %}
+<p style="margin:0 0 16px;">The domain {{ domain }} of the organization “{{ org_name }}” on {{ app_name }} is no longer verified: its verification TXT record was not found in DNS at several consecutive checks. Automatic joining by e-mail domain stopped for it.</p>
+{% endblock %}
+{% block details %}
+<table role="presentation" cellspacing="0" cellpadding="0" style="margin:0 0 16px;font-size:14px;">
+<tr><td style="padding:2px 12px 2px 0;color:#52606d;vertical-align:top;">Domain</td><td style="padding:2px 0;">{{ domain }}</td></tr>
+<tr><td style="padding:2px 12px 2px 0;color:#52606d;vertical-align:top;">Time</td><td style="padding:2px 0;">{{ at }}</td></tr>
+</table>
+{% endblock %}
+{% block closing %}
+<p style="margin:0 0 16px;">If the organization still owns the domain, publish the TXT record shown in the organization settings again and verify the domain. If it does not, remove the domain.</p>
+{% endblock %}

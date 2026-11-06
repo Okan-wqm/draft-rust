@@ -209,6 +209,23 @@ Gösterim: **S** kimlik sahteciliği, **T** kurcalama, **R** inkâr, **I** bilgi
 | E | İptal edilmiş oturumla kimlik bağlamak | P6 | Callback'te başlatan oturum yeniden doğrulanır (K-03) | `soc_06_link_callback_rejects_revoked_session` | — |
 | D | Sağlayıcı JWKS kesintisi | P10 | Üstel geri çekilme, azami bayatlık sonrası kapalı başarısızlık | `soc_03_jwks_outage_backs_off_exponentially`, `soc_03_k61_stale_keys_expire_after_the_max_staleness` | 24 saatten uzun kesintide o sağlayıcıyla giriş durur |
 
+### 5.7a OAuth 2.1 / OIDC sağlayıcısı (`authn-oidc-provider`, K-80)
+
+Yeni güven sınırı: kayıtlı **istemci uygulamalar** (RP) ve onların tarayıcı yönlendirmeleri. Sağlayıcı varsayılan kapalıdır (`oidc_provider.enabled`).
+
+| | Tehdit | Saldırgan | Azaltım (kod) | Test | Kalan |
+|-|--------|-----------|---------------|------|-------|
+| S | Açık yönlendirme / kod hırsızlığı için sahte `redirect_uri` (alt yol, büyük/küçük harf, port, sorgu varyantı) | P1 | Kanonik kayıt, birebir eşleşme, yalnızca loopback portu serbest; doğrulanamayan istek yönlendirilmez (`redirect.rs`, `request.rs`) | `oidp_02_exact_match_rejects_variants`, `oidp_02_unregistered_redirects_are_never_followed`, `oidp_02_loopback_ignores_only_the_port` | — |
+| S | Kod enjeksiyonu / çalınan kodun kullanımı | P1 | PKCE `S256` zorunlu (`plain` yok); kod istemciye, `redirect_uri`'ye, doğrulayıcıya bağlı; yanlış doğrulayıcı kodu yakar | `oidp_03_missing_and_plain_pkce_are_redirected_errors`, `oidp_06_code_is_bound_to_client_redirect_verifier_and_lifetime` | — |
+| S | Mix-up saldırısı (RP birden çok sağlayıcıyla) | P1 | Her yetkilendirme yanıtında RFC 9207 `iss` (hata yönlendirmeleri dahil), keşifte ilan | `oidp_06_web_client_code_flow_with_pkce_and_independent_id_token_check`, `oidp_03_missing_and_plain_pkce_are_redirected_errors` | RP'nin `iss`'i doğrulaması gerekir (rehber) |
+| T | Kod / refresh token tekrarı | P1, P2 | Tek kullanımlık kod, tekrarında grant ve tüm token'ları iptal; refresh rotasyonu, tekrarında grant iptali (`service/token.rs`) | `oidp_06_code_replay_revokes_every_token_of_the_grant`, `oidp_07_refresh_rotation_and_replay_detection` | Yerelde JWT doğrulayan kaynak sunucusu iptali `access_token_ttl` (5 dk) sonra görür |
+| E | Token türü karışıklığı (sağlayıcı token'ı native API'de veya tersi) | P1, P2 | Sağlayıcı access token'ında `sid` yok, `aud` native kitleleri asla içermez (kayıt ve imzada denetim); sağlayıcı yalnızca `jti` kaydı olan token'ı kabul eder; protokol uçları native ara katmanın dışında | `oidp_08_provider_and_native_tokens_are_never_interchangeable`, `oidp_08_foreign_shaped_tokens_are_rejected_by_userinfo` | — |
+| E | Onay atlatma / consent phishing (saldırganın başlattığı isteği kurbana onaylatmak) | P1 | Etkileşim tarayıcıya bağlı (`__Host-` çerezi hash'i), tek kullanımlık, 10 dk; onay oturum + CSRF arkasında; impersonation oturumu yetkilendiremez | `oidp_04_interaction_without_session_then_login_then_accept`, `oidp_04_deny_and_impersonation` | Onay ekranının çerçeve koruması işletmecinin önyüzünde (rehber) |
+| E | Oturum bitince RP erişiminin sürmesi (şifre sıfırlama, her yerden çıkış, askı, silme) | P2 | Grant oturuma bağlı, her kullanımda canlılık denetimi (`SessionLiveness`); silmede kaskad | `oidp_12_sign_out_everywhere_ends_provider_grants`, `oidp_12_password_reset_and_suspension_end_provider_grants`, `oidp_12_account_deletion_removes_grants` | — |
+| E | Yetkisiz personelin istemci kaydetmesi / sır çalması | P6 | `oauth_clients:read` / `:manage` rolleri (K-93) + ADM-01 guard; sır yalnızca SHA-256, bir kez gösterilir, audit'te yok | `oidp_01_client_registry_follows_staff_roles`, `oidp_01_client_registry_is_staff_only_and_validated` | — |
+| I | Başka istemcinin token'ını introspection ile okumak | P1 | Introspection yalnızca gizli istemci; token yalnızca kendi istemcisine / `aud`'undakine aktif | `oidp_11_revocation_and_introspection` | — |
+| D | Yetkilendirme / token uçlarının sele boğulması | P10 | IP ve istemci başına rate limit, ayrıştırıcı boyut sınırları (fuzz hedefi `oidc_authorize_request`) | `oidp_12_rate_limits_apply_to_authorize_and_token` | — |
+
 ### 5.8 Organizasyonlar ve yetkilendirme (`authn-org`)
 
 | | Tehdit | Saldırgan | Azaltım (kod) | Test | Kalan |

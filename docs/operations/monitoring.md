@@ -5,7 +5,8 @@
 | Kaynak | Nerede | Not |
 |--------|--------|-----|
 | **Prometheus metrikleri** | `server.metrics_bind_addr` (varsayılan `127.0.0.1:9090`; Docker imajında `0.0.0.0:9090`; `"off"` kapatır, K-109), ayrı ve kimlik doğrulamasız dinleyici (`metrics-exporter-prometheus`) | Yalnızca iç ağdan kazıyın, internete asla açmayın; konteynerde bkz. [deployment.md §5](deployment.md#5-ağ-ve-vekil) |
-| **Yapılandırılmış loglar** | stdout, JSON satırları (`server.log_format = "json"`, varsayılan) | Her HTTP isteği `request_id` (UUIDv7, yanıttaki `x-request-id` ile aynı), `method`, `path` (sorgu dizesi **yok** — OAuth kodları loglanmaz) taşıyan bir span içinde loglanır. Filtre `server.log_filter` / `RUST_LOG`. Sırlar loglanmaz; e-posta/IP maskelenir |
+| **Yapılandırılmış loglar** | stdout, JSON satırları (`server.log_format = "json"`, varsayılan) | Her HTTP isteği `request_id` (UUIDv7, yanıttaki `x-request-id` ile aynı), `http.request.method`, `http.route` (eşleşen rota **şablonu**, ör. `/v1/orgs/{org_id}/members`; eşleşmeyenler `unmatched` — ham yol ve sorgu dizesi **yok**: OAuth kodları ve yola yazılmış kişisel veri loglanmaz), `http.response.status_code` ve OpenTelemetry açıkken `trace_id` taşıyan `http` span'i içinde loglanır (K-92 öncesi alan adları `method`/`path` idi). Filtre `server.log_filter` / `RUST_LOG`. Sırlar loglanmaz; e-posta/IP maskelenir |
+| **Dağıtık izleme (opsiyonel)** | OTLP/HTTP toplayıcı (`[telemetry]`, cargo özelliği `otel`; varsayılan kapalı) | §5; span'lerde kişisel veri/sır yok (OPS-12) |
 | **Sağlık** | `GET /health/live`, `GET /health/ready` | [deployment.md §4](deployment.md#4-sağlık-uçları) |
 | **Audit log** | PostgreSQL `audit_events`; admin API `GET /v1/admin/audit-events` | Güvenlik olaylarının kalıcı kaydı; SIEM'e aktarım için `POST /v1/admin/audit-events/export` |
 
@@ -59,8 +60,10 @@ Histogram ve `authn_outbox_queue_depth` (gauge) dışındakiler sayaçtır (`_to
 | `authn_org_created_total`, `authn_api_keys_created_total` | — | Organizasyon / API anahtarı oluşturma |
 | `authn_api_key_auth_total` | `result` | API anahtarıyla kimlik doğrulama |
 | `authn_org_domain_checks_total` | `result` | DNS TXT kontrolleri |
+| `authn_org_domain_reverifications_total` | `outcome` (`present`, `absent`, `inconclusive`) | Periyodik domain yeniden doğrulama kontrolleri (ORG-13). `inconclusive` oranı yükselirse çözücüyü kontrol edin |
+| `authn_org_domains_unverified_total` | `reason` (`absent`, `inconclusive`) | Doğrulaması kalkan domain'ler (ORG-13); `reason="inconclusive"` artışına alarm kurun (çözücü arızası tüm domain'leri düşürebilir) |
 | `authn_admin_actions_total` | `action` | Admin işlemleri |
-| `authn_admin_denied_total` | `reason` | Reddedilen admin istekleri |
+| `authn_admin_denied_total` | `reason` | Reddedilen admin istekleri (`permission_denied`: personel rolü izni taşımıyor, K-93; tekrarlayan artış yetki yükseltme denemesi olabilir) |
 | `authn_admin_throttled_total` | `limit` | Admin limitlerine takılma |
 | `authn_admin_break_glass_used_total` | — | Break-glass kullanımı |
 | `authn_admin_four_eyes_bypassed_total` | `exception` | Dört göz istisnası (tek admin / break-glass) |
@@ -103,3 +106,24 @@ Diğer `reason`/`outcome` değerlerini ilk haftalarda gözlemleyip eşikleri kes
 ## 4. Log uyarıları
 
 `level = ERROR` veya `WARN` satırları arasında izlenmeye değer olanlar: `signing key rotation failed`, `audit maintenance failed`, `audit chain checkpoint failed`, `database schema is ahead of this binary` (WARN, kademeli dağıtım sırasında beklenir; sürerse eski örnek değiştirilmemiş demektir), `provider token revocation run failed`, `password reset backlog full`, `HTTP rate limiter unavailable; failing open`, `database.maintenance_url is not set` (açılışta), `no active JWT signing key`, `grace period elapsed; aborting in-flight requests`.
+
+## 5. OpenTelemetry izleme (OPS-11, K-92)
+
+Varsayılan **kapalı**. Açmak için binary'yi `otel` özelliğiyle derleyin (`cargo build --release -p authn-server --features otel`; Dockerfile'da `--features` ekleyin) ve `[telemetry]`'yi ayarlayın ([configuration.md §16](configuration.md#16-telemetry--configtelemetryrs-sahip-authn-server)):
+
+```toml
+[telemetry]
+enabled = true
+endpoint = "http://127.0.0.1:4318/v1/traces"   # OTLP/HTTP; yan konteynerdeki OpenTelemetry Collector
+sampling_ratio = 0.1
+```
+
+Toplayıcı bir API anahtarı istiyorsa onu yapılandırma dosyasına değil ortam değişkenine koyun: `OTEL_EXPORTER_OTLP_TRACES_HEADERS="x-api-key=..."` (standart OTLP değişkeni; `OTEL_EXPORTER_OTLP_HEADERS` da okunur). Ağ üzerinden giden izler için `https` kullanın ya da toplayıcıyı aynı pod/ana makinede çalıştırın.
+
+**Ne dışa aktarılır.** Her HTTP isteği için tek bir `SERVER` span'i: ad `"POST /v1/login/password"` biçiminde (yöntem + rota şablonu), öznitelikler `request_id`, `http.request.method`, `http.route`, `http.response.status_code`, `trace_id`; 5xx'te durum `error`. Kaynak özniteliği `service.name` (`telemetry.service_name`). Log satırları span'e **aktarılmaz**; log ve iz `request_id` / `trace_id` ile birleştirilir.
+
+**Ne asla dışa aktarılmaz (OPS-12).** E-posta, şifre, token, cookie/CSRF değeri, kullanıcı kimliği, ham yol, sorgu dizesi, istek/yanıt gövdesi, başlıklar ve **istemci IP'si** (kısaltılmış biçimi dahil). IP kararı: iz arka uçları çoğunlukla logdan daha geniş erişimli ve üçüncü taraf hizmetlerdir; IP'ye ihtiyaç duyulursa `request_id` ile maskeli IP içeren log satırına gidilir. Bunu `crates/authn-server/tests/telemetry.rs` kayıt, giriş, refresh ve şifre sıfırlama akışlarıyla zorlar (öznitelik anahtarları bir izin listesiyle sınırlı; yeni bir öznitelik bilinçli olarak eklenmeli).
+
+**W3C Trace Context.** `traceparent` sürdürülür (`propagate_incoming`); çağıranın `tracestate`'i atılır. Çağıranın "sampled" bayrağı varsayılan olarak yok sayılır (`respect_remote_sampling = false`) — aksi hâlde internetteki herhangi bir istemci her isteğini dışa aktarıcıya sokabilir. Uzak üst span'li izler bu durumda bağımsız bir CSPRNG çekilişiyle `sampling_ratio` oranında örneklenir (çağıran trace kimliğini de seçtiği için trace kimliğine dayalı örnekleme kandırılabilirdi). `respect_remote_sampling = true` yalnızca `traceparent`'i kendisi üreten/temizleyen güvenilir bir ağ geçidinin arkasında açılmalıdır.
+
+**Toplayıcı kesintisi.** Dışa aktarma ayrı bir iş parçacığında, sınırlı kuyrukla (`max_queue_size`, dolunca yeni span'ler atılır) ve `export_timeout` ile yapılır: toplayıcı kapalı ya da yanıtsızsa istekler beklemez ve başarısız olmaz, yalnızca izler kaybolur. Kapanışta kuyruk en fazla `export_timeout + 1 sn` boşaltılmaya çalışılır. Kayıp izler için ayrı bir metrik yoktur; toplayıcının kendi alım metriklerini (`otelcol_receiver_accepted_spans`) izleyin ve beklenen hızın altına düşerse uyarın (P3).

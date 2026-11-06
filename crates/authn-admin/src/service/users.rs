@@ -19,6 +19,7 @@ use utoipa::{IntoParams, ToSchema};
 
 use super::{AdminService, meta};
 use crate::guard::AdminCaller;
+use crate::roles::AdminPermission;
 
 /// Status filter of the user listing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
@@ -239,9 +240,10 @@ impl AdminService {
     /// Searches accounts (ADM-02): keyset pages, newest first.
     pub async fn search_users(
         &self,
-        _caller: &AdminCaller,
+        caller: &AdminCaller,
         query: UserSearch,
     ) -> Result<Page<AdminUserSummary>, AuthError> {
+        caller.require(AdminPermission::UsersRead)?;
         let (filter, page) = query.into_filter()?;
         let after = match page.cursor()? {
             Some(c) => Some((micros_to_time(c.sort_key)?, UserId::from_uuid(c.id))),
@@ -265,6 +267,7 @@ impl AdminService {
         ctx: &RequestContext,
         user: UserId,
     ) -> Result<AdminUserDetail, AuthError> {
+        caller.require(AdminPermission::UsersRead)?;
         let record = UserRepository::find_by_id(self.pool(), user)
             .await?
             .ok_or_else(|| AuthError::new(codes::common::NOT_FOUND))?;

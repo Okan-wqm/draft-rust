@@ -35,6 +35,15 @@ async fn make_admin(app: &App, user: UserId) {
         .execute(&app.pool)
         .await
         .unwrap();
+    // K-93: staff without a role row have no admin permission.
+    sqlx::query(
+        "INSERT INTO admin_staff_roles (user_id, role, granted_at, updated_at) \
+         VALUES ($1, 'platform_admin', now(), now())",
+    )
+    .bind(user)
+    .execute(&app.pool)
+    .await
+    .unwrap();
 }
 
 /// `navigator.credentials.create()` with the software authenticator.

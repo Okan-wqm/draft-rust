@@ -39,6 +39,8 @@ pub fn openapi() -> utoipa::openapi::OpenApi {
     doc.merge(authn_admin::AdminApi::openapi());
     #[cfg(feature = "passkey")]
     doc.merge(authn_admin::AdminEnrollmentApi::openapi());
+    #[cfg(feature = "oidc-provider")]
+    doc.merge(authn_oidc_provider::OidcProviderApi::openapi());
     doc.components
         .get_or_insert_with(Default::default)
         .add_security_schemes_from_iter(security_schemes());
@@ -76,8 +78,8 @@ fn declare_public_operations(doc: &mut utoipa::openapi::OpenApi) {
 /// The credentials the API accepts (`docs/api/authentication.md`). Every
 /// scheme named by an operation's `security` must be defined here
 /// (`tests/openapi.rs`).
-fn security_schemes() -> [(&'static str, SecurityScheme); 4] {
-    [
+fn security_schemes() -> Vec<(&'static str, SecurityScheme)> {
+    vec![
         (
             "session_cookie",
             SecurityScheme::ApiKey(ApiKey::Cookie(ApiKeyValue::with_description(
@@ -115,6 +117,36 @@ fn security_schemes() -> [(&'static str, SecurityScheme); 4] {
                     .description(Some(
                         "Organization API key `ak_…` (ORG-08) as \
                          `Authorization: Bearer ak_…`.",
+                    ))
+                    .build(),
+            ),
+        ),
+        (
+            "oauth2_client",
+            SecurityScheme::Http(
+                HttpBuilder::new()
+                    .scheme(HttpAuthScheme::Basic)
+                    .description(Some(
+                        "OAuth client authentication of the provider's token, \
+                         revocation and introspection endpoints (OIDP-06, \
+                         RFC 6749 §2.3.1): `client_secret_basic` \
+                         (`Authorization: Basic`), or `client_id` + \
+                         `client_secret` in the form (`client_secret_post`); \
+                         public clients send only `client_id` (`none`, PKCE).",
+                    ))
+                    .build(),
+            ),
+        ),
+        (
+            "oauth2_access_token",
+            SecurityScheme::Http(
+                HttpBuilder::new()
+                    .scheme(HttpAuthScheme::Bearer)
+                    .bearer_format("JWT")
+                    .description(Some(
+                        "Access token issued by the OAuth 2.1 / OIDC provider to \
+                         a registered client (RFC 9068, OIDP-08; never a native \
+                         session token).",
                     ))
                     .build(),
             ),

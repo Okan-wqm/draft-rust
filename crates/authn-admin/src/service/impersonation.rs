@@ -28,6 +28,7 @@ use authn_store::UserRepository;
 use super::{AdminService, TargetPolicy, check_target};
 use crate::guard::AdminCaller;
 use crate::reason::Justification;
+use crate::roles::AdminPermission;
 use crate::store;
 
 /// Parameters of an impersonation.
@@ -78,6 +79,7 @@ impl AdminService {
         reason: &Justification,
         options: &ImpersonationOptions,
     ) -> Result<IssuedSession, AuthError> {
+        caller.require(AdminPermission::UsersImpersonate)?;
         let ttl = self.impersonation_ttl(options.ttl_minutes)?;
         let record = UserRepository::find_by_id(self.pool(), target)
             .await?

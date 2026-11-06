@@ -13,6 +13,7 @@ use super::lock;
 pub struct FakeDnsTxtResolver {
     records: Mutex<HashMap<String, Vec<String>>>,
     failing: Mutex<bool>,
+    hanging: Mutex<bool>,
 }
 
 fn normalize(name: &str) -> String {
@@ -28,7 +29,19 @@ impl FakeDnsTxtResolver {
             .push(value.to_owned());
     }
 
-    /// Simulates resolver failures (`service_unavailable`).
+    /// Removes every TXT record of `name` (the name then has no data:
+    /// a definitive absence, like NXDOMAIN / NODATA).
+    pub fn remove_txt(&self, name: &str) {
+        lock(&self.records).remove(&normalize(name));
+    }
+
+    /// Simulates a resolver that never answers (the caller's timeout
+    /// fires).
+    pub fn set_hanging(&self, hanging: bool) {
+        *lock(&self.hanging) = hanging;
+    }
+
+    /// Simulates resolver failures (`service_unavailable`, e.g. SERVFAIL).
     pub fn set_failing(&self, failing: bool) {
         *lock(&self.failing) = failing;
     }
@@ -37,6 +50,10 @@ impl FakeDnsTxtResolver {
 #[async_trait]
 impl DnsTxtResolver for FakeDnsTxtResolver {
     async fn lookup_txt(&self, name: &str) -> Result<Vec<String>, AuthError> {
+        let hanging = *lock(&self.hanging);
+        if hanging {
+            std::future::pending::<()>().await;
+        }
         if *lock(&self.failing) {
             return Err(
                 AuthError::new(codes::common::SERVICE_UNAVAILABLE).with_context("fake DNS failure")

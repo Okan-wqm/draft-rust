@@ -36,6 +36,7 @@ authn-audit = { path = "../crates/authn-audit" }
 authn-password = { path = "../crates/authn-password" }
 authn-mfa = { path = "../crates/authn-mfa" }
 authn-webauthn = { path = "../crates/authn-webauthn" }
+authn-oidc-provider = { path = "../crates/authn-oidc-provider" }
 webauthn-rs = { version = "0.6.2", features = ["conditional-ui", "danger-allow-state-serialisation", "danger-credential-internals", "resident-key-support"] }
 # Harness helpers for the authn-crypto targets (same versions as the workspace).
 base64 = "0.23.1"
@@ -133,6 +134,13 @@ bench = false
 [[bin]]
 name = "webauthn_response_parse"
 path = "fuzz_targets/webauthn_response_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "oidc_authorize_request"
+path = "fuzz_targets/oidc_authorize_request.rs"
 test = false
 doc = false
 bench = false

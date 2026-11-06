@@ -181,6 +181,26 @@ Mimari, Faz 2/3 eklenirken mevcut modüllerin yeniden yazılmasını gerektirmem
 
 ---
 
+## 9a. OAuth 2.1 / OpenID Connect sağlayıcısı (`authn-oidc-provider`, Faz 2 — K-80)
+
+> Faz 2'nin ilk kalemi (roadmap §7, K-80). Kapsam dışı kalanlar ve sırası: `crates/authn-oidc-provider/README.md` "Kalan işler".
+
+- **OIDP-01** İstemci kaydı: gizli (confidential) ve açık (public) istemciler, `web` / `native` uygulama türü; istemci kimliği sunucuda üretilir (`oc_` + 128 bit), gizli istemci sırrı 256 bit CSPRNG, yalnızca SHA-256'sı saklanır, bir kez gösterilir, sabit zamanlı karşılaştırılır. İzinli kapsamlar, izinli grant türleri (`authorization_code`, `refresh_token`), izinli kaynaklar (RFC 8707) ve birinci taraf (onay ekranı yok) bayrağı. Kayıt yönetimi yalnızca personel rolüyle (`oauth_clients:read` / `oauth_clients:manage`, K-93); her değişiklik audit'lenir, sır asla.
+- **OIDP-02** `redirect_uri` kuralları: kayıtta yalnızca kanonik mutlak URI (parça, kullanıcı bilgisi, joker yok); `web` istemci yalnızca `https`; `native` istemci `https`, RFC 8252 loopback IP (`127.0.0.1`, `[::1]`; `localhost` değil) ve ters-domain özel şema. Eşleştirme birebir dize karşılaştırmasıdır; tek istisna kayıtlı loopback URI'de bağlantı noktasının yok sayılmasıdır. İstemcisi veya `redirect_uri`'si doğrulanamayan istek **asla yönlendirilmez** (open redirect yok).
+- **OIDP-03** Yetkilendirme uç noktası: yalnızca `response_type=code`, PKCE `S256` zorunlu (`plain`, implicit, ROPC yok), `request` / `request_uri` desteklenmez, tekrarlanan parametre reddedilir; `state` ve `nonce` aynen taşınır; her yetkilendirme yanıtında RFC 9207 `iss`. Hatalar yalnızca doğrulanmış `redirect_uri`'ye yönlendirilir.
+- **OIDP-04** Etkileşim (headless): oturum yoksa veya yeniden kimlik doğrulama / onay gerekiyorsa tarayıcı `oidc_provider.interaction_url`'e yönlendirilir; bekleyen istek sunucuda kısa ömürlü (varsayılan 10 dk), tek kullanımlık ve tarayıcıya bağlı (`__Host-` çerezinin SHA-256'sı) saklanır. Giriş mevcut oturum ve giriş API'leriyle yapılır. `prompt=none` / `login` / `consent`, `max_age`, `acr_values` (`amr`'den türetilen `acr` modeli) uygulanır; impersonation oturumu istemci yetkilendiremez.
+- **OIDP-05** Onay: kullanıcı başına, istemci başına onaylanan kapsamlar kaydedilir; birinci taraf istemcide onay ekranı atlanır; kullanıcı onaylarını listeler ve geri alır (geri alma o istemcinin kullanıcıya ait tüm grant'lerini iptal eder). Onay verme / geri alma audit'lenir; onay uç noktası oturum CSRF korumasının arkasındadır.
+- **OIDP-06** Token uç noktası, `authorization_code`: kod 256 bit, yalnızca hash'i saklanır, ömrü kısa (varsayılan 60 sn), tek kullanımlık; istemciye, `redirect_uri`'ye ve PKCE doğrulayıcısına bağlı; yeniden kullanılırsa o koddan çıkan grant ve tüm token'ları iptal edilir (RFC 6749 §4.1.2). İstemci kimlik doğrulaması: `client_secret_basic`, `client_secret_post`, `none` (yalnızca açık istemci). Hatalar RFC 6749 §5.2 biçiminde.
+- **OIDP-07** Refresh token: her kullanımda rotasyon; döndürülmüş bir token'ın yeniden kullanımı grant'in tamamını iptal eder (eşzamanlı kullanım da tekrar sayılır, SES-05 ile aynı ilke); boşta ve mutlak ömür yapılandırmadan; yenilemede kapsam yalnızca daraltılabilir.
+- **OIDP-08** Token biçimleri: access token RFC 9068 JWT (`typ: at+jwt`, `aud` = RFC 8707 kaynakları veya istemci, `openid` ile `userinfo` adresi); ID token OIDC Core'a göre (`at_hash`, `nonce`, `auth_time`, `amr`, `acr`, `sid`, `azp`); imza sunucunun anahtar kümesiyle (CRY-09/10). Sağlayıcı token'ları ile native (birinci taraf) token'lar birbirinin yerine **hiçbir koşulda** kullanılamaz (ayrık `aud`, `sid` yokluğu, `jti` kaydı).
+- **OIDP-09** Keşif: `/.well-known/openid-configuration` (OIDC Discovery) ve `/.well-known/oauth-authorization-server` (RFC 8414); JWKS ortak (SES-09).
+- **OIDP-10** UserInfo: `openid` kapsamlı sağlayıcı access token'ı ile `sub`; `profile` → `name`, `locale`, `zoneinfo`; `email` → `email`, `email_verified`. Geçersiz token RFC 6750 `WWW-Authenticate` ile `401`.
+- **OIDP-11** RFC 7009 iptal (refresh token grant'in tamamını, access token kendisini iptal eder; bilinmeyen token da `200`) ve RFC 7662 introspection (yalnızca gizli istemci; token yalnızca kendi istemcisine veya `aud`'unda adı geçen istemciye aktif görünür).
+- **OIDP-12** İptal bağlaşımı ve kötüye kullanım: her grant yetkilendirildiği kullanıcı oturumuna bağlıdır; oturumun bitmesi (çıkış, her yerden çıkış, şifre sıfırlama, askıya alma, silme, admin / acil iptal) grant'in refresh token'larını ve introspection / `userinfo` erişimini anında bitirir; hesap silinince tüm sağlayıcı verisi kaskadla silinir. Yetkilendirme, token ve `userinfo` uçları rate limit'lidir; audit olaylarında token bulunmaz.
+- **OIDP-13** Yapılandırma: `[oidc_provider]` bölümü, varsayılan **kapalı** (uçlar hiç bağlanmaz); açıkken `interaction_url` zorunlu; üretim/staging'de `issuer` ve `interaction_url` `https`; ömürler sınırlı aralıklarda. Derleme bayrağı `oidc-provider` (varsayılan derlenir). Süresi dolan kayıtlar arka plan işiyle temizlenir.
+
+---
+
 ## 10. Organizasyonlar, RBAC, API anahtarları (`authn-org`)
 
 - **ORG-01** Organizasyon CRUD; benzersiz `slug`; kurucu `owner` olur.
@@ -195,6 +215,7 @@ Mimari, Faz 2/3 eklenirken mevcut modüllerin yeniden yazılmasını gerektirmem
 - **ORG-10** Kiracı izolasyonu: başka organizasyonun kaynağına erişim girişimi `404` döner (varlığı sızdırmaz); tüm organizasyon endpoint'lerinde IDOR testleri zorunlu.
 - **ORG-11** Organizasyon sahipliği devri (step-up, hedef kullanıcının onayı).
 - **ORG-12** Organizasyon silme (bekleme süreli, yalnızca `owner`, step-up).
+- **ORG-13** Doğrulanmış domain'lerin periyodik yeniden doğrulanması (Faz 2, K-97): arka plan işi (çoklu instance güvenli) TXT kaydını yapılandırılabilir aralıkla yeniden kontrol eder. Yalnızca kesin yokluk (NXDOMAIN, kayıt yok, değer yok) başarısızlık sayılır; DNS hataları ve zaman aşımları ayrı sayılır. Ardışık başarısızlık eşiğinde domain doğrulanmamış olur, otomatik katılım durur, organizasyonun domain yöneticilerine bildirim gider, olay audit'lenir.
 
 ---
 
@@ -221,6 +242,7 @@ Mimari, Faz 2/3 eklenirken mevcut modüllerin yeniden yazılmasını gerektirmem
 - **RSK-02** Varsayılan değerlendirici: yeni cihaz (cihaz cookie'si/kimliği görülmemiş), yeni IP ağı (/24 veya /48), kısa sürede çok sayıda başarısız deneme, TOR/proxy listesi (opsiyonel dosya), imkansız seyahat (GeoIP sağlayıcısı portu takılırsa; GeoIP veritabanı gömülmez).
 - **RSK-03** Risk sonucu politikası: `medium` → MFA iste (MFA kayıtlıysa) veya e-posta onayı; `high` → giriş engelle + kullanıcıya bildirim. Konfigüre edilebilir.
 - **RSK-04** Yeni cihazdan başarılı girişte kullanıcıya bildirim e-postası (cihaz, yaklaşık konum varsa, zaman, "bu ben değilim" linki → tüm oturumları kapatır ve şifre sıfırlatır).
+- **RSK-05** (Faz 2, K-98) MaxMind DB (`.mmdb`) biçimli GeoIP okuyucu (`GeoIpLookup` uygulaması): veritabanı gömülmez, işletmeci yolunu verir (`protect.risk.geoip_database`); bozuk/okunamaz dosyada başlangıç reddedilir, değişen dosya periyodik olarak yeniden yüklenir (başarısız yükleme eskisini korur). Özel/ayrılmış/bilinmeyen adreslerde ve koordinatsız kayıtlarda konum yok (sinyal üretilmez). Yalnızca kaba konum tutulur (ülke, şehir, 0,1°'ye yuvarlanmış koordinat).
 
 ---
 
@@ -250,6 +272,8 @@ Mimari, Faz 2/3 eklenirken mevcut modüllerin yeniden yazılmasını gerektirmem
 - **ADM-06** Acil durum işlemleri: tüm kullanıcıların tüm oturumlarını kapatma, imza anahtarını acil iptal ve rotasyon, belirli bir tarihten önce şifresi değişmemiş tüm kullanıcılara şifre sıfırlama zorunluluğu.
 - **ADM-07** Audit log sorgulama, dışa aktarma ve zincir doğrulama.
 - **ADM-08** Her admin işlemi gerekçe alanı ile audit log'a yazılır.
+- **ADM-09** Personel rolleri (Faz 2, K-93): platform admin bayrağı yerine `support_readonly` / `support` / `security` / `platform_admin` rolleri. Her admin ucu tek bir izin bildirir; bildirimi olmayan uç herkese kapalıdır (varsayılan izin yok). Rol her istekte veritabanından okunur; rol değişikliği bir sonraki istekte geçerlidir. Mevcut platform adminleri `platform_admin` olur; break-glass hesabı her zaman `platform_admin`'dir. Rol değişikliği audit'lenir, hedefin oturumlarını kapatır; API yalnızca var olan personelin rolünü değiştirir (personel yetkisi verme / alma CLI'dadır).
+- **ADM-10** Çift onay (four-eyes) yetkisi yalnızca `security` ve `platform_admin` rollerindedir; onaylayan, işlemin kendi iznine de sahip olmalıdır ve kendi isteğini onaylayamaz. Onay, kullanım anında onaylayanın hâlâ bu yetkiye sahip olmasını gerektirir.
 
 ---
 
@@ -265,6 +289,8 @@ Mimari, Faz 2/3 eklenirken mevcut modüllerin yeniden yazılmasını gerektirmem
 - **OPS-08** `Dockerfile` (çok aşamalı, root olmayan kullanıcı, minimal imaj), `docker-compose.yml` (PostgreSQL, Redis, Mailpit), örnek konfigürasyon dosyası (`config/example.toml`) — tüm ayarlar yorumlarıyla.
 - **OPS-09** OpenAPI şeması `GET /openapi.json` (konfigürasyonla kapatılabilir).
 - **OPS-10** Veritabanı migration'ları `sqlx migrate`; uygulama veritabanı rolü için en az yetki önerisi (audit tablosunda `UPDATE`/`DELETE` yok).
+- **OPS-11** (Faz 2, K-92) Opsiyonel OpenTelemetry izleme: OTLP/HTTP dışa aktarıcı (cargo özelliği `otel`, `[telemetry]`, varsayılan kapalı), gelen isteklerde W3C Trace Context (`traceparent`) devamı, `request_id` ile ilişkilendirme, örnekleme oranı. Dışa aktarıcı kesintisi isteği asla bekletmez ya da düşürmez (sınırlı kuyruk, taşanı at, dışa aktarma zaman aşımı).
+- **OPS-12** (Faz 2, K-92) Dışa aktarılan span adlarında ve özniteliklerinde kişisel veri (e-posta, IP — kısaltılmış hâli dahil, kullanıcı kimliği, ham yol, sorgu dizesi) ve sır (şifre, token, cookie, CSRF değeri) bulunmaz; log olayları span'e aktarılmaz. Bunu temsilî akışlar üzerinde zorlayan test vardır.
 
 ---
 

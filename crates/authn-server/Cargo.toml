@@ -16,11 +16,25 @@ path = "src/main.rs"
 workspace = true
 
 [features]
-default = ["passkey", "sms"]
+default = ["passkey", "sms", "oidc-provider"]
 # ARC-11 feature flags, forwarded to the owning crates.
 passkey = ["authn-webauthn/passkey", "authn-session/passkey", "authn-admin/passkey"]
 sms = ["authn-mfa/sms", "authn-notify/sms"]
 redis = ["authn-protect/redis"]
+# K-80 OAuth 2.1 / OpenID Connect provider (OIDP-*). Compiled by default;
+# the endpoints are mounted only with `oidc_provider.enabled = true`.
+oidc-provider = ["dep:authn-oidc-provider"]
+# K-92 OpenTelemetry tracing (OTLP over HTTP/protobuf). Off by default; a
+# configuration with `telemetry.enabled = true` is refused without it.
+otel = [
+    "dep:opentelemetry",
+    "dep:opentelemetry_sdk",
+    "dep:opentelemetry-otlp",
+    "dep:opentelemetry-http",
+    "dep:tracing-opentelemetry",
+    "dep:bytes",
+    "dep:getrandom",
+]
 
 [dependencies]
 authn-core.workspace = true
@@ -37,6 +51,7 @@ authn-notify.workspace = true
 authn-session.workspace = true
 authn-oidc-client.workspace = true
 authn-admin.workspace = true
+authn-oidc-provider = { workspace = true, optional = true }
 async-trait.workspace = true
 base64.workspace = true
 axum.workspace = true
@@ -63,9 +78,17 @@ rustls.workspace = true
 utoipa.workspace = true
 utoipa-axum.workspace = true
 url.workspace = true
+opentelemetry = { workspace = true, optional = true }
+opentelemetry_sdk = { workspace = true, optional = true }
+opentelemetry-otlp = { workspace = true, optional = true }
+opentelemetry-http = { workspace = true, optional = true }
+tracing-opentelemetry = { workspace = true, optional = true }
+bytes = { workspace = true, optional = true }
+getrandom = { workspace = true, optional = true }
 
 [dev-dependencies]
 authn-testkit.workspace = true
+serde_urlencoded.workspace = true
 tower.workspace = true
 http.workspace = true
 http-body-util.workspace = true
@@ -78,16 +101,28 @@ webauthn-authenticator-rs.workspace = true
 webauthn-rs-proto.workspace = true
 openidconnect.workspace = true
 base64.workspace = true
+opentelemetry_sdk = { workspace = true, features = ["testing"] }
 
 # Real passkey ceremonies with the software authenticator.
 [[test]]
 name = "passkey_e2e"
 required-features = ["passkey"]
 
+# K-92: spans exported through the OpenTelemetry layer.
+[[test]]
+name = "telemetry"
+required-features = ["otel"]
+
 # Admin sessions need passkey MFA (ADM-01).
 [[test]]
 name = "admin_e2e"
 required-features = ["passkey"]
+
+# OAuth 2.1 / OIDC provider through the stack (K-80); staff roles need
+# passkey logins.
+[[test]]
+name = "oidc_provider_e2e"
+required-features = ["oidc-provider", "passkey"]
 
 # Passkey enrollment inside the login challenge (K-112).
 [[test]]

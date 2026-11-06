@@ -24,6 +24,7 @@ use super::limits::Limit;
 use super::{AdminService, meta};
 use crate::guard::AdminCaller;
 use crate::reason::Justification;
+use crate::roles::AdminPermission;
 use crate::store;
 
 /// Filters of the admin audit listing / export.
@@ -224,9 +225,10 @@ impl AdminService {
     /// Lists audit events platform-wide (ADM-07).
     pub async fn query_audit(
         &self,
-        _caller: &AdminCaller,
+        caller: &AdminCaller,
         query: AdminAuditFilter,
     ) -> Result<Page<AdminAuditEvent>, AuthError> {
+        caller.require(AdminPermission::AuditRead)?;
         let (filter, page) = query.into_filter()?;
         let listed = authn_audit::list_events(self.pool(), &filter, &page).await?;
         Ok(Page {
@@ -244,6 +246,7 @@ impl AdminService {
         query: AdminAuditFilter,
         reason: &Justification,
     ) -> Result<AuditExport, AuthError> {
+        caller.require(AdminPermission::AuditExport)?;
         let (filter, first) = query.into_filter()?;
         let max = usize::try_from(self.settings().audit_export_max_events).unwrap_or(usize::MAX);
         let mut cursor = first.cursor;
@@ -315,6 +318,7 @@ impl AdminService {
         ctx: &RequestContext,
         anchor: Option<VerifiedAnchor>,
     ) -> Result<ChainVerification, AuthError> {
+        caller.require(AdminPermission::AuditVerify)?;
         const LEASE: &str = "audit_chain_verification";
         let anchor = anchor.map(VerifiedAnchor::into_anchor).transpose()?;
         self.check_audit_verify(caller, ctx).await?;

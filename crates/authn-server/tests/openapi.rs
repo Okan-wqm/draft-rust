@@ -302,6 +302,16 @@ fn arc_09_enum_schemas_match_serde() {
         }),
         &mut checked,
     );
+    check_round_trip(
+        &doc,
+        &variants!(authn_admin::StaffRole {
+            SupportReadonly,
+            Support,
+            Security,
+            PlatformAdmin,
+        }),
+        &mut checked,
+    );
 
     // Coverage: every enum schema of the document is checked above.
     let unchecked: Vec<&String> = doc["components"]["schemas"]
@@ -351,7 +361,14 @@ fn doc_04_committed_openapi_json_is_current() {
 // --- K-129: per-operation security matches the router -------------------------
 
 /// The security schemes in the order the document lists them.
-const SCHEMES: [&str; 4] = ["session_cookie", "bearer_jwt", "api_key", "api_key_bearer"];
+const SCHEMES: [&str; 6] = [
+    "session_cookie",
+    "bearer_jwt",
+    "api_key",
+    "api_key_bearer",
+    "oauth2_client",
+    "oauth2_access_token",
+];
 
 /// The schemes an operation declares (one scheme per requirement object;
 /// `[]` = no credential). `None` when the operation declares nothing.
@@ -502,6 +519,28 @@ fn unauthenticated(response: &authn_testkit::http::TestResponse) -> bool {
             .is_some_and(|code| code == "unauthenticated")
 }
 
+/// K-80: the OAuth protocol endpoints of the provider refuse an anonymous
+/// caller in the OAuth format (RFC 6749 §5.2 / RFC 6750 §3), not with the
+/// `unauthenticated` envelope: `invalid_client` names the client
+/// credential (`oauth2_client`), a `Bearer` challenge the provider access
+/// token (`oauth2_access_token`). Their positive cases (a registered
+/// client, a provider token) are proven in `oidc_provider_e2e.rs` and the
+/// provider's own flow tests.
+fn protocol_scheme(response: &authn_testkit::http::TestResponse) -> Option<&'static str> {
+    if response.status != axum::http::StatusCode::UNAUTHORIZED {
+        return None;
+    }
+    let body: Value = serde_json::from_slice(&response.body).ok()?;
+    let error = body.get("error")?.as_str()?;
+    if error == "invalid_client" {
+        return Some("oauth2_client");
+    }
+    response
+        .header("www-authenticate")
+        .is_some_and(|h| h.starts_with("Bearer"))
+        .then_some("oauth2_access_token")
+}
+
 /// The credentials the router really accepts on each documented operation:
 /// `[]` when an anonymous caller is not refused as unauthenticated,
 /// otherwise every scheme whose (valid) credential gets past that refusal.
@@ -619,7 +658,10 @@ async fn enforced_schemes(app: &common::App) -> BTreeMap<(String, String), BTree
             r
         };
         let mut accepted = BTreeSet::new();
-        if unauthenticated(&app.send(request(ZERO)).await) {
+        let anonymous = app.send(request(ZERO)).await;
+        if let Some(scheme) = protocol_scheme(&anonymous) {
+            accepted.insert(scheme.to_owned());
+        } else if unauthenticated(&anonymous) {
             // Every probe starts with live credentials: an earlier probe
             // (logout, revocation) may have ended them.
             if app.send(browser.get("/v1/me")).await.status != axum::http::StatusCode::OK {
@@ -668,6 +710,9 @@ async fn arc_09_k129_declared_security_matches_the_router(pool: sqlx::PgPool) {
     // the probe sends every operation five times from one address.
     let app = common::App::with(pool, |c| {
         c.protect.risk.enabled = false;
+        // K-80: every documented operation is mounted.
+        c.oidc_provider.enabled = true;
+        c.oidc_provider.interaction_url = Some("https://app.test.example/consent".to_owned());
         // Hundreds of probes from one address.
         c.protect.rate_limit.requests_per_ip =
             authn_core::ports::RateLimitPolicy::new(100_000, std::time::Duration::from_secs(60));

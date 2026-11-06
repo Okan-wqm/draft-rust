@@ -38,7 +38,7 @@ use authn_org::{OrgService, OrgServiceDeps, OrgServiceSettings};
 use authn_password::{
     PasswordPolicy, PasswordService, PasswordServiceDeps, PasswordServiceSettings,
 };
-use authn_protect::risk::{RiskAlerts, RiskStore};
+use authn_protect::risk::{MmdbGeoIp, RiskAlerts, RiskStore};
 use authn_protect::{CaptchaService, DefaultRiskEvaluator, KeyHasher, LoginProtection};
 use authn_session::{PgSessionRevoker, SessionService, SessionServiceDeps, SessionSettings};
 use authn_webauthn::{WebauthnService, WebauthnServiceDeps, WebauthnServiceSettings};
@@ -150,6 +150,13 @@ pub struct Services {
     pub oidc: OidcClientService,
     /// Platform admin API (ADM-01 … ADM-08).
     pub admin: AdminService,
+    /// OAuth 2.1 / OIDC provider (OIDP-*; routes mounted only when
+    /// `oidc_provider.enabled`).
+    #[cfg(feature = "oidc-provider")]
+    pub oidc_provider: authn_oidc_provider::OidcProviderService,
+    /// The MaxMind DB GeoIP reader (RSK-05) when
+    /// `protect.risk.geoip_database` is set; reloaded by a background job.
+    pub geoip: Option<Arc<MmdbGeoIp>>,
     /// Strong references of the late-bound hooks (see [`crate::hooks::Late`]);
     /// held only to keep them alive as long as a `Services` handle exists.
     _anchors: Arc<HookAnchors>,
@@ -263,7 +270,8 @@ impl Services {
             events.clone(),
             mfa.clone(),
         );
-        let exporters: Vec<Arc<dyn DataExporter>> = vec![
+        #[cfg_attr(not(feature = "oidc-provider"), allow(unused_mut))]
+        let mut exporters: Vec<Arc<dyn DataExporter>> = vec![
             Arc::new(authn_session::SessionDataExporter),
             Arc::new(authn_mfa::MfaDataExporter),
             Arc::new(authn_webauthn::PasskeyDataExporter),
@@ -271,6 +279,9 @@ impl Services {
             Arc::new(authn_oidc_client::IdentityDataExporter),
             Arc::new(authn_admin::AdminActionsDataExporter::new(clock.clone())),
         ];
+        // K-80: consents and grants (OIDP-05, ACC-10).
+        #[cfg(feature = "oidc-provider")]
+        exporters.push(Arc::new(authn_oidc_provider::ProviderDataExporter));
         let validator = Arc::new(PasswordPolicy::from_config(
             &config.password,
             ports.breach_checker.clone(),
@@ -371,12 +382,15 @@ impl Services {
             risk_store,
             &config.protect,
         );
+        let geoip = open_geoip(&config)?;
         let evaluator = DefaultRiskEvaluator::new(
             pool.clone(),
             hasher,
             rate_limiter.clone(),
             &config.protect.risk,
-            None,
+            geoip
+                .clone()
+                .map(|g| g as Arc<dyn authn_core::ports::GeoIpLookup>),
         )?;
         let risk_alerts = RiskAlerts::new(
             evaluator.clone(),
@@ -470,6 +484,23 @@ impl Services {
             },
             AdminSettings::from_app_config(&config),
         );
+        // 9. OAuth 2.1 / OIDC provider (K-80): grants bound to the live
+        // session (OIDP-12), staff-role checks of the client registry by
+        // authn-admin (OIDP-01, K-93).
+        #[cfg(feature = "oidc-provider")]
+        let oidc_provider = authn_oidc_provider::OidcProviderService::new(
+            authn_oidc_provider::OidcProviderDeps {
+                pool: pool.clone(),
+                clock: clock.clone(),
+                audit: audit_sink.clone(),
+                rate_limiter: rate_limiter.clone(),
+                envelopes: crypto.envelopes.clone(),
+                accounts: accounts.clone(),
+                liveness: Arc::new(crate::hooks::ServerSessionLiveness),
+                client_admin: Arc::new(crate::hooks::ServerClientAdmin(admin.clone())),
+            },
+            authn_oidc_provider::OidcProviderSettings::from_app_config(&config)?,
+        );
         Ok(Self {
             config,
             pool,
@@ -495,9 +526,28 @@ impl Services {
             issuer,
             oidc,
             admin,
+            #[cfg(feature = "oidc-provider")]
+            oidc_provider,
+            geoip,
             _anchors: anchors,
         })
     }
+}
+
+/// Opens `protect.risk.geoip_database` (RSK-05, K-98): `None` when unset;
+/// a missing, oversized or malformed file is a start-up error.
+pub fn open_geoip(config: &AppConfig) -> Result<Option<Arc<MmdbGeoIp>>, AuthError> {
+    let Some(path) = &config.protect.risk.geoip_database else {
+        return Ok(None);
+    };
+    let geoip = MmdbGeoIp::open(path)?;
+    let info = geoip.info();
+    tracing::info!(
+        database_type = %info.database_type,
+        build_epoch = info.build_epoch,
+        "GeoIP database loaded (impossible-travel check on)"
+    );
+    Ok(Some(Arc::new(geoip)))
 }
 
 /// `OidcClientService::build` (the Apple key is decrypted and every

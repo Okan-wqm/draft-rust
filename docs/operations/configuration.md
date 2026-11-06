@@ -46,6 +46,7 @@ Bu belge `rust-authentication`'ın **her** konfigürasyon anahtarını listeler.
 | `notify.email.transport = "log"` ve `notify.sms.provider = "log"` yalnızca development/test | staging, production'da yasak |
 | `notify.email.transport = "disabled"` yasak | production (staging istisnası, aşağıda) |
 | `notify.email.smtp.extra_ca_file` yalnızca development/test | staging, production'da yasak |
+| `oidc_provider.issuer` ve `oidc_provider.interaction_url` `https` olmalı (OIDP-13) | production, staging |
 | `crypto.signing_keys.retired_retention >= session.access_token_ttl` | her ortam |
 | `admin.step_up_max_age <= session.step_up_max_age` | her ortam |
 
@@ -323,6 +324,11 @@ Listelenen sürümler açılışta eksikse `terms_versions` tablosuna eklenir (`
 | | `rotation_grace` | `24h` | 0–7d |
 | | `last_used_update_interval` | `1m` | 0–1h |
 | | `auth_failures_per_ip` | 30 / `15m` | iyi biçimli ama geçersiz anahtarlar, IP başına → `429` |
+| `[org.domain_reverification]` (ORG-13, K-97) | `enabled` | `true` | Doğrulanmış domain'lerin TXT kaydını periyodik yeniden kontrol eden arka plan işi |
+| | `interval` | `24h` | 1h–30d; her doğrulanmış domain aralık başına bir kez (tüm instance'larda toplam) kontrol edilir |
+| | `failure_threshold` | `3` | 1–10; ardışık **kesin yokluk** (NXDOMAIN, TXT verisi yok, değer yok) sayısı → domain doğrulanmamış olur, otomatik katılım durur, domain yöneticilerine bildirim |
+| | `inconclusive_limit` | `14` | `failure_threshold`–100; ardışık **belirsiz** kontrol (DNS hatası, SERVFAIL, zaman aşımı) sayısı → aynı sonuç. Belirsiz kontrol yokluk sayılmaz; yalnızca DNS'i hiç yanıt vermeyen bir domain'in doğrulamayı süresiz tutmasını önler |
+| | `batch_size` | `100` | 1–10000; bir çalıştırmada (5 dakikada bir, instance başına) kontrol edilen en çok domain |
 
 ## 11. `[admin]` — `config/admin.rs` (sahip: authn-admin)
 
@@ -364,6 +370,29 @@ Sağlayıcı alt bölümleri (yalnızca yapılandırılanlar etkindir):
 | `[oidc_client.microsoft]` | yukarıdakiler + `tenant` (varsayılan `common`; `common`/`organizations`/`consumers`/kiracı GUID'i/domain), `allowed_tenants` (GUID listesi; `tenant` bir domain adıysa zorunlu), `trust_personal_account_email` (varsayılan `false`: kişisel Microsoft hesabının e-postası doğrulanmış sayılmaz) |
 | `[oidc_client.apple]` | `client_id` (Services ID), `team_id`, `key_id`, özel anahtar için **tam olarak biri**: `private_key_pem` (sır, satır içi), `private_key_file` (yol, açılışta bir kez okunur), `private_key_ciphertext` (KEK ile zarf şifreli; `rust-authentication seal-apple-key` üretir); `native_client_ids` (bundle id'ler), `revoke_tokens_on_deletion` (varsayılan `true`: Apple refresh token'ı silmede/ayırmada iptal için şifreli saklanır, K-35) |
 | `[[oidc_client.generic]]` | `slug` (`[a-z0-9-]{1,32}`, yerleşik sağlayıcı adı olamaz, benzersiz; rotada `/v1/oauth/{slug}/…`), `display_name`, `issuer_url` (https; discovery), `client_id`, `client_secret`, `native_client_ids`, `scopes` (varsayılan `["openid","email","profile"]`), `trust_email_verified` (varsayılan `false`) |
+
+## 12a. `[oidc_provider]` — `config/oidc_provider.rs` (sahip: authn-oidc-provider, K-80)
+
+OAuth 2.1 / OpenID Connect sağlayıcısı (OIDP-*). **Varsayılan kapalı**: `enabled = false` iken sağlayıcının hiçbir yolu bağlanmaz (`404`). Derleme bayrağı `oidc-provider` (authn-server, varsayılan derlenir); bayraksız ikili bu bölümü okur ama uçları yoktur. Entegrasyon rehberi: [`docs/integration/oidc-provider.md`](../integration/oidc-provider.md).
+
+| Anahtar | Varsayılan | Doğrulama / not |
+|---------|-----------|-----------------|
+| `enabled` | `false` | Uçları bağlar (OIDP-13) |
+| `issuer` | yok (`session.issuer`, o da yoksa `server.public_base_url`) | Mutlak URL, sorgu / parça / sondaki `/` yok; üretim ve staging'de `https`. Keşif belgesi sunucunun kökündeki `/.well-known/openid-configuration`'dadır: `issuer` ters vekilin kaldırmadığı bir yol içermemelidir |
+| `interaction_url` | yok | `enabled = true` ise **zorunlu**; giriş / onay sayfanız, `?interaction_id=<id>` eklenir; üretim ve staging'de `https` |
+| `authorization_request_ttl` | `10m` | 1m–30m; bekleyen yetkilendirme isteği (OIDP-04) |
+| `authorization_code_ttl` | `60s` | 10s–10m; tek kullanımlık kod (OIDP-06) |
+| `access_token_ttl` | `5m` | 1m–1h; JWT access token (RFC 9068). Yerel doğrulayan kaynak sunucusu iptali en geç bu süre sonra görür; introspection ve `userinfo` hemen görür |
+| `id_token_ttl` | `5m` | 1m–1h |
+| `refresh_token_idle_ttl` | `1d` | 1h–90d; her rotasyon yeni süre başlatır (OIDP-07) |
+| `refresh_token_absolute_ttl` | `30d` | `refresh_token_idle_ttl` – 400d; grant'in mutlak ömrü. Grant ayrıca yetkilendirildiği kullanıcı oturumu bitince biter (OIDP-12) |
+| `custom_scopes` | `[]` | `openid`, `profile`, `email`'e ek kapsamlar, `[a-z][a-z0-9_.:-]{0,63}` |
+| `authorize_per_ip` | 60 / `1m` | `GET /v1/oauth2/authorize` |
+| `token_per_ip` | 120 / `1m` | token, iptal ve introspection istekleri (istemci kimliği doğrulanmadan önce) |
+| `token_per_client` | 600 / `1m` | aynı uçlar, kimliği doğrulanmış istemci başına |
+| `userinfo_per_ip` | 120 / `1m` | `userinfo` |
+
+Açılışta ayrıca reddedilir: `session.audiences` içinde sağlayıcının `userinfo` adresinin bulunması (token türü karışıklığı, OIDP-08).
 
 ## 13. `[protect]` — `config/protect.rs` (sahip: authn-protect)
 
@@ -415,7 +444,7 @@ Sağlayıcı alt bölümleri (yalnızca yapılandırılanlar etkindir):
 | `allowed_origins` | `[]` (CORS kapalı) | tam origin, joker/yol yok |
 | `max_age` | `10m` | 0–2h; preflight önbelleği |
 
-### `[protect.risk]` (RSK-01 … RSK-03)
+### `[protect.risk]` (RSK-01 … RSK-03, RSK-05)
 
 | Anahtar | Varsayılan | Doğrulama / not |
 |---------|-----------|-----------------|
@@ -425,7 +454,9 @@ Sağlayıcı alt bölümleri (yalnızca yapılandırılanlar etkindir):
 | `failure_threshold` | `5` | ≥ 1 |
 | `medium_action` | `step_up` | `step_up` (kayıtlı faktör ya da e-posta onayı) · `allow` |
 | `high_action` | `block` | `block` (engelle + kullanıcıya bildir) · `step_up` |
-| `impossible_travel_speed_kmh` | `1000` | 100–20000; yalnızca bir `GeoIpLookup` takılıysa |
+| `impossible_travel_speed_kmh` | `1000` | 100–20000; yalnızca bir GeoIP veritabanı (`geoip_database`) takılıysa |
+| `geoip_database` | yok | RSK-05 (K-98): City düzeyinde MaxMind DB (`.mmdb`) dosyası; **gömülü veri yok**, işletmeci kendi lisansıyla sağlar (GeoLite2 EULA, DB-IP Lite CC BY 4.0 vb.: [`crates/authn-protect/README.md`](../../crates/authn-protect/README.md#geoip-rsk-05-k-98--riskmmdbgeoip)). Okunamaz, 512 MiB'tan büyük ya da doğrulamadan geçmeyen dosyada `serve`/`check-config` başarısız. Ayarlıysa imkânsız seyahat ve RSK-04 bildirimlerindeki yaklaşık konum açılır; yalnızca ülke, şehir ve 0,1°'ye yuvarlanmış koordinat tutulur |
+| `geoip_reload_interval` | `1h` | 1m–7d; dosyanın değişme zamanı/boyutu bu aralıkla kontrol edilir, değiştiyse yeniden yüklenir (başarısız yükleme eskisini korur). Dosyayı `rename` ile atomik değiştirin |
 
 ### `[protect.outbound]` (PRT-12)
 
@@ -524,7 +555,24 @@ Linkler `server.public_base_url` + bu yol + `#token=…` (URL parçası: token s
 
 ---
 
-## 16. Asgari üretim yapılandırması (örnek)
+## 16. `[telemetry]` — `config/telemetry.rs` (sahip: authn-server)
+
+OpenTelemetry izleme (OPS-11, OPS-12; K-92). Binary cargo özelliği `otel` ile derlenmiş olmalı (`cargo build --release -p authn-server --features otel`); özelliksiz binary `enabled = true`'yu reddeder. Ayrıntı ve güvenlik kararları: [`monitoring.md` §5](monitoring.md#5-opentelemetry-izleme-ops-11-k-92).
+
+| Anahtar | Varsayılan | Doğrulama / not |
+|---------|-----------|-----------------|
+| `enabled` | `false` | |
+| `endpoint` | yok | `enabled` ise zorunlu. OTLP/HTTP (protobuf) izleme URL'sinin **tamamı** (ör. `http://127.0.0.1:4318/v1/traces`); `http`/`https`, kullanıcı bilgisi, sorgu ve parça yasak. Toplayıcı kimlik bilgisi `OTEL_EXPORTER_OTLP_TRACES_HEADERS` ortam değişkeniyle |
+| `service_name` | `rust-authentication` | 1–64 karakter, `A-Z a-z 0-9 - _ .` |
+| `sampling_ratio` | `0.1` | 0.0–1.0 |
+| `propagate_incoming` | `true` | Gelen `traceparent` sürdürülür (`tracestate` atılır) |
+| `respect_remote_sampling` | `false` | `true`: çağıranın "sampled" bayrağına uyulur (yalnızca güvenilir bir ağ geçidinin arkasında) |
+| `export_timeout` | `5s` | 1s–30s; dışa aktarma başına |
+| `scheduled_delay` | `5s` | 100ms–60s |
+| `max_queue_size` | `2048` | 64–65536; dolunca yeni span'ler atılır |
+| `max_export_batch_size` | `512` | 1 – `max_queue_size` |
+
+## 17. Asgari üretim yapılandırması (örnek)
 
 ```toml
 [server]

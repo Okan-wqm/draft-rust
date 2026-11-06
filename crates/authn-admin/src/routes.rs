@@ -29,7 +29,13 @@
 //! | `POST` | `/v1/admin/audit-events/verify` | ADM-07, K-09 |
 //! | `POST` | `/v1/admin/audit-events/{event_id}/restrict` | ADM-08, K-39, K-62 |
 //! | `POST` | `/v1/admin/audit-events/{event_id}/restrict/extend` | ADM-08, K-62 |
+//! | `GET` | `/v1/admin/staff` | ADM-09 (K-93) |
+//! | `POST` | `/v1/admin/staff/{user_id}/role` | ADM-09, ADM-10 (K-93, four-eyes) |
 //! | `POST` | `/v1/admin/enrollment/options`, `/v1/admin/enrollment/verify` | ADM-05, K-11 ([`enrollment_router`], no session) |
+//!
+//! Every route of [`router`] declares the permission it requires in
+//! [`ROUTE_PERMISSIONS`] (K-93); the [`AdminCaller`] extractor enforces it
+//! and refuses a route without a declaration for everyone.
 
 use authn_core::domain::{ClientKind, Page};
 use authn_core::error::{AuthError, ErrorEnvelope, codes};
@@ -47,12 +53,140 @@ use utoipa::{OpenApi, ToSchema};
 
 use crate::guard::AdminCaller;
 use crate::reason::Justification;
+use crate::roles::{AdminPermission, StaffRole};
 use crate::service::{
     ActionOutcome, AdminAuditEvent, AdminAuditFilter, AdminService, AdminUserDetail,
     AdminUserSummary, ApprovalView, AuditExport, BulkResetOutcome, ChainVerification,
     CriticalOperation, EmergencyOutcome, ForcedReset, ImpersonationOptions, KeyRotationOutcome,
-    PasswordState, UserSearch, UserStatusFilter, VerifiedAnchor,
+    PasswordState, StaffMember, StaffRoleChange, UserSearch, UserStatusFilter, VerifiedAnchor,
 };
+
+/// The permission every admin route requires (K-93): `(method, path
+/// template, permission)`. The [`AdminCaller`] extractor looks the matched
+/// route up here; a route of [`router`] missing from this table is refused
+/// for every caller (no default allow) and fails
+/// `adm_09_every_admin_route_declares_a_permission`.
+pub const ROUTE_PERMISSIONS: &[(&str, &str, AdminPermission)] = &[
+    ("GET", "/v1/admin/users", AdminPermission::UsersRead),
+    (
+        "GET",
+        "/v1/admin/users/{user_id}",
+        AdminPermission::UsersRead,
+    ),
+    (
+        "POST",
+        "/v1/admin/users/{user_id}/suspend",
+        AdminPermission::UsersSuspend,
+    ),
+    (
+        "POST",
+        "/v1/admin/users/{user_id}/unsuspend",
+        AdminPermission::UsersSuspend,
+    ),
+    (
+        "POST",
+        "/v1/admin/users/{user_id}/unlock",
+        AdminPermission::UsersUnlock,
+    ),
+    (
+        "POST",
+        "/v1/admin/users/{user_id}/revoke-sessions",
+        AdminPermission::UsersRevokeSessions,
+    ),
+    (
+        "POST",
+        "/v1/admin/users/{user_id}/force-password-reset",
+        AdminPermission::UsersResetPassword,
+    ),
+    (
+        "POST",
+        "/v1/admin/users/{user_id}/must-change-password",
+        AdminPermission::UsersResetPassword,
+    ),
+    (
+        "POST",
+        "/v1/admin/users/{user_id}/reset-mfa",
+        AdminPermission::UsersRecover,
+    ),
+    (
+        "POST",
+        "/v1/admin/users/{user_id}/mark-email-verified",
+        AdminPermission::UsersRecover,
+    ),
+    (
+        "POST",
+        "/v1/admin/users/{user_id}/impersonate",
+        AdminPermission::UsersImpersonate,
+    ),
+    ("GET", "/v1/admin/approvals", AdminPermission::ApprovalsRead),
+    (
+        "POST",
+        "/v1/admin/approvals",
+        AdminPermission::ApprovalsRequest,
+    ),
+    (
+        "POST",
+        "/v1/admin/approvals/{approval_id}/approve",
+        AdminPermission::ApprovalsDecide,
+    ),
+    (
+        "POST",
+        "/v1/admin/approvals/{approval_id}/deny",
+        AdminPermission::ApprovalsDecide,
+    ),
+    (
+        "POST",
+        "/v1/admin/emergency/revoke-all-sessions",
+        AdminPermission::EmergencyExecute,
+    ),
+    (
+        "POST",
+        "/v1/admin/emergency/rotate-signing-key",
+        AdminPermission::EmergencyExecute,
+    ),
+    (
+        "POST",
+        "/v1/admin/emergency/force-password-change",
+        AdminPermission::EmergencyExecute,
+    ),
+    ("GET", "/v1/admin/audit-events", AdminPermission::AuditRead),
+    (
+        "POST",
+        "/v1/admin/audit-events/export",
+        AdminPermission::AuditExport,
+    ),
+    (
+        "POST",
+        "/v1/admin/audit-events/verify",
+        AdminPermission::AuditVerify,
+    ),
+    (
+        "POST",
+        "/v1/admin/audit-events/{event_id}/restrict",
+        AdminPermission::AuditRestrict,
+    ),
+    (
+        "POST",
+        "/v1/admin/audit-events/{event_id}/restrict/extend",
+        AdminPermission::AuditRestrict,
+    ),
+    ("GET", "/v1/admin/staff", AdminPermission::StaffRead),
+    (
+        "POST",
+        "/v1/admin/staff/{user_id}/role",
+        AdminPermission::StaffManage,
+    ),
+];
+
+/// The permission declared for `method` + `path` (the matched route
+/// template), if any.
+#[must_use]
+pub fn route_permission(method: &str, path: &str) -> Option<AdminPermission> {
+    ROUTE_PERMISSIONS
+        .iter()
+        .find(|(m, p, _)| *m == method && *p == path)
+        .map(|(_, _, permission)| *permission)
+}
 
 /// The admin router. Requires [`AdminService`] from the state and the
 /// session middleware to insert a `Principal`; the server mounts it behind
@@ -121,6 +255,8 @@ where
             "/v1/admin/audit-events/{event_id}/restrict/extend",
             post(extend_restriction),
         )
+        .route("/v1/admin/staff", get(list_staff))
+        .route("/v1/admin/staff/{user_id}/role", post(change_staff_role))
 }
 
 /// The public break-glass passkey enrollment endpoints (ADM-05, K-11). No
@@ -173,7 +309,9 @@ pub struct AdminEnrollmentApi;
         export_audit_events,
         verify_audit_chain,
         restrict_justification,
-        extend_restriction
+        extend_restriction,
+        list_staff,
+        change_staff_role
     ),
     components(schemas(
         AdminUserSummary,
@@ -205,6 +343,10 @@ pub struct AdminEnrollmentApi;
         AdminAuditPage,
         AuditExport,
         ChainVerification,
+        StaffRole,
+        StaffMember,
+        StaffRoleChange,
+        StaffRoleRequest,
     )),
     tags((name = "admin", description = "Platform admin API (passkey session + step-up)"))
 )]
@@ -232,12 +374,14 @@ pub struct ReasonRequest {
 #[serde(deny_unknown_fields)]
 pub struct ApprovalRequest {
     /// `revoke_all_sessions`, `rotate_signing_key`,
-    /// `force_password_change_before`, `suspend_user`, `unlock_user` or
-    /// `revoke_user_sessions`.
+    /// `force_password_change_before`, `suspend_user`, `unlock_user`,
+    /// `revoke_user_sessions` or `change_staff_role`.
     pub action: String,
-    /// Target platform admin (`suspend_user`, `unlock_user`,
-    /// `revoke_user_sessions` only).
+    /// Target staff member (`suspend_user`, `unlock_user`,
+    /// `revoke_user_sessions`, `change_staff_role` only).
     pub target_user_id: Option<UserId>,
+    /// `change_staff_role` only (required): the new role.
+    pub role: Option<StaffRole>,
     /// `revoke_all_sessions` only (default `false`).
     pub include_own_session: Option<bool>,
     /// `force_password_change_before` only (RFC 3339, required).
@@ -278,12 +422,19 @@ impl ApprovalRequest {
         );
         let targeted = matches!(
             self.action.as_str(),
-            "suspend_user" | "unlock_user" | "revoke_user_sessions"
+            "suspend_user" | "unlock_user" | "revoke_user_sessions" | "change_staff_role"
         );
         if targeted != self.target_user_id.is_some() {
             return Err(invalid_field("target_user_id"));
         }
+        if (self.action == "change_staff_role") != self.role.is_some() {
+            return Err(invalid_field("role"));
+        }
         let operation = match (self.action.as_str(), self.target_user_id) {
+            ("change_staff_role", Some(u)) => CriticalOperation::ChangeStaffRole {
+                target: u,
+                role: self.role.ok_or_else(|| invalid_field("role"))?,
+            },
             ("suspend_user", Some(u)) => CriticalOperation::SuspendAdmin(u),
             ("unlock_user", Some(u)) => CriticalOperation::UnlockAdmin(u),
             ("revoke_user_sessions", Some(u)) => CriticalOperation::RevokeAdminSessions(u),
@@ -497,7 +648,7 @@ fn require_confirmation(confirm: Option<&str>, expected: &str) -> Result<(), Aut
     responses(
         (status = 200, description = "Accounts", body = AdminUserPage),
         (status = 401, description = "unauthenticated / step_up_required", body = ErrorEnvelope),
-        (status = 403, description = "forbidden / admin_phishing_resistant_mfa_required", body = ErrorEnvelope),
+        (status = 403, description = "forbidden / admin_phishing_resistant_mfa_required / admin_permission_denied", body = ErrorEnvelope),
         (status = 422, description = "validation_failed", body = ErrorEnvelope),
     ),
     security(("session_cookie" = []), ("bearer_jwt" = []))
@@ -523,7 +674,7 @@ pub async fn list_users(
     responses(
         (status = 200, description = "Account", body = AdminUserDetail),
         (status = 401, description = "unauthenticated / step_up_required", body = ErrorEnvelope),
-        (status = 403, description = "forbidden / admin_phishing_resistant_mfa_required", body = ErrorEnvelope),
+        (status = 403, description = "forbidden / admin_phishing_resistant_mfa_required / admin_permission_denied", body = ErrorEnvelope),
         (status = 404, description = "not_found", body = ErrorEnvelope),
     ),
     security(("session_cookie" = []), ("bearer_jwt" = []))
@@ -551,7 +702,7 @@ macro_rules! reason_action {
             responses(
                 (status = 200, description = "Done", body = ActionOutcome),
                 (status = 401, description = "unauthenticated / step_up_required", body = ErrorEnvelope),
-                (status = 403, description = "forbidden / admin_phishing_resistant_mfa_required / admin_target_not_allowed / admin_approval_required / admin_approval_invalid (K-66)", body = ErrorEnvelope),
+                (status = 403, description = "forbidden / admin_phishing_resistant_mfa_required / admin_permission_denied / admin_target_not_allowed / admin_approval_required / admin_approval_invalid (K-66)", body = ErrorEnvelope),
                 (status = 404, description = "not_found", body = ErrorEnvelope),
                 (status = 409, description = "account_status_transition_not_allowed", body = ErrorEnvelope),
                 (status = 422, description = "admin_reason_required", body = ErrorEnvelope),
@@ -584,7 +735,7 @@ macro_rules! reason_action {
             responses(
                 (status = 200, description = "Done", body = ActionOutcome),
                 (status = 401, description = "unauthenticated / step_up_required", body = ErrorEnvelope),
-                (status = 403, description = "forbidden / admin_phishing_resistant_mfa_required / admin_target_not_allowed / admin_approval_required / admin_approval_invalid (K-66)", body = ErrorEnvelope),
+                (status = 403, description = "forbidden / admin_phishing_resistant_mfa_required / admin_permission_denied / admin_target_not_allowed / admin_approval_required / admin_approval_invalid (K-66)", body = ErrorEnvelope),
                 (status = 404, description = "not_found", body = ErrorEnvelope),
                 (status = 409, description = "account_status_transition_not_allowed", body = ErrorEnvelope),
                 (status = 422, description = "admin_reason_required", body = ErrorEnvelope),
@@ -658,7 +809,7 @@ reason_action!(
     responses(
         (status = 200, description = "Done", body = ForcedReset),
         (status = 401, description = "unauthenticated / step_up_required", body = ErrorEnvelope),
-        (status = 403, description = "forbidden / admin_target_not_allowed", body = ErrorEnvelope),
+        (status = 403, description = "forbidden / admin_permission_denied / admin_target_not_allowed", body = ErrorEnvelope),
         (status = 404, description = "not_found", body = ErrorEnvelope),
         (status = 409, description = "password_not_set", body = ErrorEnvelope),
         (status = 422, description = "admin_reason_required", body = ErrorEnvelope),
@@ -689,7 +840,7 @@ pub async fn force_password_reset(
     responses(
         (status = 200, description = "Done", body = ActionOutcome),
         (status = 401, description = "unauthenticated / step_up_required", body = ErrorEnvelope),
-        (status = 403, description = "forbidden / admin_target_not_allowed", body = ErrorEnvelope),
+        (status = 403, description = "forbidden / admin_permission_denied / admin_target_not_allowed", body = ErrorEnvelope),
         (status = 404, description = "not_found", body = ErrorEnvelope),
         (status = 409, description = "password_not_set", body = ErrorEnvelope),
         (status = 422, description = "admin_reason_required", body = ErrorEnvelope),
@@ -725,7 +876,7 @@ pub async fn set_must_change_password(
     responses(
         (status = 200, description = "Impersonation session issued"),
         (status = 401, description = "unauthenticated / step_up_required", body = ErrorEnvelope),
-        (status = 403, description = "forbidden / admin_target_not_allowed / impersonation_not_allowed", body = ErrorEnvelope),
+        (status = 403, description = "forbidden / admin_permission_denied / admin_target_not_allowed / impersonation_not_allowed", body = ErrorEnvelope),
         (status = 404, description = "not_found", body = ErrorEnvelope),
         (status = 422, description = "admin_reason_required / validation_failed (ttl_minutes)", body = ErrorEnvelope),
     ),
@@ -767,7 +918,7 @@ pub async fn impersonate(
     responses(
         (status = 200, description = "Approval requests", body = [ApprovalView]),
         (status = 401, description = "unauthenticated / step_up_required", body = ErrorEnvelope),
-        (status = 403, description = "forbidden / admin_phishing_resistant_mfa_required", body = ErrorEnvelope),
+        (status = 403, description = "forbidden / admin_phishing_resistant_mfa_required / admin_permission_denied", body = ErrorEnvelope),
     ),
     security(("session_cookie" = []), ("bearer_jwt" = []))
 )]
@@ -789,7 +940,7 @@ pub async fn list_approvals(
     responses(
         (status = 200, description = "Pending approval request", body = ApprovalView),
         (status = 401, description = "unauthenticated / step_up_required", body = ErrorEnvelope),
-        (status = 403, description = "forbidden / admin_target_not_allowed", body = ErrorEnvelope),
+        (status = 403, description = "forbidden / admin_permission_denied / admin_target_not_allowed", body = ErrorEnvelope),
         (status = 404, description = "not_found (target)", body = ErrorEnvelope),
         (status = 422, description = "admin_reason_required / validation_failed", body = ErrorEnvelope),
         (status = 429, description = "rate_limited: more than 3 pending or 10 per hour requests of this admin (K-66)", body = ErrorEnvelope),
@@ -821,7 +972,7 @@ macro_rules! decision {
             responses(
                 (status = 200, description = "Decided", body = ApprovalView),
                 (status = 401, description = "unauthenticated / step_up_required", body = ErrorEnvelope),
-                (status = 403, description = "forbidden / admin_phishing_resistant_mfa_required / admin_self_approval_not_allowed / admin_target_not_allowed / admin_approval_invalid (decided or expired)", body = ErrorEnvelope),
+                (status = 403, description = "forbidden / admin_phishing_resistant_mfa_required / admin_permission_denied / admin_self_approval_not_allowed / admin_target_not_allowed / admin_approval_invalid (decided or expired)", body = ErrorEnvelope),
                 (status = 404, description = "not_found", body = ErrorEnvelope),
                 (status = 422, description = "admin_reason_required", body = ErrorEnvelope),
             ),
@@ -870,7 +1021,7 @@ decision!(
     responses(
         (status = 200, description = "Done", body = EmergencyOutcome),
         (status = 401, description = "unauthenticated / step_up_required", body = ErrorEnvelope),
-        (status = 403, description = "forbidden / admin_approval_required / admin_approval_invalid (K-66)", body = ErrorEnvelope),
+        (status = 403, description = "forbidden / admin_permission_denied / admin_approval_required / admin_approval_invalid (K-66)", body = ErrorEnvelope),
         (status = 422, description = "admin_reason_required / admin_confirmation_required", body = ErrorEnvelope),
         (status = 429, description = "rate_limited (K-08: per-admin / global budget, cool-down)", body = ErrorEnvelope),
     ),
@@ -905,7 +1056,7 @@ pub async fn emergency_revoke_all_sessions(
     responses(
         (status = 200, description = "Done", body = KeyRotationOutcome),
         (status = 401, description = "unauthenticated / step_up_required", body = ErrorEnvelope),
-        (status = 403, description = "forbidden / admin_approval_required / admin_approval_invalid (K-66)", body = ErrorEnvelope),
+        (status = 403, description = "forbidden / admin_permission_denied / admin_approval_required / admin_approval_invalid (K-66)", body = ErrorEnvelope),
         (status = 422, description = "admin_reason_required / admin_confirmation_required", body = ErrorEnvelope),
     ),
     security(("session_cookie" = []), ("bearer_jwt" = []))
@@ -934,7 +1085,7 @@ pub async fn emergency_rotate_signing_key(
     responses(
         (status = 200, description = "Done", body = BulkResetOutcome),
         (status = 401, description = "unauthenticated / step_up_required", body = ErrorEnvelope),
-        (status = 403, description = "forbidden / admin_approval_required / admin_approval_invalid (K-66)", body = ErrorEnvelope),
+        (status = 403, description = "forbidden / admin_permission_denied / admin_approval_required / admin_approval_invalid (K-66)", body = ErrorEnvelope),
         (status = 422, description = "admin_reason_required / admin_confirmation_required / validation_failed", body = ErrorEnvelope),
     ),
     security(("session_cookie" = []), ("bearer_jwt" = []))
@@ -980,7 +1131,7 @@ pub async fn emergency_force_password_change(
     responses(
         (status = 200, description = "Events", body = AdminAuditPage),
         (status = 401, description = "unauthenticated / step_up_required", body = ErrorEnvelope),
-        (status = 403, description = "forbidden", body = ErrorEnvelope),
+        (status = 403, description = "forbidden / admin_permission_denied", body = ErrorEnvelope),
         (status = 422, description = "validation_failed", body = ErrorEnvelope),
     ),
     security(("session_cookie" = []), ("bearer_jwt" = []))
@@ -1007,7 +1158,7 @@ pub async fn list_audit_events(
     responses(
         (status = 200, description = "Export", body = AuditExport),
         (status = 401, description = "unauthenticated / step_up_required", body = ErrorEnvelope),
-        (status = 403, description = "forbidden", body = ErrorEnvelope),
+        (status = 403, description = "forbidden / admin_permission_denied", body = ErrorEnvelope),
         (status = 422, description = "admin_reason_required / validation_failed", body = ErrorEnvelope),
     ),
     security(("session_cookie" = []), ("bearer_jwt" = []))
@@ -1039,7 +1190,7 @@ pub async fn export_audit_events(
     responses(
         (status = 200, description = "Verification report", body = ChainVerification),
         (status = 401, description = "unauthenticated / step_up_required", body = ErrorEnvelope),
-        (status = 403, description = "forbidden", body = ErrorEnvelope),
+        (status = 403, description = "forbidden / admin_permission_denied", body = ErrorEnvelope),
         (status = 422, description = "validation_failed (anchor)", body = ErrorEnvelope),
     ),
     security(("session_cookie" = []), ("bearer_jwt" = []))
@@ -1070,7 +1221,7 @@ pub async fn verify_audit_chain(
     responses(
         (status = 200, description = "Restricted", body = ActionOutcome),
         (status = 401, description = "unauthenticated / step_up_required", body = ErrorEnvelope),
-        (status = 403, description = "forbidden / admin_target_not_allowed", body = ErrorEnvelope),
+        (status = 403, description = "forbidden / admin_permission_denied / admin_target_not_allowed", body = ErrorEnvelope),
         (status = 404, description = "not_found (no justification about a user)", body = ErrorEnvelope),
         (status = 422, description = "admin_reason_required / validation_failed (review_at)", body = ErrorEnvelope),
     ),
@@ -1102,7 +1253,7 @@ pub async fn restrict_justification(
     responses(
         (status = 200, description = "Extended", body = ActionOutcome),
         (status = 401, description = "unauthenticated / step_up_required", body = ErrorEnvelope),
-        (status = 403, description = "forbidden / admin_target_not_allowed", body = ErrorEnvelope),
+        (status = 403, description = "forbidden / admin_permission_denied / admin_target_not_allowed", body = ErrorEnvelope),
         (status = 404, description = "not_found", body = ErrorEnvelope),
         (status = 409, description = "conflict (no active restriction)", body = ErrorEnvelope),
         (status = 422, description = "admin_reason_required / validation_failed (review_at)", body = ErrorEnvelope),
@@ -1219,5 +1370,75 @@ pub async fn enrollment_verify(
     };
     Ok(ok(service
         .finish_break_glass_enrollment(&ctx, body.token.expose(), request)
+        .await?))
+}
+
+// --- staff roles (K-93) -------------------------------------------------------------
+
+/// Body of `POST /v1/admin/staff/{user_id}/role` (K-93).
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StaffRoleRequest {
+    /// The new role.
+    pub role: StaffRole,
+    /// Mandatory justification (ADM-08).
+    pub reason: Option<String>,
+    /// Four-eyes approval (K-66) of `change_staff_role` with the same
+    /// target and role, when `admin.four_eyes` is on.
+    #[schema(value_type = Option<String>)]
+    pub approval_id: Option<uuid::Uuid>,
+}
+
+/// Staff accounts and their roles (K-93).
+#[utoipa::path(
+    get,
+    path = "/v1/admin/staff",
+    tag = "admin",
+    responses(
+        (status = 200, description = "Staff accounts", body = [StaffMember]),
+        (status = 401, description = "unauthenticated / step_up_required", body = ErrorEnvelope),
+        (status = 403, description = "forbidden / admin_phishing_resistant_mfa_required / admin_permission_denied", body = ErrorEnvelope),
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
+)]
+pub async fn list_staff(
+    State(service): State<AdminService>,
+    caller: AdminCaller,
+) -> Result<Response, AuthError> {
+    Ok(ok(service.list_staff(&caller).await?))
+}
+
+/// Changes the role of **another**, non-break-glass staff member (K-93):
+/// four-eyes (`change_staff_role`), audited with the old and the new role;
+/// every session and trusted device of the target ends in the same
+/// transaction. The API never makes a regular user staff nor removes staff
+/// rights (CLI `grant-admin` / `revoke-admin`).
+#[utoipa::path(
+    post,
+    path = "/v1/admin/staff/{user_id}/role",
+    tag = "admin",
+    params(("user_id" = String, Path, description = "User id of the staff member")),
+    request_body = StaffRoleRequest,
+    responses(
+        (status = 200, description = "Role changed", body = StaffRoleChange),
+        (status = 401, description = "unauthenticated / step_up_required", body = ErrorEnvelope),
+        (status = 403, description = "forbidden / admin_phishing_resistant_mfa_required / admin_permission_denied / admin_target_not_allowed / admin_approval_required / admin_approval_invalid", body = ErrorEnvelope),
+        (status = 404, description = "not_found", body = ErrorEnvelope),
+        (status = 409, description = "conflict (the member already has this role)", body = ErrorEnvelope),
+        (status = 422, description = "admin_reason_required / validation_failed", body = ErrorEnvelope),
+        (status = 429, description = "rate_limited", body = ErrorEnvelope),
+    ),
+    security(("session_cookie" = []), ("bearer_jwt" = []))
+)]
+pub async fn change_staff_role(
+    State(service): State<AdminService>,
+    caller: AdminCaller,
+    ctx: RequestContext,
+    Path(user_id): Path<UserId>,
+    Json(body): Json<StaffRoleRequest>,
+) -> Result<Response, AuthError> {
+    let reason = Justification::parse(body.reason.as_deref())?;
+    Ok(ok(service
+        .change_staff_role(&caller, &ctx, user_id, body.role, &reason, body.approval_id)
         .await?))
 }

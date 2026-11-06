@@ -1,0 +1,13 @@
+{% extends "tr/email/layout.html" %}
+{% block content %}
+<p style="margin:0 0 16px;">{{ app_name }} üzerindeki “{{ org_name }}” organizasyonunun {{ domain }} domain'i artık doğrulanmış değil: doğrulama TXT kaydı art arda birkaç kontrolde DNS'te bulunamadı. Bu domain için e-posta domain'iyle otomatik katılım durduruldu.</p>
+{% endblock %}
+{% block details %}
+<table role="presentation" cellspacing="0" cellpadding="0" style="margin:0 0 16px;font-size:14px;">
+<tr><td style="padding:2px 12px 2px 0;color:#52606d;vertical-align:top;">Domain</td><td style="padding:2px 0;">{{ domain }}</td></tr>
+<tr><td style="padding:2px 12px 2px 0;color:#52606d;vertical-align:top;">Zaman</td><td style="padding:2px 0;">{{ at }}</td></tr>
+</table>
+{% endblock %}
+{% block closing %}
+<p style="margin:0 0 16px;">Domain hâlâ organizasyonunuza aitse, organizasyon ayarlarında gösterilen TXT kaydını yeniden yayımlayıp domain'i doğrulayın. Değilse domain'i kaldırın.</p>
+{% endblock %}

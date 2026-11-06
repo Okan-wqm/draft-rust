@@ -84,12 +84,17 @@ pub enum Command {
         #[command(flatten)]
         offline: OfflineArgs,
     },
-    /// Grant regular platform-admin rights to an existing active account
-    /// offline (K-76): its sessions end; the API never grants admin rights.
+    /// Grant staff rights with a role to an existing active account, or
+    /// change the role of a staff member, offline (K-76, K-93): its
+    /// sessions end; the API never grants staff rights.
     GrantAdmin {
         /// Target, justification and operator.
         #[command(flatten)]
         offline: OfflineArgs,
+        /// Staff role: `support_readonly`, `support`, `security` or
+        /// `platform_admin` (K-93).
+        #[arg(long)]
+        role: String,
     },
     /// Revoke the platform-admin rights of an account offline (K-76):
     /// sessions, trusted devices, impersonations and enrollment links end;
@@ -383,7 +388,9 @@ fn read_pem(path: &std::path::Path) -> Result<Zeroizing<String>, ServerError> {
 /// web protection (host, security headers, CORS, admin console CORS), the
 /// key material (KEKs, peppers, HMAC root) and the social-login providers
 /// (the envelope-encrypted Apple key must open with the configured KEKs,
-/// `oidc_client.error_redirect` must be an allowed redirect target, K-73).
+/// `oidc_client.error_redirect` must be an allowed redirect target, K-73),
+/// the `otel` feature for `telemetry.enabled` (OPS-11) and the GeoIP
+/// database (RSK-05).
 async fn check_startup_settings(config: &AppConfig) -> Result<(), ServerError> {
     let protect = &config.protect;
     authn_protect::web::HostValidation::from_config(protect, &config.server.public_base_url)
@@ -403,6 +410,11 @@ async fn check_startup_settings(config: &AppConfig) -> Result<(), ServerError> {
             .map_err(ServerError::Startup)?;
     }
     authn_oidc_client::ProviderRegistry::from_settings(&settings).map_err(ServerError::Startup)?;
+    // OPS-11: `telemetry.enabled` needs the `otel` feature.
+    crate::telemetry::check(config)
+        .map_err(|e| ServerError::Startup(AuthError::internal(e.to_string())))?;
+    // RSK-05: the GeoIP database must load and verify.
+    crate::services::open_geoip(config).map_err(ServerError::Startup)?;
     Ok(())
 }
 
@@ -456,8 +468,12 @@ pub async fn run(cli: Cli) -> Result<Outcome, ServerError> {
         }
         Command::Serve => {
             let config = AppConfig::load(cli.config.as_deref())?;
-            crate::telemetry::init(&config.server)?;
-            crate::serve::serve(config).await?;
+            // OPS-11: logs plus the optional OpenTelemetry exporter, flushed
+            // (bounded by its export timeout) after the server stopped.
+            let telemetry = crate::telemetry::init_serve(&config)?;
+            let result = crate::serve::serve(config).await;
+            telemetry.shutdown().await;
+            result?;
             Ok(Outcome::Done)
         }
         Command::CreateAdmin {
@@ -563,12 +579,18 @@ pub async fn run(cli: Cli) -> Result<Outcome, ServerError> {
                 describe(&outcome)
             )))
         }
-        Command::GrantAdmin { offline } => {
+        Command::GrantAdmin { offline, role } => {
             let (operator, target, reason) = offline.parse()?;
+            let role = role.parse::<authn_admin::StaffRole>().map_err(|_| {
+                ServerError::Input(
+                    "--role must be support_readonly, support, security or platform_admin"
+                        .to_owned(),
+                )
+            })?;
             let (_config, services) = services(&cli, clock).await?;
             let outcome = services
                 .admin
-                .grant_admin_offline(&operator, &target, &reason)
+                .grant_admin_offline(&operator, &target, role, &reason)
                 .await
                 .map_err(ServerError::Startup)?;
             Ok(Outcome::Message(format!(
