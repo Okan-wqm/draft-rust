@@ -67,7 +67,7 @@ Bir açık düzeltilemiyorsa ya da bilinçli olarak kabul edilen bir risk ise ge
 **Kapsam dışı:**
 
 - [`docs/security/known-limitations.md`](docs/security/known-limitations.md)'de gerekçesiyle **zaten listelenmiş** sınırlamalar. Bunları atlatmanın yeni bir yolunu bulduysanız kapsamdadır.
-- Faz 2/3 özelliklerinin yokluğu (OAuth/OIDC sağlayıcısı, SSO, SCIM, DPoP, SAML vb.; bkz. [`docs/roadmap.md`](docs/roadmap.md)).
+- Faz 2/3 özelliklerinin yokluğu (OIDC sağlayıcısının henüz yapılmamış kısımları — ES256, org istemcileri, `offline_access` —, SSO, SCIM, DPoP, SAML vb.; OIDC sağlayıcısının çekirdeği (K-80) kapsam içindedir; bkz. [`docs/roadmap.md`](docs/roadmap.md)).
 - `config/example.toml` içindeki örnek anahtarlar ve `config/dev-certs/` altındaki Mailpit sertifikası/özel anahtarı. Bunlar bilinçli olarak yayımlanmış geliştirme değerleridir ve üretim/staging yapılandırması bunları reddeder.
 - Bu sistemi kullanan ön yüz uygulamaları, işletmecinin altyapısı (TLS sonlandırma, PostgreSQL, ağ), üçüncü taraf servisler (OIDC sağlayıcıları, HIBP, CAPTCHA, SMTP/SMS sağlayıcıları).
 - Bağımlılıklardaki açıklar: lütfen önce ilgili projeye bildirin. Bu projedeki kullanımın açığı sömürülebilir kılıp kılmadığı kapsamdadır.

@@ -14,15 +14,15 @@ Gösterim: ✅ karşılanıyor · 🟡 kısmi · ❌ karşılanmıyor · — uyg
 
 | Bölüm | ✅ | 🟡 | ❌ | — | Toplam |
 |-------|----|----|----|----|--------|
-| V2 Kimlik doğrulama | 37 | 13 | 0 | 7 | 57 |
+| V2 Kimlik doğrulama | 38 | 12 | 0 | 7 | 57 |
 | V3 Oturum yönetimi | 15 | 2 | 0 | 3 | 20 |
 | V4 Erişim denetimi | 8 | 0 | 0 | 1 | 9 |
 | V6 Saklanan kriptografi | 8 | 5 | 1 | 2 | 16 |
-| V7 Hata işleme ve loglama | 8 | 4 | 0 | 0 | 12 |
+| V7 Hata işleme ve loglama | 9 | 3 | 0 | 0 | 12 |
 | V8 Veri koruma | 11 | 3 | 0 | 3 | 17 |
-| V13 API ve web servisleri | 7 | 2 | 0 | 0 | 9 |
+| V13 API ve web servisleri | 19 | 2 | 0 | 0 | 21 |
 | V14 Yapılandırma | 17 | 5 | 1 | 1 | 24 |
-| **Toplam** | **111** | **34** | **2** | **17** | **164** |
+| **Toplam** | **125** | **32** | **2** | **17** | **176** |
 
 Sayım tablodaki satırlardan üretildi. "Karşılanıyor" olup adında gereksinim kimliği taşıyan bir testi olmayan satırlar "Test" sütununda ayrıca belirtilir.
 
@@ -63,7 +63,7 @@ Karşılanmayan iki madde: **V6.4.2** (anahtar materyali uygulama belleğinde; K
 
 | ASVS | Gereksinim (özet) | Durum | Kod | Test | Not |
 |------|-------------------|-------|-----|------|-----|
-| 2.3.1 | Sistemin ürettiği ilk şifre/aktivasyon kodu rastgele, kısa ömürlü, kalıcı şifre olmaz | 🟡 | `crates/authn-admin/src/break_glass.rs`, `crates/authn-server/src/cli.rs` | `adm_05_cli_create_admin_prints_the_one_time_password_exactly_once`, `adm_05_k11_break_glass_passkey_enrollment_link` | Normal kullanıcıya sistem şifre üretmez. Break-glass `create-admin` 256 bit rastgele bir şifre üretir; bu şifre **süresiz** geçerlidir ve değişiklik zorunlu değildir. Önerilen yol `--passkey-link`'tir (tek kullanımlık, varsayılan 30 dk) |
+| 2.3.1 | Sistemin ürettiği ilk şifre/aktivasyon kodu rastgele, kısa ömürlü, kalıcı şifre olmaz | ✅ | `crates/authn-admin/src/break_glass.rs`, `crates/authn-server/src/cli.rs` | `adm_05_cli_create_admin_prints_the_one_time_password_exactly_once`, `adm_05_k11_break_glass_passkey_enrollment_link` | Normal kullanıcıya sistem şifre üretmez. Break-glass `create-admin` 256 bit rastgele bir şifre üretir; bu şifre tek kullanımlıktır: 24 saat sonra geçersiz olur ve ilk girişte değiştirilmesi zorunludur (K-110, `adm_05_k110_break_glass_initial_password_is_one_time_and_expires`). Önerilen yol `--passkey-link`'tir (tek kullanımlık, varsayılan 30 dk) |
 | 2.3.2 | Kullanıcının kendi cihazlarını (FIDO/U2F) kaydedebilmesi | ✅ | `crates/authn-webauthn/` | `pky_01_registration_round_trip_stores_a_verified_passkey`, `tst_06_passkey_registration_step_up_and_login` | — |
 | 2.3.3 | Süreli doğrulayıcılar için yenileme talimatı | — | — | — | Süreli kullanıcı doğrulayıcısı yok. API anahtarlarının son kullanma tarihi zorunludur (ORG-08), yenileme bildirimi yoktur |
 

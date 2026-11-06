@@ -13,7 +13,7 @@
 - TLS sonlandırma (ters proxy / yük dengeleyici), ağ segmentasyonu, WAF.
 - PostgreSQL'in kendisinin, işletim sisteminin ve konteyner çalışma ortamının sertleştirilmesi; disk şifreleme; yedeklerin korunması.
 - Ön yüz uygulamaları (web, iOS, Android) ve onların XSS / token saklama güvenliği. Bu sistem API-önceliklidir; barındırılan UI yoktur.
-- Faz 2/3 yüzeyi (OAuth 2.1/OIDC sağlayıcısı, kurumsal SSO, SCIM, DPoP, SAML): kodda yok ([roadmap](../roadmap.md)).
+- Faz 2/3 yüzeyinin henüz yazılmamış kısımları (kurumsal SSO, SCIM, DPoP, SAML ve OIDC sağlayıcısının K-80 "Kalan" maddeleri): kodda yok ([roadmap](../roadmap.md)). OIDC sağlayıcısının çekirdeği §5.7a'dadır.
 
 **Varsayımlar:**
 
@@ -268,7 +268,7 @@ Yeni güven sınırı: kayıtlı **istemci uygulamalar** (RP) ve onların taray�
 | I | Veritabanı sızıntısından sırların okunması | P7 | Token/kod/anahtar yalnızca hash; sırlar zarf şifreli, AAD satıra bağlı; şifreler Argon2id + pepper | `cry_08_aad_binds_table_column_and_row`, `cry_02_the_pepper_is_part_of_the_hash`, `aud_07_create_returns_the_secret_once_and_stores_only_ciphertext` | Kişisel veri (e-posta, telefon) kolon düzeyinde şifreli değil |
 | T | Uygulama rolüyle şema/rol ele geçirme (`pg_temp`, `search_path`) | P7 | En az yetki fonksiyonu tehlikeli rolleri reddeder, `TEMPORARY` geri alınır, çağıranın `search_path`'ine güvenilmez | `ops_10_restricted_roles_cannot_create_temporary_objects`, `ops_10_least_privilege_helper_ignores_the_callers_search_path`, `k_77_switch_trigger_cannot_be_hijacked_through_pg_temp` | Rolleri kurmak işletmecinin işidir (runbook) |
 | S | Örnek/test anahtarlarıyla üretime çıkmak | — | Yayımlanmış anahtarlar `production`/`staging`'de reddedilir | `cry_02_published_keys_are_refused_in_production`, `ops_08_example_keys_are_refused_in_production` | — |
-| T | Güvensiz yapılandırma (bellek içi hız sınırı, SSRF muafiyeti, four-eyes kapalı, oturum kontrolü kapalı) | — | `production` ortamında yapılandırma doğrulaması reddeder; servis açılmaz | `ses_08_k58_session_check_cannot_be_switched_off_in_production_or_staging`, `adm_06_k66_four_eyes_cannot_be_switched_off_in_production`, `prt_05_k58_captcha_hostnames_are_required_in_production` | Bu kuralların çoğu `staging`'de uygulanmaz |
+| T | Güvensiz yapılandırma (bellek içi hız sınırı, SSRF muafiyeti, four-eyes kapalı, oturum kontrolü kapalı) | — | `production` ortamında yapılandırma doğrulaması reddeder; servis açılmaz | `ses_08_k58_session_check_cannot_be_switched_off_in_production_or_staging`, `adm_06_k66_four_eyes_cannot_be_switched_off_in_production`, `prt_05_k58_captcha_hostnames_are_required_in_production` | `staging` de aynı kuralları uygular (K-111); yalnızca `admin.four_eyes = false` ve `notify.email.transport = "disabled"` izinlidir |
 | I | Sırların loglara/`Debug`'a girmesi | — | `secrecy`/`Zeroizing`, redakte eden `Debug`, log yakalama testleri | `cry_13_debug_output_contains_no_secrets`, `k_77_chain_key_never_appears_in_logs_or_debug`, `arc_07_invalid_values_are_all_reported_without_secrets` | Üçüncü taraf kütüphanelerin (zxcvbn, serde/axum tamponları, lettre) iç kopyaları sıfırlanmaz |
 | E | Kod enjeksiyonu (SQL) | P1 | Yalnızca `&'static str` SQL + bind parametreleri (sqlx 0.9); dinamik SQL derlenmez | Mimari kural, `CLAUDE.md` / `contracts.md` | — |
 
