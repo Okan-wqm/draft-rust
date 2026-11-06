@@ -1,6 +1,6 @@
 # rust-authentication
 
-Rust ile yazılmış, kendi barındırılan bir **kimlik doğrulama sunucusu**. B2C web uygulamaları, B2B SaaS ürünleri (organizasyonlar, roller, davetler, API anahtarları) ve native mobil uygulamalar (token akışı, passkey) aynı sunucuyu kullanır. Tek binary (`rust-authentication`) olarak çalışır; PostgreSQL 16 zorunludur, Redis isteğe bağlıdır. Yalnızca ticari kullanıma engel olmayan, izin verici lisanslı bağımlılıklar kullanılır.
+Rust ile yazılmış, kendi barındırılan bir **kimlik doğrulama sunucusu**. B2C web uygulamaları, B2B SaaS ürünleri (organizasyonlar, roller, davetler, API anahtarları) ve native mobil uygulamalar (token akışı, passkey) aynı sunucuyu kullanır. Tek binary (`rust-authentication`) olarak çalışır; PostgreSQL 16 zorunludur, Redis isteğe bağlıdır. Yalnızca ticari kullanıma engel olmayan, izin verici lisanslı bağımlılıklar kullanılır. **Tescilli yazılımdır, tüm hakları saklıdır (© Okan-wqm); yazılı izin olmadan kullanılamaz — bkz. [`LICENSE`](LICENSE).**
 
 > **Durum (2026-11-05):** Faz 1 geliştirme aşamasında, ilk sürüm etiketlenmedi (workspace sürümü `0.1.0`). Kod iç güvenlik denetimlerinden geçti ([K-57](docs/security/k57-global-audit.md)), ancak **bağımsız bir dış güvenlik denetimi (pentest) yapılmadı** (K-72) ve **Docker imajı hiç derlenip çalıştırılmadı** (K-55). Üretime çıkmadan önce [bilinen sınırlamalar](docs/security/known-limitations.md) belgesini okuyun.
 
@@ -218,14 +218,14 @@ Fuzz hedefleri ayrı bir workspace'tedir: `cd fuzz && cargo +nightly fuzz build`
 
 **Bağımlılıklar (LIC-01):** yalnızca ticari kullanıma engel olmayan, izin verici lisanslar. `deny.toml` bunu zorlar ve CI'da `cargo deny check` kırmızıysa birleştirme yapılmaz.
 
-- **İzinli:** MIT, Apache-2.0, Apache-2.0 WITH LLVM-exception, BSD-2-Clause, BSD-3-Clause, ISC, Zlib, Unicode-3.0, Unicode-DFS-2016, CC0-1.0, CDLA-Permissive-2.0, 0BSD.
+- **İzinli:** MIT, Apache-2.0, Apache-2.0 WITH LLVM-exception, BSD-2-Clause, BSD-3-Clause, ISC, Zlib, Unicode-3.0, CC0-1.0, CDLA-Permissive-2.0, 0BSD.
 - **Yasak:** GPL, AGPL, LGPL, SSPL, BUSL, ticari ve kaynağı-görünür lisanslar. OpenSSL/`native-tls`/`aws-lc-sys` de `deny.toml`'da yasaktır (TLS yalnızca `rustls` + `ring`).
 - **Onaylı istisnalar (crate bazında):**
   - Passkey için `webauthn-rs` ailesi ve zorunlu bağımlılıkları **MPL-2.0** (`webauthn-rs`, `webauthn-rs-core`, `webauthn-rs-proto`, `webauthn-attestation-ca`, `webauthn-authenticator-rs`, `base64urlsafedata`, `crypto-glue`, `compact_jwt`).
   - `libfuzzer-sys` (**NCSA**, BSD benzeri): yalnızca dağıtılmayan `fuzz/` workspace'inde, `fuzz/deny.toml` ile. Kök `deny.toml` bu crate'i ürün workspace'inde açıkça yasaklar; ürün binary'sine giremez.
 - **Üçüncü taraf bildirimleri:** [`THIRD_PARTY_LICENSES.txt`](THIRD_PARTY_LICENSES.txt) binary'ye giren her crate'in lisans metnini, telif bildirimlerini ve `NOTICE` dosyalarını içerir; Docker imajına `/usr/share/doc/rust-authentication/` altında kopyalanır. Bağımlılık eklediğinizde veya güncellediğinizde `python3 -I licenses/generate_notices.py` ile yeniden üretip commit edin; CI'daki `licence-notices` işi farkı yakalar. Ayrıntı: [`licenses/README.md`](licenses/README.md).
 
-**Projenin kendi lisansı:** depoda henüz bir `LICENSE` dosyası ve `Cargo.toml`'da `license` alanı **yoktur**; bu proje sahibinin kararıdır.
+**Projenin kendi lisansı:** tescilli yazılım, **tüm hakları saklıdır** — © 2026 Okan-wqm ([`LICENSE`](LICENSE)). Hak sahibinin önceden verilmiş yazılı izni olmadan hiçbir amaçla (ticari, kişisel, eğitim, araştırma, değerlendirme dahil) kullanılamaz, kopyalanamaz, değiştirilemez veya dağıtılamaz. İzin ve iletişim: by-okan@live.com. Yukarıdaki bağımlılık politikası yalnızca projenin **kullandığı** üçüncü taraf bileşenlerin lisanslarıyla ilgilidir; bu bileşenlerin lisans şartları yine harfi harfine karşılanır.
 
 ## Belgeler
 

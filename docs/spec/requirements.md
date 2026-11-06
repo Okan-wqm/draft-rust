@@ -36,7 +36,7 @@ Mimari, Faz 2/3 eklenirken mevcut modüllerin yeniden yazılmasını gerektirmem
 - Diğer: `serde`, `serde_json`, `thiserror`, `uuid` (v7), `time`, `tracing`, `tracing-subscriber`, `metrics` + `metrics-exporter-prometheus`, `utoipa` (OpenAPI), `figment` (konfigürasyon), `zxcvbn`, `unicode-normalization`, `unicode-security`, `hickory-resolver` (DNS TXT), `qrcode` (TOTP QR), `governor` (bellek içi rate limit).
 - Test: `proptest`, `wiremock`, `tokio::test`, `#[sqlx::test]`, `cargo-fuzz`.
 
-**Lisans politikası (LIC-01, MUST):** Yalnızca ticari kullanıma engel olmayan açık kaynak lisanslar. İzinli: MIT, Apache-2.0, Apache-2.0 WITH LLVM-exception, BSD-2-Clause, BSD-3-Clause, ISC, Zlib, Unicode-3.0, Unicode-DFS-2016, CC0-1.0, CDLA-Permissive-2.0, 0BSD, OpenSSL (yalnızca `openssl` bağımlılığı gerekiyorsa). MPL-2.0 yalnızca `webauthn-rs` ailesi ve onun zorunlu bağımlılıkları için crate bazında istisna. GPL, AGPL, LGPL, SSPL, BUSL, ticari ve kaynağı-görünür (source-available) lisanslar yasak. `deny.toml` bunu zorlar; CI'da `cargo deny check` kırmızıysa merge yok.
+**Lisans politikası (LIC-01, MUST):** Yalnızca ticari kullanıma engel olmayan açık kaynak lisanslar. İzinli: MIT, Apache-2.0, Apache-2.0 WITH LLVM-exception, BSD-2-Clause, BSD-3-Clause, ISC, Zlib, Unicode-3.0, CC0-1.0, CDLA-Permissive-2.0, 0BSD, OpenSSL (yalnızca `openssl` bağımlılığı gerekiyorsa). MPL-2.0 yalnızca `webauthn-rs` ailesi ve onun zorunlu bağımlılıkları için crate bazında istisna. GPL, AGPL, LGPL, SSPL, BUSL, ticari ve kaynağı-görünür (source-available) lisanslar yasak. `deny.toml` bunu zorlar; CI'da `cargo deny check` kırmızıysa merge yok.
 
 ---
 

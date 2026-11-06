@@ -2,8 +2,6 @@
 
 Bu belge, `rust-authentication` (depo: `draft-rust`) içinde bulduğunuz bir güvenlik açığını nasıl bildireceğinizi ve bildiriminizin nasıl ele alınacağını anlatır.
 
-> **⚠️ PROJE SAHİBİ İÇİN YAPILACAK (TODO):** Aşağıdaki iletişim bilgileri **yer tutucudur**. Bu dosya yayımlanmadan önce gerçek bir güvenlik iletişim adresi, isteğe bağlı bir şifreleme anahtarı ve (kullanılacaksa) depo barındırıcısının özel bildirim kanalı doldurulmalıdır. Yer tutucular `<<…>>` biçimindedir ve `grep -n '<<' SECURITY.md` ile bulunur.
-
 ## Desteklenen sürümler
 
 Proje henüz ilk sürümünü yayımlamadı. Workspace sürümü `0.1.0`'dır (`Cargo.toml`) ve sürüm etiketi yoktur.
@@ -14,18 +12,13 @@ Proje henüz ilk sürümünü yayımlamadı. Workspace sürümü `0.1.0`'dır (`
 | Diğer dallar (ör. `claude/**` çalışma dalları) | ❌ Hayır: düzeltmeler `main`'e yapılır |
 | Etiketli sürümler | — Henüz yok. İlk sürüm etiketlendiğinde bu tablo, hangi sürüm serilerinin desteklendiğini gösterecek biçimde güncellenmelidir |
 
-Bu depo, proje sahibinin kendi ürünlerinde **şablon** olarak kullanması için geliştirilmektedir. Kodu kendi ürününüze kopyaladıysanız, düzeltmeleri kendi kopyanıza taşımak sizin sorumluluğunuzdadır.
+Bu yazılım tescillidir ve tüm hakları saklıdır ([`LICENSE`](LICENSE)); yazılı izin olmadan kullanılamaz, kopyalanamaz veya dağıtılamaz. Bu politika, kodu izinle inceleyen ya da kodla karşılaşan herkesin açıkları sorumlu biçimde bildirebilmesi içindir ve hiçbir kullanım hakkı vermez.
 
 ## Açık nasıl bildirilir
 
 **Güvenlik açıklarını herkese açık issue, pull request, tartışma ya da sohbet kanalında bildirmeyin.**
 
-Bildirimi şu kanallardan biriyle **özel olarak** gönderin:
-
-1. **E-posta:** `<<GÜVENLİK İLETİŞİM ADRESİ — proje sahibi dolduracak>>`
-2. **Depo barındırıcısının özel güvenlik bildirimi özelliği** (ör. GitHub "Report a vulnerability" / private vulnerability reporting): `<<etkinleştirildiyse bağlantı — proje sahibi dolduracak>>`
-
-İsteğe bağlı şifreleme anahtarı: `<<açık anahtar parmak izi ve indirme adresi — proje sahibi dolduracak; kullanılmayacaksa bu satırı silin>>`
+Bildirimi **özel olarak** e-postayla gönderin: **by-okan@live.com** (konu satırına `[SECURITY]` yazın).
 
 Bildiriminizde mümkünse şunlar olsun:
 
@@ -39,7 +32,7 @@ Kişisel veri, gerçek kullanıcı kimlik bilgisi veya üretim sırları **gönd
 
 ## Süreç ve zaman çizelgesi
 
-Aşağıdaki süreler **hedeftir**, garanti değildir. Proje sahibi gerçek kapasitesine göre güncellemelidir: `<<süreleri onaylayın veya değiştirin — proje sahibi>>`.
+Aşağıdaki süreler **hedeftir**, garanti değildir.
 
 | Adım | Hedef süre |
 |------|-----------|

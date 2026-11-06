@@ -177,6 +177,12 @@ Denetçinin baktığı sınıflar: hesap varlığı sızıntısı (gövde/durum/
   - **K-39:** admin işlem gerekçeleri kullanıcının veri dışa aktarımına (ACC-10) **dahil** (GDPR md. 15 / KVKK md. 11); personel kimliği ve IP'si çıkarılır (GDPR md. 15/4). Dolandırıcılık/hukuki soruşturma için admin bir gerekçeyi zorunlu notla "kısıtlı" işaretleyebilir (KVKK md. 28 / GDPR md. 23); bu işaretleme audit'lenir, dışa aktarımda içerik verilmez ama kısıtlı kayıt sayısı belirtilir.
   - **K-56:** CI, `main`'e ek olarak `claude/**` dallarına her push'ta da çalışır; PR açmak proje sahibinin kontrolünde kalır.
   - **Lisans:** `libfuzzer-sys` NCSA istisnası onaylı (yalnızca `fuzz/`); tüm üçüncü taraf lisans şartları harfi harfine karşılanır (`licenses/README.md`). Depo adı `draft-rust` kalır.
+- **Proje sahibinin kararları (2026-11-06):**
+  - **Projenin lisansı:** %100 kapalı, tescilli; **tüm hakları saklıdır**, sahibi **Okan-wqm** (`by-okan@live.com`). Yazılı izin olmadan hiçbir amaçla kullanılamaz (`LICENSE`, `Cargo.toml` `license-file`). Hiçbir dosyaya açık kaynak lisans başlığı eklenmez.
+  - **Güvenlik iletişim adresi:** `by-okan@live.com` (`SECURITY.md`).
+  - **K-72:** proje sahibi kararı uzmana bıraktı; karar: **üretim öncesi bağımsız dış pentest zorunlu** — kapsam: `docs/security/pentest-scope.md`.
+  - **K-116:** öneri onaylandı (`CLAUDE.md` listesi `deny.toml` ile eşitlendi).
+  - **Depo görünürlüğü:** depo GitHub'da **public**; tescilli lisansla çelişir — proje sahibine private yapması önerildi (GitHub → Settings → Danger Zone → Change visibility).
 
 - Kullanıcı Türkçe konuşuyor; kısa, doğrudan ilerleme raporu bekliyor. İlerlemeyi "yüzde kaç bitti, ne kaldı" gibi sorarak takip ediyor — dürüst ol, bitmemiş şeyi bitmiş gösterme.
 - İsteği: "profesyonel kalite, güvenlik takıntılı, her özellik test edilsin, dokümantasyon eksiksiz, her bölüm için uzman agent". Faz 1 bu repoda; Faz 2/3 (OAuth 2.1/OIDC **sağlayıcısı**, kurumsal SSO, SCIM, DPoP, Single Logout, SAML) ayrı bir iş olarak planlandı — özellik karşılaştırması ve öncelikli yol haritası: [`docs/roadmap.md`](roadmap.md) (DOC-09, K-71).

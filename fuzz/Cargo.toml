@@ -18,6 +18,7 @@ name = "authn-fuzz"
 version = "0.0.0"
 edition = "2024"
 publish = false
+license-file = "../LICENSE"
 
 [package.metadata]
 cargo-fuzz = true

@@ -1,0 +1,83 @@
+TESCİLLİ YAZILIM — TÜM HAKLARI SAKLIDIR
+PROPRIETARY SOFTWARE — ALL RIGHTS RESERVED
+
+Copyright (c) 2026 Okan-wqm (by-okan@live.com). Tüm hakları saklıdır.
+Copyright (c) 2026 Okan-wqm (by-okan@live.com). All rights reserved.
+
+-------------------------------------------------------------------------------
+TÜRKÇE
+-------------------------------------------------------------------------------
+
+Bu depodaki kaynak kodu, derlenmiş dosyalar, belgeler, yapılandırma
+dosyaları, testler ve diğer tüm içerik (birlikte "Yazılım") Okan-wqm'nin
+münhasır mülkiyetindedir.
+
+1. Hiçbir lisans verilmemiştir. Yazılımın bu depoda veya başka bir yerde
+   görülebilir olması, hiçbir kişiye veya kuruluşa açık ya da örtülü
+   hiçbir hak, lisans veya izin vermez.
+
+2. Hak sahibinin önceden verilmiş, yazılı ve imzalı izni olmadan Yazılım
+   veya herhangi bir parçası hiçbir amaçla kullanılamaz, çalıştırılamaz,
+   kopyalanamaz, çoğaltılamaz, değiştirilemez, uyarlanamaz, birleştirilemez,
+   türev çalışmaya dönüştürülemez, yayımlanamaz, dağıtılamaz, alt lisansa
+   verilemez, satılamaz, kiralanamaz, hizmet olarak sunulamaz, tersine
+   mühendislik, kaynak koda dönüştürme veya ayrıştırma işlemine tabi
+   tutulamaz ve yapay zekâ/makine öğrenimi modellerinin eğitiminde
+   kullanılamaz. Bu yasak ticari ve ticari olmayan (kişisel, eğitim,
+   araştırma, değerlendirme dahil) tüm amaçlar için geçerlidir.
+
+3. Yazılım "OLDUĞU GİBİ" sağlanır; açık veya örtülü hiçbir garanti
+   verilmez. Hak sahibi, Yazılımın izinsiz kullanımından doğan hiçbir
+   zarardan sorumlu değildir.
+
+4. Bu koşulların ihlali, 5846 sayılı Fikir ve Sanat Eserleri Kanunu ve
+   uygulanabilir diğer mevzuat kapsamında hukuki ve cezai sorumluluk
+   doğurabilir.
+
+5. İzin talepleri ve iletişim: by-okan@live.com
+
+-------------------------------------------------------------------------------
+ENGLISH
+-------------------------------------------------------------------------------
+
+The source code, compiled files, documentation, configuration files, tests
+and all other content of this repository (together, the "Software") are the
+exclusive property of Okan-wqm.
+
+1. No licence is granted. The fact that the Software is visible in this
+   repository or elsewhere grants no right, licence or permission, express
+   or implied, to any person or entity.
+
+2. Without the prior written and signed permission of the copyright holder,
+   the Software or any part of it may not be used, run, copied, reproduced,
+   modified, adapted, merged, made into derivative works, published,
+   distributed, sublicensed, sold, rented, offered as a service, reverse
+   engineered, decompiled or disassembled, or used to train artificial
+   intelligence / machine learning models, for any purpose whatsoever. This
+   prohibition applies to all purposes, commercial and non-commercial
+   (including personal, educational, research and evaluation use).
+
+3. The Software is provided "AS IS", without warranty of any kind, express
+   or implied. The copyright holder is not liable for any damage arising
+   from unauthorised use of the Software.
+
+4. Violation of these terms may give rise to civil and criminal liability
+   under applicable copyright law.
+
+5. Permission requests and contact: by-okan@live.com
+
+-------------------------------------------------------------------------------
+ÜÇÜNCÜ TARAF BİLEŞENLER / THIRD-PARTY COMPONENTS
+-------------------------------------------------------------------------------
+
+Yazılım, kendi lisansları altında dağıtılan üçüncü taraf açık kaynak
+bileşenler kullanır. Bu bileşenler bu lisansın kapsamında değildir; lisans
+metinleri ve telif bildirimleri THIRD_PARTY_LICENSES.txt dosyasındadır.
+MPL-2.0 lisanslı bileşenlerin (webauthn-rs ailesi) kaynak kodu, o dosyada
+belirtilen yayımlanmış kaynaklardan edinilebilir.
+
+The Software uses third-party open-source components distributed under
+their own licences. Those components are not covered by this licence; their
+licence texts and copyright notices are in THIRD_PARTY_LICENSES.txt. The
+source code of MPL-2.0 components (the webauthn-rs family) is available from
+the published sources named in that file.

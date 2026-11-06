@@ -27,7 +27,8 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.97"
 publish = false
-authors = ["rust-authentication contributors"]
+authors = ["Okan-wqm <by-okan@live.com>"]
+license-file = "LICENSE"
 
 # Every external dependency of the workspace is pinned here. Member crates only
 # reference these entries (`foo.workspace = true`) and may add features locally.
