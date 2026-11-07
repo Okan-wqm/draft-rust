@@ -182,7 +182,7 @@ Denetçinin baktığı sınıflar: hesap varlığı sızıntısı (gövde/durum/
   - **Güvenlik iletişim adresi:** `by-okan@live.com` (`SECURITY.md`).
   - **K-72:** proje sahibi kararı uzmana bıraktı; karar: **üretim öncesi bağımsız dış pentest zorunlu** — kapsam: `docs/security/pentest-scope.md`.
   - **K-116:** öneri onaylandı (`CLAUDE.md` listesi `deny.toml` ile eşitlendi).
-  - **Depo görünürlüğü:** depo GitHub'da **public**; tescilli lisansla çelişir — proje sahibine private yapması önerildi (GitHub → Settings → Danger Zone → Change visibility).
+  - **Depo görünürlüğü:** depo GitHub'da **public**. Proje sahibinin kararı (2026-11-07): yazılım henüz kullanılmadığı için şimdilik böyle kalacak; proje %100 bitince private yapılacak. Bu konuyu tekrar hatırlatma.
 
 - Kullanıcı Türkçe konuşuyor; kısa, doğrudan ilerleme raporu bekliyor. İlerlemeyi "yüzde kaç bitti, ne kaldı" gibi sorarak takip ediyor — dürüst ol, bitmemiş şeyi bitmiş gösterme.
 - İsteği: "profesyonel kalite, güvenlik takıntılı, her özellik test edilsin, dokümantasyon eksiksiz, her bölüm için uzman agent". Faz 1 bu repoda; Faz 2/3 (OAuth 2.1/OIDC **sağlayıcısı**, kurumsal SSO, SCIM, DPoP, Single Logout, SAML) ayrı bir iş olarak planlandı — özellik karşılaştırması ve öncelikli yol haritası: [`docs/roadmap.md`](roadmap.md) (DOC-09, K-71).
